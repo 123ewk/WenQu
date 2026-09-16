@@ -13,7 +13,6 @@ import io
 import json
 import os
 import sys
-import time
 import uuid
 
 os.environ.setdefault("APP_DATABASE_URL", "postgresql+psycopg://wenqu:wenqu_dev_only@localhost:5432/wenqu")
@@ -25,7 +24,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app.main as main_module  # noqa: E402
 from app.api.deps import get_chat_gateway, get_embedding_gateway  # noqa: E402
 from app.application.repository.knowledge import (  # noqa: E402
-    ChunkQueryRepositoryImpl,
     DocumentRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
@@ -139,7 +137,6 @@ def main() -> int:
     check("MinIO 对象存储落位", len(stored) == len(buffer.getvalue()), f"{len(stored)} bytes")
 
     # 5) 跑真实 worker 入库(真 gRPC parser + 真分块 + 桩向量化)
-    from app.application.chunking import chunk_blocks
 
     with get_session_factory()() as db:
         service = IngestionService(
@@ -211,7 +208,8 @@ def main() -> int:
     check("SSE 事件时序正确", types == ["meta", "citations", "delta", "delta", "done"], str(types))
     citation = events[1]["citations"][0] if events[1]["citations"] else None
     check("引用携带可回链字段", bool(citation and citation["chunk_id"] and citation["excerpt"]))
-    check("答案标注了引用编号", events[-1].get("cited_indexes") == [1], str(events[-1].get("cited_indexes")))
+    cited = events[-1].get("cited_indexes")
+    check("答案标注了引用编号", cited == [1], str(cited))
 
     conv_id = events[0]["conversation_id"]
     messages = client.get(
@@ -228,16 +226,21 @@ def main() -> int:
         json={"question": "k 的取值是多少?", "conversation_id": conv_id, "top_k": 3},
         headers=auth,
     )
-    events2 = [json.loads(l[6:]) for l in ask2.text.splitlines() if l.startswith("data: ")]
+    events2 = [
+        json.loads(line[6:])
+        for line in ask2.text.splitlines()
+        if line.startswith("data: ")
+    ]
     check("多轮复用同一会话", events2[0]["conversation_id"] == conv_id)
     prompt_roles = [m["role"] for m in stub_chat.prompts[1]]
     check("第二轮提示词含历史", prompt_roles.count("user") >= 2, str(prompt_roles))
     check("提示词携带编号资料", "[1] 来源:" in stub_chat.prompts[1][0]["content"])
 
     # 10) 维护清理(真 PG)
+    from datetime import UTC, datetime, timedelta
+
     from app.application.service.maintenance import MaintenanceService
     from app.domain.models import RefreshToken
-    from datetime import UTC, datetime, timedelta
 
     with get_session_factory()() as db:
         db.add(

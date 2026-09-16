@@ -900,6 +900,81 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AuditAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按动作类型精确筛选,如 space.updated(非法值返回 422)",
+              "title": "Action"
+            },
+            "description": "按动作类型精确筛选,如 space.updated(非法值返回 422)"
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按操作人筛选",
+              "title": "Actor Id"
+            },
+            "description": "按操作人筛选"
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "起始时间(闭区间)",
+              "title": "Since"
+            },
+            "description": "起始时间(闭区间)"
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "结束时间(闭区间)",
+              "title": "Until"
+            },
+            "description": "结束时间(闭区间)"
           }
         ],
         "responses": {
@@ -2046,6 +2121,30 @@
         ],
         "title": "AskRequest"
       },
+      "AuditAction": {
+        "type": "string",
+        "enum": [
+          "auth.register",
+          "auth.login_success",
+          "auth.login_failed",
+          "auth.logout",
+          "user.password_changed",
+          "space.created",
+          "space.updated",
+          "space.deleted",
+          "space.member_added",
+          "space.member_removed",
+          "space.member_role_changed",
+          "kb.created",
+          "kb.updated",
+          "kb.deleted",
+          "document.uploaded",
+          "document.deleted",
+          "access.denied"
+        ],
+        "title": "AuditAction",
+        "description": "审计动作全分类;新增动作必须在此注册(40+ 分类为长期目标,见基准 04)。"
+      },
       "AuditLogOut": {
         "properties": {
           "id": {
@@ -2063,6 +2162,17 @@
             ],
             "title": "Actor Id"
           },
+          "actor_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Name"
+          },
           "action": {
             "type": "string",
             "title": "Action"
@@ -2070,6 +2180,10 @@
           "target": {
             "type": "string",
             "title": "Target"
+          },
+          "result": {
+            "type": "string",
+            "title": "Result"
           },
           "detail": {
             "additionalProperties": true,
@@ -2097,8 +2211,10 @@
         "required": [
           "id",
           "actor_id",
+          "actor_name",
           "action",
           "target",
+          "result",
           "detail",
           "ip"
         ],

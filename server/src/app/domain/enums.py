@@ -21,6 +21,13 @@ class Role(IntEnum):
             raise ValueError(f"非法角色值: {value}") from exc
 
 
+class AuditResult(StrEnum):
+    """审计结果:denied = 有操作意图但被权限/认证拦下(安全审计的关键一半)。"""
+
+    SUCCESS = "success"
+    DENIED = "denied"
+
+
 class AuditAction(StrEnum):
     """审计动作全分类;新增动作必须在此注册(40+ 分类为长期目标,见基准 04)。"""
 
@@ -40,6 +47,7 @@ class AuditAction(StrEnum):
     KB_DELETED = "kb.deleted"
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DELETED = "document.deleted"
+    ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
 
 
 class DocumentStatus(StrEnum):

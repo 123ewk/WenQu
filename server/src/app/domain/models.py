@@ -29,7 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain.enums import DocumentStatus, TaskStatus
+from app.domain.enums import AuditResult, DocumentStatus, TaskStatus
 
 
 class Base(DeclarativeBase):
@@ -120,6 +120,9 @@ class AuditLog(Base):
     )
     action: Mapped[str] = mapped_column(String(64))
     target: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    result: Mapped[str] = mapped_column(
+        String(16), default=AuditResult.SUCCESS, server_default="success"
+    )
     detail: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     ip: Mapped[str] = mapped_column(String(64), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(

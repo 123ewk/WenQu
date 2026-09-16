@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
+from app.api.denied_audit import record_denied
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
 from app.api.routes import conversations as conversation_routes
@@ -22,6 +23,7 @@ from app.core.config import get_settings
 from app.core.errors import (
     AppError,
     app_error_handler,
+    set_denied_audit_hook,
     unhandled_error_handler,
     validation_error_handler,
 )
@@ -71,6 +73,7 @@ def create_app() -> FastAPI:
         return response
 
     register_error_handlers(app)
+    set_denied_audit_hook(record_denied)
     app.include_router(health_routes.router)
     app.include_router(auth_routes.router)
     app.include_router(users_routes.router)

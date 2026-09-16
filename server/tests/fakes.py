@@ -153,9 +153,24 @@ class FakeAuditRepository:
         return log
 
     def list_for_space(
-        self, space_id: uuid.UUID, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        limit: int,
+        offset: int,
+        action: str | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]:
         scoped = [log for log in self.logs if log.space_id == space_id]
+        if action is not None:
+            scoped = [log for log in scoped if log.action == action]
+        if actor_id is not None:
+            scoped = [log for log in scoped if log.actor_id == actor_id]
+        if since is not None:
+            scoped = [log for log in scoped if log.created_at >= since]
+        if until is not None:
+            scoped = [log for log in scoped if log.created_at <= until]
         return list(reversed(scoped))[offset : offset + limit], len(scoped)
 
 

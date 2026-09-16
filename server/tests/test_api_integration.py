@@ -867,3 +867,95 @@ def test_maintenance_purges_expired_tokens_and_old_audit(client) -> None:
         ).all()
         targets = {row[0] for row in remaining_audit}
         assert "recent" in targets and "old" not in targets
+
+
+
+def test_audit_filters_and_enriched_fields(client) -> None:
+    """审计增强契约(缺口 #1/#3/#4):筛选参数、结果字段、操作人昵称冗余。"""
+    owner = _register(client, "auditowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "审计空间"}, headers=auth
+    ).json()["id"]
+
+    # 制造多种动作 + 一次被拒操作(Editor 越权改名 → 403)
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": "auditowner", "role": 10},
+        headers=auth,
+    )
+    editor = _register(client, "auditeditor")
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": "auditeditor", "role": 20},
+        headers=auth,
+    )
+    forbidden = client.patch(
+        f"/api/v1/spaces/{space_id}", json={"name": "越权改名"}, headers=editor_auth
+    )
+    assert forbidden.status_code == 403
+
+    base = f"/api/v1/spaces/{space_id}/audit-logs"
+    all_logs = client.get(base, headers=auth).json()
+
+    # 每行都有结果字段与操作人昵称(前端不再用 members 映射兜底)
+    for item in all_logs["items"]:
+        assert item["result"] in ("success", "denied")
+        assert item["actor_id"] is None or item["actor_name"]
+    assert any(item["result"] == "denied" for item in all_logs["items"])
+
+    # 按动作筛选
+    filtered = client.get(base, params={"action": "space.updated"}, headers=auth).json()
+    assert filtered["total"] == 0  # 那次改名被拒,没有成功记录
+
+    # 按操作人筛选:只返回该操作人的记录,且被拒记录归属发起者 editor
+    editor_id = next(
+        item["actor_id"]
+        for item in all_logs["items"]
+        if item["result"] == "denied"
+    )
+    by_actor = client.get(base, params={"actor_id": editor_id}, headers=auth).json()
+    assert by_actor["total"] >= 1
+    assert {item["actor_id"] for item in by_actor["items"]} == {editor_id}
+    assert any(item["result"] == "denied" for item in by_actor["items"])
+    assert all(item["actor_name"] == "auditeditor" for item in by_actor["items"])
+
+    # 时间范围(闭区间):用现有最新一条的时间戳,必须能取到
+    newest = all_logs["items"][0]["created_at"]
+    in_range = client.get(base, params={"since": newest}, headers=auth).json()
+    assert in_range["total"] >= 1
+    assert all(item["created_at"] >= newest for item in in_range["items"])
+
+
+
+def test_denied_audit_noise_control(client) -> None:
+    """401 噪声控制:常规 token 缺失(如 /users/me)不落被拒审计;
+
+    否则 token 过期会把审计表刷满(缺口 #3 的结果列价值被稀释)。
+    """
+    owner = _register(client, "noiseowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "噪声空间"}, headers=auth
+    ).json()["id"]
+
+    before = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+
+    # 无 token 访问受保护接口 → 401,但不应产生审计记录
+    assert client.get("/api/v1/users/me").status_code == 401
+    assert client.get(f"/api/v1/spaces/{space_id}/audit-logs").status_code == 401
+
+    after = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+    assert after == before
+
+    # 登录失败(401)属于安全事件:应留下记录,但不属于任何空间
+    resp = client.post(
+        "/api/v1/auth/login", json={"username": "noiseowner", "password": "wrong-pass"}
+    )
+    assert resp.status_code == 401
+    # 登录失败审计已由 auth 服务写入(action=auth.login_failed),此处验证其不污染空间审计
+    assert (
+        client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+        == before
+    )

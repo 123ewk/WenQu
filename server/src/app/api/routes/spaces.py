@@ -12,8 +12,15 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_client_ip, get_current_user, get_space_service
+from app.api.deps import (
+    get_client_ip,
+    get_current_user,
+    get_space_service,
+    get_user_repository,
+)
 from app.application.service.spaces import SpaceService
+from app.domain.enums import AuditAction
+from app.domain.interfaces import UserRepository
 from app.domain.models import AuditLog, Membership, Space, User
 
 router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
@@ -80,19 +87,23 @@ class MemberOut(BaseModel):
 class AuditLogOut(BaseModel):
     id: str
     actor_id: str | None
+    actor_name: str | None  # 操作人昵称冗余:操作人退空间后仍可读,前端不必再映射
     action: str
     target: str
+    result: str  # success | denied(缺口 #3:前端结果列)
     detail: dict
     ip: str
     created_at: datetime | None = None
 
     @classmethod
-    def of(cls, log: AuditLog) -> AuditLogOut:
+    def of(cls, log: AuditLog, actor_name: str | None = None) -> AuditLogOut:
         return cls(
             id=str(log.id),
             actor_id=str(log.actor_id) if log.actor_id else None,
+            actor_name=actor_name,
             action=log.action,
             target=log.target,
+            result=log.result,
             detail=log.detail,
             ip=log.ip,
             created_at=log.created_at,
@@ -225,8 +236,30 @@ def list_audit_logs(
     space_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    action: AuditAction | None = Query(
+        default=None, description="按动作类型精确筛选,如 space.updated(非法值返回 422)"
+    ),
+    actor_id: uuid.UUID | None = Query(default=None, description="按操作人筛选"),
+    since: datetime | None = Query(default=None, description="起始时间(闭区间)"),
+    until: datetime | None = Query(default=None, description="结束时间(闭区间)"),
     user: User = Depends(get_current_user),
     service: SpaceService = Depends(get_space_service),
+    users: UserRepository = Depends(get_user_repository),
 ) -> AuditPage:
-    logs, total = service.list_audit(space_id, user, limit, offset)
-    return AuditPage(items=[AuditLogOut.of(log) for log in logs], total=total)
+    logs, total = service.list_audit(
+        space_id, user, limit, offset, action=action, actor_id=actor_id, since=since, until=until
+    )
+    names = _actor_names(users, logs)
+    return AuditPage(
+        items=[AuditLogOut.of(log, names.get(log.actor_id)) for log in logs], total=total
+    )
+
+
+def _actor_names(users: UserRepository, logs: list[AuditLog]) -> dict[uuid.UUID | None, str]:
+    """一次查齐本页操作人昵称,避免逐行查询(N+1)。"""
+    names: dict[uuid.UUID | None, str] = {}
+    for actor_id in {log.actor_id for log in logs if log.actor_id is not None}:
+        actor = users.get(actor_id)
+        if actor is not None:
+            names[actor_id] = actor.nickname
+    return names

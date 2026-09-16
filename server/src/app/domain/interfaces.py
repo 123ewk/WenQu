@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Protocol
 
 from app.domain.models import (
@@ -56,7 +57,14 @@ class SpaceRepository(Protocol):
 class AuditRepository(Protocol):
     def add(self, log: AuditLog) -> AuditLog: ...
     def list_for_space(
-        self, space_id: uuid.UUID, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        limit: int,
+        offset: int,
+        action: str | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]: ...
 
 

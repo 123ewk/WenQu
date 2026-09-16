@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -67,9 +68,29 @@ class AppError(Exception):
         self.details = details
 
 
+# 被拒操作审计钩子:由组合根(main)注入,core 不反向依赖数据层(基准 01)
+_on_denied_hook: Callable[[Request, AppError], None] | None = None
+
+
+def set_denied_audit_hook(hook: Callable[[Request, AppError], None]) -> None:
+    global _on_denied_hook
+    _on_denied_hook = hook
+
+
+def _notify_denied(request: Request, exc: AppError) -> None:
+    """只在 401/403 触发;钩子自身异常绝不影响原错误响应。"""
+    if _on_denied_hook is None or exc.http_status not in (401, 403):
+        return
+    try:
+        _on_denied_hook(request, exc)
+    except Exception:  # noqa: BLE001 — 审计失败不能让原错误响应变 500
+        logger.exception("record denied audit failed path=%s", request.url.path)
+
+
 async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     # Starlette 的 handler 类型签名为 Exception;实际只对 AppError 注册本 handler
     assert isinstance(exc, AppError)
+    _notify_denied(request, exc)
     return JSONResponse(
         status_code=exc.http_status,
         content={

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import AuditAction, Role
@@ -211,10 +212,26 @@ class SpaceService:
         )
 
     def list_audit(
-        self, space_id: uuid.UUID, user: User, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        user: User,
+        limit: int,
+        offset: int,
+        action: AuditAction | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]:
         self._require_role(space_id, user.id, Role.ADMIN)
-        return self._audit.list_for_space(space_id, limit, offset)
+        return self._audit.list_for_space(
+            space_id,
+            limit,
+            offset,
+            action=str(action) if action else None,
+            actor_id=actor_id,
+            since=since,
+            until=until,
+        )
 
     # ---------------------------- 守卫 ----------------------------
 
