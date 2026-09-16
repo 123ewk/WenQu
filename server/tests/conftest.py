@@ -11,8 +11,6 @@ import shutil
 
 import pytest
 
-pytestmark = pytest.mark.integration
-
 
 @pytest.fixture(scope="session")
 def client():
