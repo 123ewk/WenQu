@@ -9,17 +9,22 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.application.repository.audit import AuditRepositoryImpl
+from app.application.repository.knowledge import DocumentRepositoryImpl, KnowledgeBaseRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.tokens import RefreshTokenRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.auth import AuthService
+from app.application.service.knowledge import KnowledgeService
 from app.application.service.spaces import SpaceService
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.errors import AppError, ErrorCode
 from app.core.security import decode_access_token
+from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
     AuditRepository,
+    DocumentRepository,
+    KnowledgeBaseRepository,
     RefreshTokenRepository,
     SpaceRepository,
     UserRepository,
@@ -80,6 +85,45 @@ def get_space_service(
     audit: AuditRepository = Depends(get_audit_repository),
 ) -> SpaceService:
     return SpaceService(spaces, users, audit)
+
+
+# ---------------------------- M2 知识域 ----------------------------
+
+
+def get_kb_repository(db: Session = Depends(get_db)) -> KnowledgeBaseRepository:
+    return KnowledgeBaseRepositoryImpl(db)
+
+
+def get_document_repository(db: Session = Depends(get_db)) -> DocumentRepository:
+    return DocumentRepositoryImpl(db)
+
+
+def get_storage() -> ObjectStorage:
+    """生产/dev 走 MinIO;测试用 dependency_overrides 换 MemoryStorage(CI 无 MinIO)。"""
+    settings = get_settings()
+    return MinioStorage(
+        settings.minio_endpoint,
+        settings.minio_access_key,
+        settings.minio_secret_key,
+        settings.minio_bucket,
+        settings.minio_secure,
+    )
+
+
+def get_memory_storage() -> ObjectStorage:
+    return MemoryStorage()
+
+
+def get_knowledge_service(
+    kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
+    documents: DocumentRepository = Depends(get_document_repository),
+    spaces: SpaceRepository = Depends(get_space_repository),
+    audit: AuditRepository = Depends(get_audit_repository),
+    storage: ObjectStorage = Depends(get_storage),
+) -> KnowledgeService:
+    return KnowledgeService(
+        kbs, documents, spaces, audit, storage, get_settings().upload_max_mb
+    )
 
 
 def get_client_ip(request: Request) -> str:

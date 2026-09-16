@@ -47,7 +47,13 @@ def client():
 
         from app.main import create_app
 
-        with TestClient(create_app(), raise_server_exceptions=False) as test_client:
+        app = create_app()
+        # CI/本地集成环境无 MinIO:存储依赖换内存替身,语义已由 test_storage 钉住
+        from app.api.deps import get_memory_storage, get_storage
+
+        app.dependency_overrides[get_storage] = get_memory_storage
+
+        with TestClient(app, raise_server_exceptions=False) as test_client:
             yield test_client
     finally:
         from app.core.db import get_engine, get_session_factory
@@ -266,3 +272,87 @@ def test_rag_data_layer_roundtrip(client) -> None:
         assert loaded_task is not None
         assert loaded_task.payload["trace_id"] == "t-123"
         assert loaded_task.status == TaskStatus.PENDING
+
+
+def test_kb_and_document_api_flow(client) -> None:
+    """M2 知识域 API:KB CRUD + 上传/列表/详情/删除 + RBAC 门槛 + 审计动作。"""
+    owner = _register(client, "kbowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "知识域空间"}, headers=auth
+    ).json()["id"]
+    base = f"/api/v1/spaces/{space_id}/knowledge-bases"
+
+    # 未登录 401
+    assert client.get(base).status_code == 401
+
+    # 创建 KB(默认 embedding 模型来自 models.yaml 默认值)
+    resp = client.post(
+        base, json={"name": "产品文档库", "description": "d"}, headers=auth
+    )
+    assert resp.status_code == 201, resp.text
+    kb = resp.json()
+    assert kb["embedding_model"] == "dashscope/text-embedding-v3"
+    assert kb["embedding_dim"] == 1024
+
+    # 同名 409;列表可见
+    assert client.post(base, json={"name": "产品文档库"}, headers=auth).status_code == 409
+    assert len(client.get(base, headers=auth).json()) == 1
+
+    # 上传文档(multipart)→ status=pending
+    resp = client.post(
+        f"{base}/{kb['id']}/documents",
+        files={"file": ("入门.md", "# 标题\n正文".encode(), "text/markdown")},
+        headers=auth,
+    )
+    assert resp.status_code == 201, resp.text
+    doc = resp.json()
+    assert doc["status"] == "pending" and doc["format"] == "md" and doc["size_bytes"] > 0
+
+    # 不支持格式 415
+    resp = client.post(
+        f"{base}/{kb['id']}/documents",
+        files={"file": ("a.exe", b"MZ", "application/x-msdownload")},
+        headers=auth,
+    )
+    assert resp.status_code == 415
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_FORMAT"
+
+    # 列表与详情
+    assert client.get(f"{base}/{kb['id']}/documents", headers=auth).json()["total"] == 1
+    assert (
+        client.get(f"{base}/{kb['id']}/documents/{doc['id']}", headers=auth).status_code
+        == 200
+    )
+
+    # 非成员访问空间资源 → 404
+    other = _register(client, "kbother")
+    other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+    resp = client.get(base, headers=other_auth)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "SPACE_NOT_FOUND"
+
+    # Viewer 门槛:拉进空间给 Viewer 角色后,上传/删除 → 403
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": "kbother", "role": 10},
+        headers=auth,
+    )
+    resp = client.post(
+        f"{base}/{kb['id']}/documents", files={"file": ("b.md", b"x")}, headers=other_auth
+    )
+    assert resp.status_code == 403
+
+    # 删除文档 → total 归零;删除 KB → 详情 404
+    assert (
+        client.delete(f"{base}/{kb['id']}/documents/{doc['id']}", headers=auth).status_code
+        == 204
+    )
+    assert client.get(f"{base}/{kb['id']}/documents", headers=auth).json()["total"] == 0
+    assert client.delete(f"{base}/{kb['id']}", headers=auth).status_code == 204
+    assert client.get(f"{base}/{kb['id']}", headers=auth).status_code == 404
+
+    # 审计动作齐全
+    resp = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth)
+    actions = {item["action"] for item in resp.json()["items"]}
+    assert {"kb.created", "document.uploaded", "document.deleted", "kb.deleted"} <= actions

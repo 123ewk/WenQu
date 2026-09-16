@@ -6,7 +6,15 @@ import uuid
 from datetime import UTC, datetime
 
 from app.core.security import hash_password
-from app.domain.models import AuditLog, Membership, RefreshToken, Space, User
+from app.domain.models import (
+    AuditLog,
+    Document,
+    KnowledgeBase,
+    Membership,
+    RefreshToken,
+    Space,
+    User,
+)
 
 
 class FakeUserRepository:
@@ -145,6 +153,66 @@ class FakeAuditRepository:
         self, space_id: uuid.UUID, limit: int, offset: int
     ) -> tuple[list[AuditLog], int]:
         scoped = [log for log in self.logs if log.space_id == space_id]
+        return list(reversed(scoped))[offset : offset + limit], len(scoped)
+
+
+class FakeKnowledgeBaseRepository:
+    def __init__(self) -> None:
+        self.kbs: dict[uuid.UUID, KnowledgeBase] = {}
+
+    def get(self, kb_id: uuid.UUID) -> KnowledgeBase | None:
+        return self.kbs.get(kb_id)
+
+    def get_by_name(self, space_id: uuid.UUID, name: str) -> KnowledgeBase | None:
+        return next(
+            (kb for kb in self.kbs.values() if kb.space_id == space_id and kb.name == name),
+            None,
+        )
+
+    def create(self, kb: KnowledgeBase) -> KnowledgeBase:
+        if kb.id is None:  # 模拟 DB flush 时主键 default 生效
+            kb.id = uuid.uuid4()
+        self.kbs[kb.id] = kb
+        return kb
+
+    def save(self, kb: KnowledgeBase) -> KnowledgeBase:
+        self.kbs[kb.id] = kb
+        return kb
+
+    def delete(self, kb: KnowledgeBase) -> None:
+        self.kbs.pop(kb.id, None)
+
+    def list_for_space(self, space_id: uuid.UUID) -> list[KnowledgeBase]:
+        return [kb for kb in self.kbs.values() if kb.space_id == space_id]
+
+
+class FakeDocumentRepository:
+    def __init__(self, kbs_ref: dict[uuid.UUID, KnowledgeBase] | None = None) -> None:
+        self.documents: dict[uuid.UUID, Document] = {}
+        self.kbs_ref = kbs_ref if kbs_ref is not None else {}
+
+    def get(self, document_id: uuid.UUID) -> Document | None:
+        return self.documents.get(document_id)
+
+    def create(self, document: Document) -> Document:
+        if document.id is None:  # 模拟 DB flush 时主键 default 生效
+            document.id = uuid.uuid4()
+        self.documents[document.id] = document
+        return document
+
+    def save(self, document: Document) -> Document:
+        self.documents[document.id] = document
+        return document
+
+    def delete(self, document: Document) -> None:
+        self.documents.pop(document.id, None)
+        # 级联删 chunks 的语义在 DB 靠 FK CASCADE;M2-4 分块写入后在此同步模拟
+
+    def list_for_kb(
+        self, kb_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Document], int]:
+        scoped = [d for d in self.documents.values() if d.kb_id == kb_id]
+        scoped.sort(key=lambda d: d.created_at or datetime.min.replace(tzinfo=UTC))
         return list(reversed(scoped))[offset : offset + limit], len(scoped)
 
 
