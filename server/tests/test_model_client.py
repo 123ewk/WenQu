@@ -71,7 +71,8 @@ def test_embed_uses_default_model_when_unspecified(monkeypatch) -> None:
 
 def test_embed_missing_key_raises_model_not_configured(monkeypatch) -> None:
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    client = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(_embed_response([[0.0]])))
+    transport = httpx.MockTransport(_embed_response([[0.0]]))
+    client = EmbeddingClient(_catalog(), _settings(), transport=transport)
     with pytest.raises(ModelNotConfigured, match="DASHSCOPE_API_KEY"):
         client.embed(["文本"])
 
@@ -180,7 +181,8 @@ def test_disabled_or_unknown_model_rejected(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
     chat = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(_sse_response(["x"])))
-    embed = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(_embed_response([[0.0]])))
+    embed_transport = httpx.MockTransport(_embed_response([[0.0]]))
+    embed = EmbeddingClient(_catalog(), _settings(), transport=embed_transport)
     with pytest.raises(ModelNotConfigured):
         chat.chat([{"role": "user", "content": "hi"}], "ollama/qwen3")  # enabled: false
     with pytest.raises(ModelNotConfigured):
