@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import (
     get_client_ip,
@@ -34,9 +34,26 @@ class CreateSpaceRequest(BaseModel):
     description: str = Field(default="", max_length=512)
 
 
+class RetrievalParams(BaseModel):
+    """空间级检索参数;权重之和必须 ≤1(否则融合分不可比)。"""
+
+    rrf_k: int = Field(default=60, ge=1, le=1000)
+    vector_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    fulltext_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    default_top_k: int = Field(default=6, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def _weights_must_not_exceed_one(self) -> RetrievalParams:
+        if self.vector_weight + self.fulltext_weight > 1.0 + 1e-9:
+            raise ValueError("vector_weight 与 fulltext_weight 之和不能超过 1")
+        return self
+
+
 class UpdateSpaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=512)
+    retrieval_params: RetrievalParams | None = None
 
 
 class AddMemberRequest(BaseModel):
@@ -53,6 +70,7 @@ class SpaceOut(BaseModel):
     name: str
     description: str
     role: int
+    retrieval_params: RetrievalParams
     created_at: datetime | None = None
 
     @classmethod
@@ -62,6 +80,13 @@ class SpaceOut(BaseModel):
             name=space.name,
             description=space.description,
             role=role,
+            retrieval_params=RetrievalParams(
+                rrf_k=space.retrieval_rrf_k,
+                vector_weight=space.retrieval_vector_weight,
+                fulltext_weight=space.retrieval_fulltext_weight,
+                min_score=space.retrieval_min_score,
+                default_top_k=space.retrieval_default_top_k,
+            ),
             created_at=space.created_at,
         )
 
@@ -155,7 +180,10 @@ def update_space(
     service: SpaceService = Depends(get_space_service),
     ip: str = Depends(get_client_ip),
 ) -> SpaceOut:
-    space = service.update(space_id, user, body.name, body.description, ip=ip)
+    params = body.retrieval_params.model_dump() if body.retrieval_params else None
+    space = service.update(
+        space_id, user, body.name, body.description, ip=ip, retrieval_params=params
+    )
     _, role = service.get_with_role(space_id, user.id)
     return SpaceOut.of(space, role)
 

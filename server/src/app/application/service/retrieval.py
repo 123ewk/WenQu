@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import jieba
 
@@ -28,6 +29,7 @@ DEFAULT_FULLTEXT_WEIGHT = 0.3
 # 向量路最小余弦相似度:低于此值视为不相关。各厂商 embedding 分布不同,
 # 可通过 APP_RETRIEVAL_MIN_SCORE 调整;调低=召回更多但噪声上升。
 DEFAULT_MIN_VECTOR_SCORE = 0.3
+DEFAULT_TOP_K = 6
 
 
 @dataclass
@@ -71,6 +73,16 @@ def rrf_fuse(
     ]
 
 
+class EffectiveParams(NamedTuple):
+    """一次检索的实际生效参数:空间级配置覆盖服务级默认(缺口 #5)。"""
+
+    rrf_k: int
+    vector_weight: float
+    fulltext_weight: float
+    min_score: float
+    top_k: int
+
+
 class RetrievalService:
     def __init__(
         self,
@@ -102,7 +114,7 @@ class RetrievalService:
         space_id: uuid.UUID,
         query: str,
         space_ids: list[uuid.UUID] | None = None,
-        top_k: int = 8,
+        top_k: int | None = None,
         kb_ids: list[uuid.UUID] | None = None,
         model_id: str | None = None,
     ) -> list[RetrievedChunk]:
@@ -112,10 +124,12 @@ class RetrievalService:
         if not query:
             raise AppError(ErrorCode.VALIDATION, "查询内容不能为空", http_status=400)
 
+        params = self._effective_params(scoped, top_k)
+        top_k = params.top_k
         candidates = max(top_k * self._candidate_multiplier, top_k)
         embedding = self._embedder.embed([query], model_id)[0]
         vector_hits = self._chunks.vector_search(
-            scoped, embedding, kb_ids, candidates, min_similarity=self._min_vector_score
+            scoped, embedding, kb_ids, candidates, min_similarity=params.min_score
         )
         tokens = " ".join(jieba.cut_for_search(query))
         fulltext_hits = self._chunks.fulltext_search(scoped, tokens, kb_ids, candidates)
@@ -127,9 +141,9 @@ class RetrievalService:
         fused = rrf_fuse(
             [(str(c.id), s) for c, _d, s in vector_hits],
             [(str(c.id), s) for c, _d, s in fulltext_hits],
-            k=self._rrf_k,
-            vector_weight=self._vector_weight,
-            fulltext_weight=self._fulltext_weight,
+            k=params.rrf_k,
+            vector_weight=params.vector_weight,
+            fulltext_weight=params.fulltext_weight,
         )
         results: list[RetrievedChunk] = []
         for chunk_id, score, v_rank, f_rank in fused[:top_k]:
@@ -148,6 +162,32 @@ class RetrievalService:
                 )
             )
         return results
+
+    def _effective_params(self, space_id: uuid.UUID, top_k: int | None) -> EffectiveParams:
+        """空间配置覆盖全局默认;空间已删或字段缺失(None)时回退到服务级默认。
+
+        None 也算缺失:ORM 列默认值在 flush 时才生效,未落库的实例该字段是 None,
+        直接参与运算会 TypeError,所以统一按"未配置"处理。
+        """
+        space = self._spaces.get(space_id)
+
+        def pick(attr: str, fallback: float | int) -> float | int:
+            value = getattr(space, attr, None)
+            return fallback if value is None else value
+
+        return EffectiveParams(
+            rrf_k=int(pick("retrieval_rrf_k", self._rrf_k)),
+            vector_weight=float(pick("retrieval_vector_weight", self._vector_weight)),
+            fulltext_weight=float(
+                pick("retrieval_fulltext_weight", self._fulltext_weight)
+            ),
+            min_score=float(pick("retrieval_min_score", self._min_vector_score)),
+            top_k=(
+                top_k
+                if top_k is not None
+                else int(pick("retrieval_default_top_k", DEFAULT_TOP_K))
+            ),
+        )
 
     # ---------------------------- 内部 ----------------------------
 

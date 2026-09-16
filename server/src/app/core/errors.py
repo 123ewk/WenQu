@@ -100,6 +100,24 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     )
 
 
+def _safe_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """把 pydantic 错误转成可 JSON 序列化的形态。
+
+    pydantic v2 在自定义 validator 抛错时,errors() 的 ctx 里会放原始异常对象
+    (如 ValueError 实例),直接进 JSONResponse 会 TypeError,让本该 422 的响应
+    变成 500 —— 校验失败反而报"内部错误"。这里把 ctx 值统一转成字符串:既保住
+    可读信息,又对任何后续新增的 validator 都安全。
+    """
+    safe: list[dict[str, Any]] = []
+    for error in exc.errors():
+        item = dict(error)
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {key: str(value) for key, value in ctx.items()}
+        safe.append(item)
+    return safe
+
+
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """请求参数校验失败 → 422 统一壳(错误契约对所有响应一致,基准 02)。"""
     assert isinstance(exc, RequestValidationError)
@@ -110,7 +128,7 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "请求参数不合法",
-                "details": list(exc.errors()),
+                "details": _safe_validation_errors(exc),
             },
         },
     )

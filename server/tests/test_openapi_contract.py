@@ -22,6 +22,7 @@ REQUIRED_PATHS = {
     "/api/v1/auth/switch-space",
     "/api/v1/users/me",
     "/api/v1/users/me/password",
+    "/api/v1/users/me/avatar",
     "/api/v1/spaces",
     "/api/v1/spaces/{space_id}",
     "/api/v1/spaces/{space_id}/members",

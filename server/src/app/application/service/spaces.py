@@ -59,11 +59,23 @@ class SpaceService:
         return space, membership.role
 
     def update(
-        self, space_id: uuid.UUID, user: User, name: str, description: str, ip: str = ""
+        self,
+        space_id: uuid.UUID,
+        user: User,
+        name: str,
+        description: str,
+        ip: str = "",
+        retrieval_params: dict[str, float | int] | None = None,
     ) -> Space:
         space, _role = self._require_role(space_id, user.id, Role.ADMIN)
         space.name = name
         space.description = description
+        if retrieval_params:
+            space.retrieval_rrf_k = int(retrieval_params["rrf_k"])
+            space.retrieval_vector_weight = float(retrieval_params["vector_weight"])
+            space.retrieval_fulltext_weight = float(retrieval_params["fulltext_weight"])
+            space.retrieval_min_score = float(retrieval_params["min_score"])
+            space.retrieval_default_top_k = int(retrieval_params["default_top_k"])
         self._spaces.save(space)
         self._log(
             actor_id=user.id,

@@ -16,6 +16,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -44,6 +45,12 @@ class User(Base):
     nickname: Mapped[str] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(255))
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 最近一次成功认证(注册即登录,故注册时也会写入);失败登录不更新
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    avatar_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -79,6 +86,16 @@ class Space(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # 空间级检索参数(设计文档:RRF 按空间可配;默认值即全局基准)
+    retrieval_rrf_k: Mapped[int] = mapped_column(Integer, default=60, server_default="60")
+    retrieval_vector_weight: Mapped[float] = mapped_column(
+        Float, default=0.7, server_default="0.7"
+    )
+    retrieval_fulltext_weight: Mapped[float] = mapped_column(
+        Float, default=0.3, server_default="0.3"
+    )
+    retrieval_min_score: Mapped[float] = mapped_column(Float, default=0.3, server_default="0.3")
+    retrieval_default_top_k: Mapped[int] = mapped_column(Integer, default=6, server_default="6")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

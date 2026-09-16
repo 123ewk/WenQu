@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
+    avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")
 
     # ---- 认证与加密 ----
     jwt_secret: str = Field("", validation_alias="APP_JWT_SECRET")

@@ -26,6 +26,7 @@ from app.application.repository.tokens import RefreshTokenRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.auth import AuthService
 from app.application.service.knowledge import KnowledgeService
+from app.application.service.profile import ProfileService
 from app.application.service.qa import QAService
 from app.application.service.retrieval import RetrievalService
 from app.application.service.spaces import SpaceService
@@ -208,6 +209,35 @@ def get_qa_service(
     chat: ChatGateway = Depends(get_chat_gateway),
 ) -> QAService:
     return QAService(conversations, messages, spaces, retrieval, chat)
+
+
+def get_current_space_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> uuid.UUID | None:
+    """当前活动空间 = access token 的 sid 声明(缺口 #7)。
+
+    未选空间时为 None;无效令牌交给 get_current_user 统一报 401,这里不重复报错。
+    """
+    if credentials is None:
+        return None
+    try:
+        payload = decode_access_token(credentials.credentials)
+    except AppError:
+        return None
+    raw = payload.get("sid")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def get_profile_service(
+    users: UserRepository = Depends(get_user_repository),
+    storage: ObjectStorage = Depends(get_storage),
+) -> ProfileService:
+    return ProfileService(users, storage, get_settings().avatar_max_mb)
 
 
 def get_client_ip(request: Request) -> str:

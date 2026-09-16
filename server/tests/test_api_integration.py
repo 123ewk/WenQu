@@ -959,3 +959,221 @@ def test_denied_audit_noise_control(client) -> None:
         client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
         == before
     )
+
+
+
+def test_current_space_id_exposed_in_contract(client) -> None:
+    """缺口 #7:当前活动空间回契约,前端不再自维护 localStorage。
+
+    语义:current_space_id = 当前 access token 绑定的空间(登录时未选空间为 null,
+    切空间后与 token 一起更新),GET /users/me 据此恢复 F5 后的活动空间。
+    """
+    owner = _register(client, "spaceidowner")
+    # 注册即登录:还没选空间 → null
+    assert owner["current_space_id"] is None
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    assert client.get("/api/v1/users/me", headers=auth).json()["current_space_id"] is None
+
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "活动空间"}, headers=auth
+    ).json()["id"]
+
+    switched = client.post(
+        "/api/v1/auth/switch-space",
+        json={"space_id": space_id, "refresh_token": owner["refresh_token"]},
+        headers=auth,
+    ).json()
+    assert switched["current_space_id"] == space_id
+
+    # 用切换后的新 token 查 me:活动空间一致(F5 恢复的依据)
+    new_auth = {"Authorization": f"Bearer {switched['access_token']}"}
+    assert client.get("/api/v1/users/me", headers=new_auth).json()["current_space_id"] == space_id
+
+    # 刷新令牌延续活动空间(refresh 返回的也是同一空间)
+    refreshed = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": switched["refresh_token"]}
+    ).json()
+    assert refreshed["current_space_id"] == space_id
+
+    # 登录(不指定空间)是全新会话 → 回到 null
+    relogin = client.post(
+        "/api/v1/auth/login",
+        json={"username": "spaceidowner", "password": "secret-pass-1"},
+    ).json()
+    assert relogin["current_space_id"] is None
+
+
+
+def test_last_login_recorded_on_login_only(client) -> None:
+    """缺口 #9:记录上次登录时间/IP。语义要点:
+
+    - 注册后的第一次登录,last_login_at 是注册时记录的那次(即"上次"),而不是 NULL;
+    - 每次成功登录都刷新,失败登录不动(安全审计上失败次数另有 login_failed 审计);
+    - 时间与 IP 都来自上一次成功登录,供个人中心展示。
+    """
+    _register(client, "loginer")
+    first = client.post(
+        "/api/v1/auth/login", json={"username": "loginer", "password": "secret-pass-1"}
+    ).json()
+    auth = {"Authorization": f"Bearer {first['access_token']}"}
+
+    me_after_first = client.get("/api/v1/users/me", headers=auth).json()
+    assert me_after_first["last_login_at"] is not None  # 注册那次
+    assert me_after_first["last_login_ip"]
+
+    second = client.post(
+        "/api/v1/auth/login",
+        json={"username": "loginer", "password": "wrong-password"},
+    )
+    assert second.status_code == 401
+    me_after_failed = client.get("/api/v1/users/me", headers=auth).json()
+    # 失败登录不改写"上次成功登录"
+    assert me_after_failed["last_login_at"] == me_after_first["last_login_at"]
+
+    third = client.post(
+        "/api/v1/auth/login", json={"username": "loginer", "password": "secret-pass-1"}
+    ).json()
+    assert third["user"]["last_login_at"] is not None
+    assert third["user"]["last_login_at"] >= me_after_first["last_login_at"]
+
+
+
+def test_space_retrieval_params_persist_and_validate(client) -> None:
+    """缺口 #5:空间级检索参数。要点:
+
+    - 默认值来自设计文档(k=60,w_v=0.7,w_k=0.3,阈值 0.3),建空间即有;
+    - Admin+ 可改并持久化;非 Admin 403;
+    - 非法值拒绝(权重 >1、k 越界),不能让脏配置进库导致检索行为异常。
+    """
+    owner = _register(client, "retrievalcfgowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space = client.post("/api/v1/spaces", json={"name": "调参空间"}, headers=auth).json()
+
+    assert space["retrieval_params"] == {
+        "rrf_k": 60,
+        "vector_weight": 0.7,
+        "fulltext_weight": 0.3,
+        "min_score": 0.3,
+        "default_top_k": 6,
+    }
+
+    updated = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={
+            "name": "调参空间",
+            "description": "",
+            "retrieval_params": {
+                "rrf_k": 30,
+                "vector_weight": 0.5,
+                "fulltext_weight": 0.5,
+                "min_score": 0.4,
+                "default_top_k": 10,
+            },
+        },
+        headers=auth,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["retrieval_params"]["rrf_k"] == 30
+    # 重新读取确认持久化
+    fetched = client.get(f"/api/v1/spaces/{space['id']}", headers=auth).json()
+    assert fetched["retrieval_params"]["default_top_k"] == 10
+
+    # 非法值:权重和 > 1、k 超出范围
+    bad = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={
+            "name": "调参空间",
+            "description": "",
+            "retrieval_params": {"vector_weight": 0.9, "fulltext_weight": 0.9},
+        },
+        headers=auth,
+    )
+    assert bad.status_code == 422
+
+    # 非 Admin 改不动(先注册再拉入:顺序反了会因用户不存在而拉人失败)
+    editor = _register(client, "retrievalcfgeditor")
+    client.post(
+        f"/api/v1/spaces/{space['id']}/members",
+        json={"username": "retrievalcfgeditor", "role": 20},
+        headers=auth,
+    )
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    forbidden = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={"name": "越权改名", "description": ""},
+        headers=editor_auth,
+    )
+    assert forbidden.status_code == 403
+
+
+
+def test_avatar_upload_validate_and_fetch(client) -> None:
+    """缺口 #6:头像上传/读取。要点:
+
+    - 只收图片(png/jpeg/webp)且限制大小,非图片与超大文件被拒;
+    - UserOut.avatar_url 在有头像后返回可访问路径;
+    - 读取接口带鉴权(头像不是公开静态资源),非本人仍可读?—— 否,按用户维度鉴权:
+      只有本人能读自己的头像(内部系统,不做公开分发)。
+    """
+    import io as io_mod
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    import app.main as main_module
+    from app.api.deps import get_storage
+    from app.core.storage import MemoryStorage
+
+    owner = _register(client, "avatarowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    assert owner["user"]["avatar_url"] is None  # 初始无头像
+
+    # 造一张真实 PNG
+    buf = io_mod.BytesIO()
+    Image.new("RGB", (64, 64), (80, 110, 242)).save(buf, format="PNG")
+    png = buf.getvalue()
+
+    app_override = main_module.create_app()
+    # 用共享实例覆盖:MemoryStorage 有状态,按类覆盖会让每次请求拿到空存储
+    shared_storage = MemoryStorage()
+    app_override.dependency_overrides[get_storage] = lambda: shared_storage
+
+    with TestClient(app_override, raise_server_exceptions=False) as ac:
+        # 非图片被拒
+        bad = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("a.txt", b"not an image", "text/plain")},
+            headers=auth,
+        )
+        assert bad.status_code == 415
+
+        # 伪装扩展名但内容不是图片 → 也要拒(不能只信文件名)
+        fake = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("fake.png", b"still not an image", "image/png")},
+            headers=auth,
+        )
+        assert fake.status_code == 415
+
+        ok = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("me.png", png, "image/png")},
+            headers=auth,
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["avatar_url"]
+
+        # 自己的 me 带出 avatar_url
+        assert ac.get("/api/v1/users/me", headers=auth).json()["avatar_url"]
+
+        # 读回首字节能拿到 PNG 魔数
+        fetched = ac.get("/api/v1/users/me/avatar", headers=auth)
+        assert fetched.status_code == 200
+        assert fetched.content[:8] == png[:8]
+
+        # 未登录不能读
+        assert ac.get("/api/v1/users/me/avatar").status_code == 401
+
+        # 删除头像
+        assert ac.delete("/api/v1/users/me/avatar", headers=auth).status_code == 204
+        assert ac.get("/api/v1/users/me", headers=auth).json()["avatar_url"] is None
