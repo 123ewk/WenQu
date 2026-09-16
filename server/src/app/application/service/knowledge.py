@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from pathlib import PurePosixPath
 
+from app.application.service.ingestion import enqueue_document_ingest
 from app.core.errors import AppError, ErrorCode
 from app.core.storage import ObjectStorage
 from app.domain.enums import AuditAction, DocumentStatus, Role
@@ -19,6 +20,7 @@ from app.domain.interfaces import (
     DocumentRepository,
     KnowledgeBaseRepository,
     SpaceRepository,
+    TaskRepository,
 )
 from app.domain.models import AuditLog, Document, KnowledgeBase, User
 
@@ -41,6 +43,7 @@ class KnowledgeService:
         spaces: SpaceRepository,
         audit: AuditRepository,
         storage: ObjectStorage,
+        tasks: TaskRepository,
         upload_max_mb: int = 50,
     ) -> None:
         self._kbs = kbs
@@ -48,6 +51,7 @@ class KnowledgeService:
         self._spaces = spaces
         self._audit = audit
         self._storage = storage
+        self._tasks = tasks
         self._upload_max_bytes = upload_max_mb * 1024 * 1024
 
     # ---------------------------- 知识库 CRUD ----------------------------
@@ -139,6 +143,7 @@ class KnowledgeService:
             )
         )
         self._storage.put(document.source, content, content_type)
+        enqueue_document_ingest(self._tasks, document.id)
         self._log(
             user.id, space_id, AuditAction.DOCUMENT_UPLOADED, safe_name, ip,
             kb_id=str(kb_id), document_id=str(document.id),

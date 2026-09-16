@@ -377,3 +377,135 @@ def test_chunk_preview_api(client) -> None:
     assert all(c["tokens"] <= 512 for c in chunks)
     assert all(c["breadcrumb"] == ["接入指南"] for c in chunks)
     assert all(c["kind"] == "text" for c in chunks)
+
+
+def test_task_queue_claim_retry_dead_and_recover(client) -> None:
+    """DB 队列(ADR-2)真实语义:SKIP LOCKED 认领、退避重试、死信、陈旧 claim 回收。"""
+    import uuid as uuid_mod
+
+    from app.application.repository.tasks import TaskRepositoryImpl
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus, TaskStatus, TaskType
+    from app.domain.models import Document, KnowledgeBase, Task
+
+    user = _register(client, "queueuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "队列空间"}, headers=auth).json()["id"]
+
+    session_factory = get_session_factory()
+    with session_factory() as db:
+        kb = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="队列库")
+        db.add(kb)
+        db.flush()
+        doc = Document(
+            kb_id=kb.id,
+            space_id=kb.space_id,
+            filename="q.txt",
+            format="txt",
+            source=f"{kb.space_id}/{kb.id}/{uuid_mod.uuid4()}/q.txt",
+            status=DocumentStatus.PENDING,
+        )
+        db.add(doc)
+        db.flush()
+        repo = TaskRepositoryImpl(db)
+        task = repo.enqueue(
+            Task(
+                type=TaskType.INGEST_DOCUMENT,
+                payload={"document_id": str(doc.id)},
+                status=TaskStatus.PENDING,
+                max_retry=2,
+                timeout_s=1,
+            )
+        )
+        db.commit()
+        task_id = task.id
+
+    # 认领:库中可能有其它用例遗留的 pending 任务,循环认领直到拿到本任务
+    # (SKIP LOCKED 语义:已锁行被跳过而非等待,由下面 db2 断言验证)
+    def claim_until(repo, worker: str, wanted: int):
+        for _ in range(50):
+            task_row = repo.claim(worker)
+            if task_row is None:
+                return None
+            if task_row.id == wanted:
+                return task_row
+        raise AssertionError("未能在 50 次内认领到目标任务")
+
+    with session_factory() as db1, session_factory() as db2:
+        repo1, repo2 = TaskRepositoryImpl(db1), TaskRepositoryImpl(db2)
+        first = claim_until(repo1, "worker-1", task_id)
+        assert first is not None and first.id == task_id
+        # 目标任务已被 db1 的行锁占用:db2 认领不会拿到同一行(不阻塞)
+        second = repo2.claim("worker-2")
+        assert second is None or second.id != task_id
+        db1.commit()
+        db2.rollback()
+
+    # 退避重试:第 1 次失败 → pending 且 run_after 推后(退避期内不可被认领)
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        task = repo.get(task_id)
+        assert task is not None
+        assert repo.mark_failed(task, "boom") is False
+        assert task.status == TaskStatus.PENDING and task.retry_count == 1
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        for _ in range(50):  # 退避期内,任何 worker 都认领不到本任务
+            claimed_row = repo.claim("worker-3")
+            assert claimed_row is None or claimed_row.id != task_id
+            if claimed_row is None:
+                break
+        db.rollback()
+
+    # 第 2 次失败 → 死信(达到 max_retry)
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        task = repo.get(task_id)
+        assert task is not None
+        assert repo.mark_failed(task, "boom again") is True
+        assert task.status == TaskStatus.DEAD and task.retry_count == 2
+        assert "boom again" in (task.last_error or "")
+        db.commit()
+
+    # 陈旧 claim 回收:running 且 claimed_at 早于 timeout_s → 重新入队
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        stale = repo.enqueue(
+            Task(
+                type=TaskType.INGEST_DOCUMENT,
+                payload={"document_id": str(doc.id)},
+                status=TaskStatus.PENDING,
+                max_retry=3,
+                timeout_s=1,
+            )
+        )
+        db.commit()
+        stale_id = stale.id
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        claimed = claim_until(repo, "worker-4", stale_id)
+        assert claimed is not None and claimed.id == stale_id
+        # 伪造成"很久以前认领":直接改 claimed_at 到过去
+        from sqlalchemy import text as sql_text
+
+        db.execute(
+            sql_text("UPDATE tasks SET claimed_at = now() - interval '1 hour' WHERE id = :tid"),
+            {"tid": str(stale_id)},
+        )
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        assert repo.recover_stale() == 1
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        recovered = repo.get(stale_id)
+        assert recovered is not None
+        assert recovered.status == TaskStatus.PENDING
+        assert recovered.retry_count == 1
+        assert recovered.claimed_by is None

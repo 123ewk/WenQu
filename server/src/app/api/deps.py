@@ -9,8 +9,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.application.repository.audit import AuditRepositoryImpl
-from app.application.repository.knowledge import DocumentRepositoryImpl, KnowledgeBaseRepositoryImpl
+from app.application.repository.knowledge import (
+    ChunkRepositoryImpl,
+    DocumentRepositoryImpl,
+    KnowledgeBaseRepositoryImpl,
+)
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.repository.tasks import TaskRepositoryImpl
 from app.application.repository.tokens import RefreshTokenRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.auth import AuthService
@@ -23,10 +28,12 @@ from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
     AuditRepository,
+    ChunkRepository,
     DocumentRepository,
     KnowledgeBaseRepository,
     RefreshTokenRepository,
     SpaceRepository,
+    TaskRepository,
     UserRepository,
 )
 from app.domain.models import User
@@ -114,15 +121,24 @@ def get_memory_storage() -> ObjectStorage:
     return MemoryStorage()
 
 
+def get_task_repository(db: Session = Depends(get_db)) -> TaskRepository:
+    return TaskRepositoryImpl(db)
+
+
+def get_chunk_repository(db: Session = Depends(get_db)) -> ChunkRepository:
+    return ChunkRepositoryImpl(db)
+
+
 def get_knowledge_service(
     kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
     documents: DocumentRepository = Depends(get_document_repository),
     spaces: SpaceRepository = Depends(get_space_repository),
     audit: AuditRepository = Depends(get_audit_repository),
     storage: ObjectStorage = Depends(get_storage),
+    tasks: TaskRepository = Depends(get_task_repository),
 ) -> KnowledgeService:
     return KnowledgeService(
-        kbs, documents, spaces, audit, storage, get_settings().upload_max_mb
+        kbs, documents, spaces, audit, storage, tasks, get_settings().upload_max_mb
     )
 
 

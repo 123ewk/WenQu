@@ -16,6 +16,7 @@ from app.domain.models import (
     Membership,
     RefreshToken,
     Space,
+    Task,
     User,
 )
 
@@ -72,3 +73,40 @@ class DocumentRepository(Protocol):
     def list_for_kb(
         self, kb_id: uuid.UUID, limit: int, offset: int
     ) -> tuple[list[Document], int]: ...
+
+
+class ChunkRepository(Protocol):
+    def replace_for_document(
+        self,
+        document: Document,
+        drafts: list[tuple[int, str, list[float] | None, dict]],
+    ) -> None:
+        """幂等重建:先删后插。drafts = [(seq, content, embedding, meta)]。"""
+
+
+class TaskRepository(Protocol):
+    def enqueue(self, task: Task) -> Task: ...
+    def get(self, task_id: uuid.UUID) -> Task | None: ...
+    def claim(self, worker_id: str) -> Task | None:
+        """SKIP LOCKED 认领一条到期待处理任务(置 running 并记认领人)。"""
+    def mark_succeeded(self, task: Task) -> None: ...
+    def mark_failed(self, task: Task, error: str) -> bool:
+        """失败闭环:重试(退避)或落死信;返回是否已死信。"""
+    def recover_stale(self) -> int:
+        """陈旧 claim 回收:超 timeout_s 仍 running 的任务重新入队;返回回收数。"""
+
+
+class ParserGateway(Protocol):
+    """解析服务网关(真实实现走 gRPC,测试用假实现)。"""
+
+    def parse(
+        self, document_id: str, fmt: str, content: bytes
+    ) -> tuple[list[object], dict[str, str]]: ...
+
+
+class EmbeddingGateway(Protocol):
+    """向量化网关(真实实现走模型层,测试用假实现)。model_id 缺省用全局默认。"""
+
+    def embed(
+        self, texts: list[str], model_id: str | None = None
+    ) -> list[list[float]]: ...

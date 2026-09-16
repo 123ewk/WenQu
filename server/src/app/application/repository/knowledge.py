@@ -87,3 +87,37 @@ class DocumentRepositoryImpl:
             )
         )
         return items, int(total or 0)
+
+
+class ChunkRepositoryImpl:
+    """分块仓储:仅流水线使用,幂等重建(先删后插)。"""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+
+    def replace_for_document(
+        self,
+        document: Document,
+        drafts: list[tuple[int, str, list[float] | None, dict]],
+    ) -> None:
+        import jieba
+        from sqlalchemy import delete
+        from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: F401
+
+        from app.domain.models import Chunk
+
+        self._db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+        for seq, content, embedding, meta in drafts:
+            tokens = " ".join(jieba.cut_for_search(content))
+            self._db.add(
+                Chunk(
+                    document_id=document.id,
+                    space_id=document.space_id,
+                    seq=seq,
+                    content=content,
+                    embedding=embedding,
+                    tsv=func.to_tsvector("simple", tokens),
+                    meta=meta,
+                )
+            )
+        self._db.flush()

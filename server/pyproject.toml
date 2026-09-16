@@ -17,6 +17,9 @@ dependencies = [
     "minio>=7.2.20",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
+    "grpcio>=1.84.0",
+    "jieba>=0.42.1",
+    "wenqu-parser",
 ]
 
 [dependency-groups]
@@ -39,6 +42,9 @@ packages = ["src/app"]
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+[tool.uv.sources]
+wenqu-parser = { path = "../parser", editable = true }
 
 [tool.ruff]
 line-length = 100

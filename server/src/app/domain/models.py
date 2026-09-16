@@ -29,6 +29,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.domain.enums import DocumentStatus, TaskStatus
+
 
 class Base(DeclarativeBase):
     pass
@@ -177,7 +179,9 @@ class Document(Base):
     format: Mapped[str] = mapped_column(String(16))  # pdf | docx | xlsx | pptx | md | txt
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     source: Mapped[str] = mapped_column(String(512))
-    status: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default=DocumentStatus.PENDING, index=True
+    )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -235,7 +239,7 @@ class Task(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     type: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
-    status: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16), default=TaskStatus.PENDING, index=True)
     max_retry: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     timeout_s: Mapped[int] = mapped_column(Integer, default=600, server_default="600")
     claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

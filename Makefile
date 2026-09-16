@@ -2,7 +2,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help version compose-dev-up compose-dev-down db-migrate \
-        server-install server-run server-test server-lint server-openapi \
+        server-install server-run worker-run server-test server-lint server-openapi \
         parser-install parser-gen parser-run parser-test parser-lint \
         web-install web-dev web-build
 
@@ -26,6 +26,9 @@ server-install: ## 安装主服务依赖(uv sync --locked)
 
 server-run: ## 启动主服务(热重载,:8000)
 	cd server && uv run uvicorn app.main:app --reload --port 8000
+
+worker-run: ## 启动后台 worker(入库流水线;需先起 postgres/minio/parser)
+	cd server && uv run python -m app.worker
 
 server-test: ## 运行主服务测试
 	cd server && uv run pytest

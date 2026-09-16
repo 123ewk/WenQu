@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from app.core.security import hash_password
+from app.domain.enums import TaskStatus
 from app.domain.models import (
     AuditLog,
     Document,
@@ -13,6 +14,7 @@ from app.domain.models import (
     Membership,
     RefreshToken,
     Space,
+    Task,
     User,
 )
 
@@ -218,3 +220,82 @@ class FakeDocumentRepository:
 
 def make_user(username: str, password: str = "secret-pass-1") -> User:
     return User(username=username, nickname=username, password_hash=hash_password(password))
+
+
+class FakeTaskRepository:
+    """内存任务队列:语义与 DB 队列对齐(退避即时完成,无真实等待)。"""
+
+    def __init__(self) -> None:
+        self.tasks: dict[uuid.UUID, Task] = {}
+        self._seq = 0
+
+    def _now(self) -> datetime:
+        self._seq += 1
+        return datetime(2026, 9, 16, 12, 0, 0, tzinfo=UTC).replace(microsecond=self._seq)
+
+    def enqueue(self, task: Task) -> Task:
+        if task.id is None:
+            task.id = uuid.uuid4()
+        if task.status is None:  # 模拟 ORM/DB default 生效
+            task.status = TaskStatus.PENDING
+        if task.max_retry is None:
+            task.max_retry = 3
+        if task.timeout_s is None:
+            task.timeout_s = 600
+        if task.retry_count is None:
+            task.retry_count = 0
+        if task.created_at is None:
+            task.created_at = self._now()
+        self.tasks[task.id] = task
+        return task
+
+    def get(self, task_id: uuid.UUID) -> Task | None:
+        return self.tasks.get(task_id)
+
+    def claim(self, worker_id: str) -> Task | None:
+        for task in self.tasks.values():
+            if task.status == TaskStatus.PENDING:
+                task.status = TaskStatus.RUNNING
+                task.claimed_by = worker_id
+                task.claimed_at = self._now()
+                return task
+        return None
+
+    def mark_succeeded(self, task: Task) -> None:
+        task.status = TaskStatus.SUCCEEDED
+        task.last_error = None
+
+    def mark_failed(self, task: Task, error: str) -> bool:
+        task.retry_count += 1
+        task.last_error = error[:2000]
+        if task.retry_count >= task.max_retry:
+            task.status = TaskStatus.DEAD
+            return True
+        task.status = TaskStatus.PENDING
+        task.claimed_by = None
+        task.claimed_at = None
+        return False
+
+    def recover_stale(self) -> int:
+        recovered = 0
+        for task in self.tasks.values():
+            if task.status == TaskStatus.RUNNING:
+                task.retry_count += 1
+                exhausted = task.retry_count >= task.max_retry
+                task.status = TaskStatus.DEAD if exhausted else TaskStatus.PENDING
+                task.claimed_by = None
+                task.claimed_at = None
+                recovered += 1
+        return recovered
+
+
+class FakeChunkRepository:
+    def __init__(self) -> None:
+        self.chunks: dict[uuid.UUID, list[tuple]] = {}
+
+    def replace_for_document(
+        self,
+        document: Document,
+        drafts: list[tuple[int, str, list[float] | None, dict]],
+    ) -> None:
+        self.chunks[document.id] = list(drafts)
