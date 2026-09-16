@@ -90,7 +90,12 @@ with TestClient(app, raise_server_exceptions=False) as c:
             document_id=done.id, space_id=done.space_id, seq=0,
             content="混合检索使用 RRF 融合向量与全文两路排名。" * 3,
             tsv=func.to_tsvector("simple", "混合 检索 RRF 融合"),
-            meta={"kind": "table", "tokens": 137, "breadcrumb": ["产品手册库", "检索设计"], "page": 3},
+            meta={
+                "kind": "table",
+                "tokens": 137,
+                "breadcrumb": ["产品手册库", "检索设计"],
+                "page": 3,
+            },
         )
         db.add(chunk)
         db.commit()

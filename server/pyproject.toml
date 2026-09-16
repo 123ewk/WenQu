@@ -60,6 +60,8 @@ select = ["E", "F", "W", "I", "UP", "B"]
 "src/app/api/**" = ["B008"]
 # 迁移文件为声明式建表代码,行宽豁免
 "alembic/versions/**" = ["E501"]
+# 独立脚本需在 import 应用代码前设好环境变量(APP_DATABASE_URL 等),故豁免 E402
+"scripts/**" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"
