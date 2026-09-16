@@ -356,3 +356,24 @@ def test_kb_and_document_api_flow(client) -> None:
     resp = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth)
     actions = {item["action"] for item in resp.json()["items"]}
     assert {"kb.created", "document.uploaded", "document.deleted", "kb.deleted"} <= actions
+
+
+def test_chunk_preview_api(client) -> None:
+    """分块预览:登录可用,标题生成面包屑,超长文本按预算切分。"""
+    user = _register(client, "chunkuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+
+    assert client.post(
+        "/api/v1/chunks/preview", json={"text": "内容"}
+    ).status_code == 401
+
+    text = "# 接入指南\n\n" + "。".join(f"配置步骤{i}说明文字内容" for i in range(80)) + "。"
+    resp = client.post(
+        "/api/v1/chunks/preview", json={"text": text, "format": "md"}, headers=auth
+    )
+    assert resp.status_code == 200, resp.text
+    chunks = resp.json()
+    assert len(chunks) > 1
+    assert all(c["tokens"] <= 512 for c in chunks)
+    assert all(c["breadcrumb"] == ["接入指南"] for c in chunks)
+    assert all(c["kind"] == "text" for c in chunks)
