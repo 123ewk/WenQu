@@ -17,6 +17,8 @@ web/dist/
 .env.*
 !deploy/.env.example
 !server/.env.example
+# web 前端环境变量无密钥,需随仓库分发(见 web/对接说明.md)
+!web/.env.development
 
 # IDE / OS
 .idea/
