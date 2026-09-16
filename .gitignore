@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+*.local
+
+# 环境与密钥(示例文件必须入库,.env 真实文件绝不入库)
+.env
+.env.*
+!deploy/.env.example
+!server/.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 构建产物
+dist/
+build/

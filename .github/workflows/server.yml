@@ -1,0 +1,32 @@
+name: server
+
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", ".github/workflows/server.yml"]
+  pull_request:
+    paths: ["server/**", ".github/workflows/server.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖(锁安装)
+        working-directory: server
+        run: uv sync --locked
+
+      - name: 静态检查(ruff + mypy)
+        working-directory: server
+        run: |
+          uv run ruff check .
+          uv run mypy src
+
+      - name: 测试
+        working-directory: server
+        run: uv run pytest

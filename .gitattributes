@@ -1,0 +1,8 @@
+# 统一换行符:仓库与工作副本一律 LF(Makefile/proto/sh 在 CRLF 下会坏),Windows 批处理除外
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# 二进制
+*.png binary
+*.svg binary
+*.ico binary

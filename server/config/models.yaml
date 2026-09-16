@@ -1,0 +1,174 @@
+# ============================================================================
+# WenQu 模型清单(声明式,与代码解耦;基准 05「一个协议统一所有厂商」)
+# ============================================================================
+# 规则:
+#   1. 所有 Provider 走 OpenAI 兼容协议,厂商差异由 server 端变换钩子吸收
+#   2. 密钥一律走环境变量(见 deploy/.env.example 对应 *_API_KEY),本文件禁止出现密钥
+#   3. enabled: false 为预留条目,接入前先对照厂商最新文档核实模型名与端点
+#   4. embedding 维度(dims)写入知识库配置;换模型/换维度 = 该知识库需重建索引
+#      (切换不自动重嵌,基准 05 已知取舍)
+#   5. 新增模型只需在本文件加条目 + .env 加密钥,不改代码
+# 模型名核对日期:2026-09-16(各厂商上新频繁,接入时以官方文档为准)
+# ============================================================================
+
+# 默认模型:未在空间/知识库级显式配置时使用(空间级配置可覆盖,基准 05「按空间可配」)
+defaults:
+  chat: deepseek/deepseek-chat
+  embedding: dashscope/text-embedding-v3
+  rerank: dashscope/gte-rerank-v2   # 注意:rerank 默认不启用,需在空间配置显式选配(基准 05)
+
+# ---------------------------- Provider 注册表 ----------------------------
+providers:
+  deepseek:
+    name: DeepSeek
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    enabled: true
+  dashscope:
+    name: 阿里云百炼(Qwen 系列)
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    enabled: true
+  zhipu:
+    name: 智谱(GLM 系列)
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    enabled: true
+  moonshot:
+    name: 月之暗面(Kimi 系列)
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    enabled: true
+  volcengine:
+    name: 火山方舟(豆包系列)
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    # 注意:方舟接入的模型名多为推理接入点 id(形如 ep-xxxx),以控制台创建的端点为准
+    enabled: true
+  minimax:
+    name: MiniMax
+    base_url: https://api.minimaxi.com/v1   # OpenAI 兼容端点,接入前核实
+    api_key_env: MINIMAX_API_KEY
+    enabled: false
+  openai:
+    name: OpenAI(海外预留)
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    enabled: false
+  ollama:
+    name: Ollama(本地,免密钥)
+    base_url: http://localhost:11434/v1
+    api_key_env: ""                          # 本地服务无密钥
+    enabled: false                           # 预留本地推理;不可用时仅告警不阻断(ADR-4)
+  vllm:
+    name: vLLM(本地自建,免密钥)
+    base_url: http://localhost:8000/v1
+    api_key_env: ""
+    enabled: false
+
+# ---------------------------- 模型清单 ----------------------------
+models:
+  chat:
+    # --- DeepSeek ---
+    - id: deepseek/deepseek-chat
+      provider: deepseek
+      model: deepseek-chat            # DeepSeek-V3 系列,通用对话/Agent 主力
+      context_tokens: 65536
+      enabled: true
+    - id: deepseek/deepseek-reasoner
+      provider: deepseek
+      model: deepseek-reasoner        # DeepSeek-R1 系列,深度推理
+      context_tokens: 65536
+      enabled: true
+    # --- 阿里 Qwen ---
+    - id: dashscope/qwen-max
+      provider: dashscope
+      model: qwen-max
+      context_tokens: 32768
+      enabled: true
+    - id: dashscope/qwen-plus
+      provider: dashscope
+      model: qwen-plus                # 性价比均衡,检索问答默认备选
+      context_tokens: 131072
+      enabled: true
+    - id: dashscope/qwen-turbo
+      provider: dashscope
+      model: qwen-turbo               # 低延迟/低成本
+      context_tokens: 1000000
+      enabled: true
+    # --- 智谱 GLM ---
+    - id: zhipu/glm-4-plus
+      provider: zhipu
+      model: glm-4-plus
+      context_tokens: 128000
+      enabled: true
+    - id: zhipu/glm-4-flash
+      provider: zhipu
+      model: glm-4-flash              # 免费额度,适合调试
+      context_tokens: 128000
+      enabled: true
+    # --- 月之暗面 Kimi ---
+    - id: moonshot/kimi-k2
+      provider: moonshot
+      model: kimi-k2-0711-preview     # Kimi K2,接入前核实最新版本号
+      context_tokens: 131072
+      enabled: true
+    - id: moonshot/moonshot-v1-128k
+      provider: moonshot
+      model: moonshot-v1-128k         # 长上下文经典款
+      context_tokens: 131072
+      enabled: true
+    # --- 豆包(方舟) ---
+    - id: volcengine/doubao-1.5-pro
+      provider: volcengine
+      model: doubao-1-5-pro-32k-250115  # 方舟模型名/端点,接入前以控制台为准
+      context_tokens: 32768
+      enabled: false                  # 需要方舟接入点,默认预留
+    # --- MiniMax ---
+    - id: minimax/minimax-m1
+      provider: minimax
+      model: MiniMax-M1
+      context_tokens: 1000000
+      enabled: false
+    # --- 本地(Ollama;模型需先 ollama pull) ---
+    - id: ollama/qwen3
+      provider: ollama
+      model: qwen3:14b
+      context_tokens: 40960
+      enabled: false
+
+  embedding:
+    - id: dashscope/text-embedding-v3
+      provider: dashscope
+      model: text-embedding-v3        # 默认;1024 维
+      dims: 1024
+      max_tokens: 8192
+      enabled: true
+    - id: dashscope/text-embedding-v4
+      provider: dashscope
+      model: text-embedding-v4        # 维度可配(64~2048),换维度需重建索引
+      dims: 1024
+      max_tokens: 8192
+      enabled: true
+    - id: zhipu/embedding-3
+      provider: zhipu
+      model: embedding-3              # 2048 维,注意与默认维度不同
+      dims: 2048
+      max_tokens: 8192
+      enabled: true
+    - id: ollama/bge-m3
+      provider: ollama
+      model: bge-m3                   # 本地化方案,1024 维
+      dims: 1024
+      max_tokens: 8192
+      enabled: false
+
+  rerank:                              # 全部默认不启用,空间配置显式选配(基准 05)
+    - id: dashscope/gte-rerank-v2
+      provider: dashscope
+      model: gte-rerank-v2
+      enabled: true
+    - id: ollama/bge-reranker-v2-m3
+      provider: ollama
+      model: bge-reranker-v2-m3       # 本地方案;需支持 rerank 协议的推理端
+      enabled: false

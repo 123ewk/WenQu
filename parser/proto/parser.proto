@@ -1,0 +1,35 @@
+// WenQu 文档解析服务契约(parser.v1)
+// 这是跨进程契约(基准 03「fake 拒绝区」):生成物入库 + make parser-gen 一键再生成
+// + CI drift 检查(重新生成后 git diff 不为空即红)。
+// 变更规则:加字段不破坏;改字段语义/删字段需协调 server 侧同步发版。
+syntax = "proto3";
+
+package wenqu.parser.v1;
+
+// 文档解析服务:接收原始文档字节,返回结构化内容块(分块的输入)。
+// 资源画像与主服务不同(CPU 密集、易崩),独立进程部署,可独立扩缩容(基准 01)。
+service ParserService {
+  // 解析一个文档。流式/分块解析(M2 评估大文件是否改 streaming)。
+  rpc Parse(ParseRequest) returns (ParseResponse);
+}
+
+message ParseRequest {
+  string document_id = 1;           // 幂等键,透传回响应
+  string format = 2;                // pdf | docx | xlsx | pptx | md | txt
+  bytes content = 3;                // 原始文件字节
+  map<string, string> options = 4;  // 预留:OCR 开关、密码、页码范围等
+}
+
+message ParseResponse {
+  string document_id = 1;
+  repeated Block blocks = 2;        // 顺序与原文一致
+  map<string, string> meta = 3;     // 页数、标题树、语言等画像信息
+}
+
+message Block {
+  string type = 1;      // title | paragraph | table | list | image_caption
+  string text = 2;      // 纯文本(分块主输入)
+  string markdown = 3;  // 结构化内容的 markdown 表示(表格等),无结构时留空
+  int32 page = 4;       // 来源页码(PDF/PPT),无页码概念时为 0
+  int32 level = 5;      // title 的层级(1~6),非标题为 0
+}

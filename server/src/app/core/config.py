@@ -1,0 +1,73 @@
+"""应用配置(基准 02):优先级 环境变量 > .env > 代码默认值,注释即文档。
+
+fail-closed:APP_ENV=prod 时关键配置缺失直接拒绝启动。
+密钥只经环境变量/.env 注入,禁止进 YAML;
+安全开关的"未配置"与"显式关闭"语义不同,后续新增三态开关时在此标注。
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _read_version() -> str:
+    """从仓库根 VERSION 单一真源读取;读不到时回退占位(仅发生在非源码运行)。"""
+    try:
+        return (Path(__file__).resolve().parents[4] / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "0.0.0"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
+
+    env: Literal["dev", "prod"] = Field("dev", validation_alias="APP_ENV")
+    version: str = Field(default_factory=_read_version)
+
+    # ---- 数据存储 ----
+    database_url: str = Field("", validation_alias="APP_DATABASE_URL")
+    minio_endpoint: str = Field("localhost:9000", validation_alias="MINIO_ENDPOINT")
+    minio_access_key: str = Field("", validation_alias="MINIO_ACCESS_KEY")
+    minio_secret_key: str = Field("", validation_alias="MINIO_SECRET_KEY")
+    minio_bucket: str = Field("wenqu-docs", validation_alias="MINIO_BUCKET")
+    minio_secure: bool = Field(False, validation_alias="MINIO_SECURE")
+
+    # ---- 解析服务 ----
+    parser_grpc_addr: str = Field("localhost:50051", validation_alias="PARSER_GRPC_ADDR")
+    parser_grpc_token: str = Field("", validation_alias="PARSER_GRPC_TOKEN")
+
+    # ---- 认证与加密 ----
+    jwt_secret: str = Field("", validation_alias="APP_JWT_SECRET")
+    master_key: str = Field("", validation_alias="APP_MASTER_KEY")
+
+    # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
+    otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")
+
+    @model_validator(mode="after")
+    def _prod_must_be_explicit(self) -> Settings:
+        if self.env == "prod":
+            missing = [
+                name
+                for name, value in (
+                    ("APP_DATABASE_URL", self.database_url),
+                    ("APP_JWT_SECRET", self.jwt_secret),
+                    ("APP_MASTER_KEY", self.master_key),
+                    ("PARSER_GRPC_TOKEN", self.parser_grpc_token),
+                )
+                if not value
+            ]
+            if missing:
+                raise ValueError(
+                    f"APP_ENV=prod 缺少必填配置,拒绝启动(fail-closed):{', '.join(missing)}"
+                )
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

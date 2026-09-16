@@ -1,0 +1,41 @@
+name: parser
+
+on:
+  push:
+    branches: [main]
+    paths: ["parser/**", ".github/workflows/parser.yml"]
+  pull_request:
+    paths: ["parser/**", ".github/workflows/parser.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖(锁安装)
+        working-directory: parser
+        run: uv sync --locked
+
+      - name: 生成 proto 并做 drift 检查(生成物与提交不一致即红)
+        working-directory: parser
+        run: |
+          uv run python -m grpc_tools.protoc -I proto \
+            --python_out=src/parser_service/gen \
+            --grpc_python_out=src/parser_service/gen \
+            proto/parser.proto
+          git diff --exit-code -- src/parser_service/gen
+
+      - name: 静态检查(ruff + mypy)
+        working-directory: parser
+        run: |
+          uv run ruff check .
+          uv run mypy src
+
+      - name: 测试
+        working-directory: parser
+        run: uv run pytest
