@@ -14,6 +14,7 @@ from app.application.repository.conversations import (
     MessageRepositoryImpl,
 )
 from app.application.repository.knowledge import (
+    ChunkQueryRepositoryImpl,
     ChunkRepositoryImpl,
     DocumentRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
@@ -38,6 +39,7 @@ from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
     AuditRepository,
     ChatGateway,
+    ChunkQueryRepository,
     ChunkRepository,
     ConversationRepository,
     DocumentRepository,
@@ -143,6 +145,10 @@ def get_chunk_repository(db: Session = Depends(get_db)) -> ChunkRepository:
     return ChunkRepositoryImpl(db)
 
 
+def get_chunk_query_repository(db: Session = Depends(get_db)) -> ChunkQueryRepository:
+    return ChunkQueryRepositoryImpl(db)
+
+
 def get_knowledge_service(
     kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
     documents: DocumentRepository = Depends(get_document_repository),
@@ -150,9 +156,10 @@ def get_knowledge_service(
     audit: AuditRepository = Depends(get_audit_repository),
     storage: ObjectStorage = Depends(get_storage),
     tasks: TaskRepository = Depends(get_task_repository),
+    chunks: ChunkQueryRepository = Depends(get_chunk_query_repository),
 ) -> KnowledgeService:
     return KnowledgeService(
-        kbs, documents, spaces, audit, storage, tasks, get_settings().upload_max_mb
+        kbs, documents, spaces, audit, storage, tasks, chunks, get_settings().upload_max_mb
     )
 
 

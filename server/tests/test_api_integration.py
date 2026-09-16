@@ -782,3 +782,88 @@ def test_qa_sse_flow_with_citations(client) -> None:
         ]
         assert "没有检索到" in cold[2]["text"]
         assert len(stub_chat.prompts) == before  # 未调模型
+
+
+def test_maintenance_purges_expired_tokens_and_old_audit(client) -> None:
+    """维护任务真库验证:过期 refresh 清除、审计保留期边界(不误删保留期内)。"""
+    import uuid as uuid_mod
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from app.application.service.maintenance import MaintenanceService
+    from app.core.db import get_session_factory
+    from app.domain.enums import AuditAction
+    from app.domain.models import AuditLog, RefreshToken
+
+    user = _register(client, "maintuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "维护空间"}, headers=auth
+    ).json()["id"]
+    user_id = uuid_mod.UUID(
+        client.get("/api/v1/users/me", headers=auth).json()["id"]
+    )
+
+    now = datetime.now(UTC)
+    with get_session_factory()() as db:
+        # 一个已过期、一个仍有效
+        db.add(
+            RefreshToken(
+                user_id=user_id,
+                token_hash="a" * 64,
+                expires_at=now - timedelta(hours=1),
+            )
+        )
+        db.add(
+            RefreshToken(
+                user_id=user_id,
+                token_hash="b" * 64,
+                expires_at=now + timedelta(days=1),
+            )
+        )
+        # 一条过期审计、一条保留期内审计
+        old_log = AuditLog(
+            actor_id=user_id,
+            space_id=uuid_mod.UUID(space_id),
+            action=AuditAction.SPACE_UPDATED,
+            target="old",
+        )
+        db.add(old_log)
+        db.flush()
+        db.execute(
+            sql_text(
+                "UPDATE audit_logs SET created_at = now() - interval '200 days' "
+                "WHERE id = :i"
+            ),
+            {"i": str(old_log.id)},
+        )
+        db.add(
+            AuditLog(
+                actor_id=user_id,
+                space_id=uuid_mod.UUID(space_id),
+                action=AuditAction.SPACE_UPDATED,
+                target="recent",
+            )
+        )
+        db.commit()
+
+    # 保留期 180 天(默认):200 天前那条应被删,今天的保留
+    with get_session_factory()() as db:
+        service = MaintenanceService(db, audit_retention_days=180)
+        removed_tokens, removed_logs = service.run_all()
+        assert removed_tokens == 1  # 只删过期那条
+        assert removed_logs == 1  # 只删 200 天前那条
+
+    with get_session_factory()() as db:
+        lookup = sql_text(
+            "SELECT token_hash FROM refresh_tokens WHERE token_hash IN (:a, :b)"
+        )
+        remaining_tokens = db.scalars(lookup, {"a": "a" * 64, "b": "b" * 64}).all()
+        assert remaining_tokens == ["b" * 64]
+        remaining_audit = db.execute(
+            sql_text("SELECT target FROM audit_logs WHERE space_id = :s"),
+            {"s": space_id},
+        ).all()
+        targets = {row[0] for row in remaining_audit}
+        assert "recent" in targets and "old" not in targets

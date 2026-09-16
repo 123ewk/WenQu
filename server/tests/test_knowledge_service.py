@@ -18,6 +18,7 @@ from app.domain.enums import DocumentStatus, Role
 from app.domain.models import KnowledgeBase, Membership, Space
 from tests.fakes import (
     FakeAuditRepository,
+    FakeChunkRepository,
     FakeDocumentRepository,
     FakeKnowledgeBaseRepository,
     FakeSpaceRepository,
@@ -35,7 +36,10 @@ def make_env(upload_max_mb: int = 50) -> SimpleNamespace:
     audit = FakeAuditRepository()
     storage = MemoryStorage()
     tasks = FakeTaskRepository()
-    svc = KnowledgeService(kbs, documents, spaces, audit, storage, tasks, upload_max_mb)
+    chunks = FakeChunkRepository()
+    svc = KnowledgeService(
+        kbs, documents, spaces, audit, storage, tasks, chunks, upload_max_mb
+    )
     owner = users.create(make_user("owner"))
     editor = users.create(make_user("editor"))
     viewer = users.create(make_user("viewer"))
@@ -53,6 +57,7 @@ def make_env(upload_max_mb: int = 50) -> SimpleNamespace:
         kbs=kbs,
         documents=documents,
         tasks=tasks,
+        chunks=chunks,
         spaces=spaces,
         users=users,
         owner=owner,
@@ -142,7 +147,8 @@ def test_upload_document_rules() -> None:
     assert unsupported.value.code_str == "UNSUPPORTED_FORMAT"
     # 超限 → 413
     tiny = KnowledgeService(
-        env.kbs, env.documents, env.spaces, FakeAuditRepository(), env.storage, env.tasks, 0
+        env.kbs, env.documents, env.spaces, FakeAuditRepository(), env.storage,
+        env.tasks, env.chunks, 0,
     )
     with pytest.raises(AppError) as too_big:
         tiny.upload_document(env.editor, env.space_id, kb.id, "a.txt", b"x")

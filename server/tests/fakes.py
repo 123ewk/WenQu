@@ -9,6 +9,7 @@ from app.core.security import hash_password
 from app.domain.enums import TaskStatus
 from app.domain.models import (
     AuditLog,
+    Chunk,
     Document,
     KnowledgeBase,
     Membership,
@@ -299,3 +300,19 @@ class FakeChunkRepository:
         drafts: list[tuple[int, str, list[float] | None, dict]],
     ) -> None:
         self.chunks[document.id] = list(drafts)
+
+    def list_for_document(self, document_id, limit: int, offset: int):
+        """查询语义与 DB 实现一致:按 seq 升序分页,返回 (items, total)。"""
+        rows = self.chunks.get(document_id, [])
+        items = [
+            Chunk(
+                document_id=document_id,
+                space_id=uuid.uuid4(),
+                seq=seq,
+                content=content,
+                meta=meta,
+            )
+            for seq, content, _emb, meta in rows
+        ]
+        items.sort(key=lambda c: c.seq)
+        return items[offset : offset + limit], len(rows)

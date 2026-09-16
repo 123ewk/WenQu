@@ -19,6 +19,7 @@ from app.application.repository.knowledge import (
 )
 from app.application.repository.tasks import TaskRepositoryImpl
 from app.application.service.ingestion import IngestionService
+from app.application.service.maintenance import MaintenanceService
 from app.core.config import get_settings
 from app.core.db import get_session_factory
 from app.core.model_catalog import ModelCatalog
@@ -30,6 +31,7 @@ logger = logging.getLogger("app.worker")
 
 _IDLE_SECONDS = 2.0
 _RECOVER_INTERVAL_SECONDS = 30.0
+_MAINTENANCE_INTERVAL_SECONDS = 3600.0  # 清理任务每小时一轮
 
 
 class Worker:
@@ -49,7 +51,19 @@ class Worker:
             settings.minio_bucket,
             settings.minio_secure,
         )
+        self._audit_retention_days = settings.audit_retention_days
         self._last_recover = 0.0
+        self._last_maintenance = 0.0
+
+    def run_maintenance(self) -> tuple[int, int]:
+        """审计保留期清扫 + 过期 refresh 清除(失败只记日志,不打断主循环)。"""
+        with get_session_factory()() as db:
+            service = MaintenanceService(db, self._audit_retention_days)
+            try:
+                return service.run_all()
+            except Exception:  # noqa: BLE001 — 清理失败不影响任务处理
+                logger.exception("maintenance run failed")
+                return (0, 0)
 
     def run_once(self, worker_id: str) -> str | None:
         """回收陈旧 claim(限频)→ 认领处理一条;队列空返回 None。"""
@@ -65,6 +79,12 @@ class Worker:
                 embedder=self._embedder,
             )
             now = time.monotonic()
+            if now - self._last_maintenance > _MAINTENANCE_INTERVAL_SECONDS:
+                self._last_maintenance = now
+                # 让出当前会话,避免与任务事务互相影响
+                db.commit()
+                self.run_maintenance()
+                db.commit()
             if now - self._last_recover > _RECOVER_INTERVAL_SECONDS:
                 recovered = service.recover_stale(db)
                 if recovered:

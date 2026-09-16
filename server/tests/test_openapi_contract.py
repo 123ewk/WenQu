@@ -33,6 +33,7 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}",
     "/api/v1/chunks/preview",
+    "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks",
     "/api/v1/spaces/{space_id}/retrieval/search",
     "/api/v1/spaces/{space_id}/ask",
     "/api/v1/spaces/{space_id}/conversations",

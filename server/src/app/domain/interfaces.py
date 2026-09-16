@@ -159,3 +159,11 @@ class EmbeddingGateway(Protocol):
     def embed(
         self, texts: list[str], model_id: str | None = None
     ) -> list[list[float]]: ...
+
+
+class ChunkQueryRepository(Protocol):
+    """分块读取(前端分块查看页):按文档分页列块,含溯源元数据。"""
+
+    def list_for_document(
+        self, document_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Chunk], int]: ...
