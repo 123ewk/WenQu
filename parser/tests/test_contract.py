@@ -49,14 +49,51 @@ def test_parse_plain_text_returns_blocks(grpc_addr: str) -> None:
     assert all(b.type == "paragraph" for b in resp.blocks)
 
 
-def test_unsupported_format_is_unimplemented(grpc_addr: str) -> None:
+def test_unsupported_format_is_invalid_argument(grpc_addr: str) -> None:
     stub = _stub(grpc_addr)
     with pytest.raises(grpc.RpcError) as exc_info:
         stub.Parse(
-            parser_pb2.ParseRequest(document_id="doc-2", format="pdf", content=b"%PDF-1.4"),
+            parser_pb2.ParseRequest(document_id="doc-2", format="exe", content=b"MZ"),
             metadata=((_TOKEN_METADATA_KEY, _TEST_TOKEN),),
         )
-    assert exc_info.value.code() == grpc.StatusCode.UNIMPLEMENTED
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+
+def test_parse_docx_end_to_end(grpc_addr: str) -> None:
+    """协议接缝用真实 docx 字节走完整 gRPC 链路(fake 拒绝区)。"""
+    import io
+
+    from docx import Document
+
+    buffer = io.BytesIO()
+    doc = Document()
+    doc.add_heading("合同模板", level=1)
+    doc.add_paragraph("甲方与乙方约定如下条款。")
+    doc.save(buffer)
+
+    stub = _stub(grpc_addr)
+    resp = stub.Parse(
+        parser_pb2.ParseRequest(
+            document_id="doc-3", format="docx", content=buffer.getvalue()
+        ),
+        metadata=((_TOKEN_METADATA_KEY, _TEST_TOKEN),),
+    )
+    assert resp.document_id == "doc-3"
+    assert resp.blocks[0].type == "title" and resp.blocks[0].level == 1
+    assert resp.blocks[0].text == "合同模板"
+    assert any(b.type == "paragraph" and "甲方与乙方" in b.text for b in resp.blocks)
+
+
+def test_dirty_document_is_data_loss(grpc_addr: str) -> None:
+    stub = _stub(grpc_addr)
+    with pytest.raises(grpc.RpcError) as exc_info:
+        stub.Parse(
+            parser_pb2.ParseRequest(
+                document_id="doc-4", format="pdf", content=b"not-a-real-pdf"
+            ),
+            metadata=((_TOKEN_METADATA_KEY, _TEST_TOKEN),),
+        )
+    assert exc_info.value.code() == grpc.StatusCode.DATA_LOSS
 
 
 def test_missing_token_is_unauthenticated(grpc_addr: str) -> None:
