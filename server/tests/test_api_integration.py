@@ -509,3 +509,123 @@ def test_task_queue_claim_retry_dead_and_recover(client) -> None:
         assert recovered.status == TaskStatus.PENDING
         assert recovered.retry_count == 1
         assert recovered.claimed_by is None
+
+
+def test_hybrid_retrieval_real_pg(client) -> None:
+    """混合检索真库验证:向量路与全文路独立命中,RRF 融合,租户隔离,权限 404/403。"""
+    import uuid as uuid_mod
+
+    import jieba
+    from sqlalchemy import func
+
+    from app.api.deps import get_embedding_gateway
+    from app.application.repository.retrieval import RetrievalRepositoryImpl
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document, KnowledgeBase
+
+    # 假 embedder:1024 维空间里,相关文本落在 e0 附近、无关文本落在 e1 附近
+    def _vec(primary: bool) -> list[float]:
+        v = [0.0] * 1024
+        v[0 if primary else 1] = 1.0
+        return v
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            return [
+                _vec("检索" in t or "算法" in t or "rrf" in t.lower()) for t in texts
+            ]
+
+    import app.main as main_module
+
+    created = main_module.create_app()
+    created.dependency_overrides[get_embedding_gateway] = StubEmbedder
+    from fastapi.testclient import TestClient
+
+    owner = _register(client, "retrievalowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "检索空间"}, headers=auth).json()["id"]
+
+    # 造两个知识库:一个含目标内容(嵌入向量贴近查询),一个含干扰内容
+    with get_session_factory()() as db:
+        kb_ok = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="目标库")
+        kb_other = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="干扰库")
+        db.add(kb_ok)
+        db.add(kb_other)
+        db.flush()
+        doc_ok = Document(
+            kb_id=kb_ok.id, space_id=kb_ok.space_id, filename="算法说明.md", format="md",
+            source=f"{space_id}/{kb_ok.id}/d1", status=DocumentStatus.COMPLETED,
+        )
+        doc_other = Document(
+            kb_id=kb_other.id, space_id=kb_other.space_id, filename="无关.md", format="md",
+            source=f"{space_id}/{kb_other.id}/d2", status=DocumentStatus.COMPLETED,
+        )
+        db.add(doc_ok)
+        db.add(doc_other)
+        db.flush()
+        db.add(
+            Chunk(
+                document_id=doc_ok.id, space_id=doc_ok.space_id, seq=0,
+                content="混合检索算法通过 RRF 融合向量与全文两路排名。",
+                embedding=_vec(True),
+                tsv=func.to_tsvector(
+                    "simple",
+                    " ".join(
+                        jieba.cut_for_search("混合检索算法通过 RRF 融合向量与全文两路排名。")
+                    ),
+                ),
+            )
+        )
+        db.add(
+            Chunk(
+                document_id=doc_other.id, space_id=doc_other.space_id, seq=0,
+                content="完全无关的报销制度说明。",
+                embedding=_vec(False),
+                tsv=func.to_tsvector(
+                    "simple", " ".join(jieba.cut_for_search("完全无关的报销制度说明。"))
+                ),
+            )
+        )
+        db.commit()
+
+    # 仓储层直测:两路各自都能命中目标块
+    with get_session_factory()() as db:
+        repo = RetrievalRepositoryImpl(db)
+        vector_hits = repo.vector_search(uuid_mod.UUID(space_id), _vec(True), None, 5)
+        assert vector_hits and "混合检索算法" in vector_hits[0][0].content
+        fulltext_hits = repo.fulltext_search(
+            uuid_mod.UUID(space_id), " ".join(jieba.cut_for_search("检索算法")), None, 5
+        )
+        assert fulltext_hits and "混合检索算法" in fulltext_hits[0][0].content
+        # 租户谓词:换一个空间查同一内容 → 空
+        assert repo.vector_search(uuid_mod.uuid4(), _vec(True), None, 5) == []
+        assert repo.fulltext_search(uuid_mod.uuid4(), "检索", None, 5) == []
+        # kb_ids 收窄
+        narrowed = repo.vector_search(
+            uuid_mod.UUID(space_id), _vec(True), [kb_other.id], 5
+        )
+        assert all(doc.kb_id == kb_other.id for _c, doc, _s in narrowed)
+
+    # API 层:走完整路由(依赖覆盖假 embedder)
+    other = _register(client, "retrievalother")
+    other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "混合检索算法", "top_k": 3},
+        headers=other_auth,
+    )
+    assert resp.status_code == 404  # 非成员 → 防枚举 404
+
+    with TestClient(created, raise_server_exceptions=False) as overridden:
+        resp = overridden.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "混合检索算法", "top_k": 3},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        hits = resp.json()
+        assert hits and "混合检索算法" in hits[0]["content"]
+        assert hits[0]["score"] > 0
+        assert hits[0]["vector_rank"] is not None or hits[0]["fulltext_rank"] is not None
+        assert hits[0]["meta"].get("kind") in (None, "text")

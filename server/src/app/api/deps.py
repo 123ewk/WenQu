@@ -14,24 +14,30 @@ from app.application.repository.knowledge import (
     DocumentRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.tasks import TaskRepositoryImpl
 from app.application.repository.tokens import RefreshTokenRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.auth import AuthService
 from app.application.service.knowledge import KnowledgeService
+from app.application.service.retrieval import RetrievalService
 from app.application.service.spaces import SpaceService
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.errors import AppError, ErrorCode
+from app.core.model_catalog import ModelCatalog
+from app.core.model_client import EmbeddingClient
 from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
     AuditRepository,
     ChunkRepository,
     DocumentRepository,
+    EmbeddingGateway,
     KnowledgeBaseRepository,
     RefreshTokenRepository,
+    RetrievalRepository,
     SpaceRepository,
     TaskRepository,
     UserRepository,
@@ -140,6 +146,26 @@ def get_knowledge_service(
     return KnowledgeService(
         kbs, documents, spaces, audit, storage, tasks, get_settings().upload_max_mb
     )
+
+
+def get_retrieval_repository(db: Session = Depends(get_db)) -> RetrievalRepository:
+    return RetrievalRepositoryImpl(db)
+
+
+def get_embedding_gateway() -> EmbeddingGateway:
+    """向量化网关:检索与流水线共用模型层;测试用 dependency_overrides 换假实现。"""
+    settings = get_settings()
+    return EmbeddingClient(ModelCatalog.load(), settings)
+
+
+def get_retrieval_service(
+    chunks: RetrievalRepository = Depends(get_retrieval_repository),
+    kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
+    documents: DocumentRepository = Depends(get_document_repository),
+    spaces: SpaceRepository = Depends(get_space_repository),
+    embedder: EmbeddingGateway = Depends(get_embedding_gateway),
+) -> RetrievalService:
+    return RetrievalService(chunks, kbs, documents, spaces, embedder)
 
 
 def get_client_ip(request: Request) -> str:

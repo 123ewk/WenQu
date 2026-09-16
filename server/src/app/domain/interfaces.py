@@ -11,6 +11,7 @@ from typing import Protocol
 
 from app.domain.models import (
     AuditLog,
+    Chunk,
     Document,
     KnowledgeBase,
     Membership,
@@ -94,6 +95,26 @@ class TaskRepository(Protocol):
         """失败闭环:重试(退避)或落死信;返回是否已死信。"""
     def recover_stale(self) -> int:
         """陈旧 claim 回收:超 timeout_s 仍 running 的任务重新入队;返回回收数。"""
+
+
+class RetrievalRepository(Protocol):
+    """混合检索候选召回(两路独立,Q可合并);租户谓词在实现层强制。"""
+
+    def vector_search(
+        self,
+        space_id: uuid.UUID,
+        embedding: list[float],
+        kb_ids: list[uuid.UUID] | None,
+        limit: int,
+    ) -> list[tuple[Chunk, Document, float]]: ...
+
+    def fulltext_search(
+        self,
+        space_id: uuid.UUID,
+        jieba_tokens: str,
+        kb_ids: list[uuid.UUID] | None,
+        limit: int,
+    ) -> list[tuple[Chunk, Document, float]]: ...
 
 
 class ParserGateway(Protocol):
