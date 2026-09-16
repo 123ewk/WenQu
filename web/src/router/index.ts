@@ -31,28 +31,28 @@ const router = createRouter({
       children: [
         { path: '', redirect: '/chat' },
         {
-          path: 'chat',
+          path: 'chat/:conversationId?',
           name: 'chat',
-          component: () => import('@/views/placeholder/PlaceholderView.vue'),
-          meta: { title: '对话', desc: '与空间知识库问答,支持引用溯源', feature: '对话' },
+          component: () => import('@/views/chat/ChatView.vue'),
+          meta: { title: '对话', desc: '与当前空间知识库问答,回答自带引用溯源' },
         },
         {
           path: 'kb',
           name: 'kb-list',
-          component: () => import('@/views/placeholder/PlaceholderView.vue'),
-          meta: { title: '知识库', desc: '空间内文档知识库管理', feature: '知识库' },
+          component: () => import('@/views/kb/KbListView.vue'),
+          meta: { title: '知识库', desc: '空间内文档知识库的创建与文档入库' },
         },
         {
           path: 'kb/:kbId',
           name: 'kb-detail',
-          component: () => import('@/views/placeholder/PlaceholderView.vue'),
-          meta: { title: '知识库详情', feature: '知识库详情' },
+          component: () => import('@/views/kb/KbDetailView.vue'),
+          meta: { title: '知识库详情', desc: '文档入库状态、检索测试与知识库设置' },
         },
         {
-          path: 'kb/:kbId/chunks',
+          path: 'kb/:kbId/chunks/:docId',
           name: 'kb-chunks',
-          component: () => import('@/views/placeholder/PlaceholderView.vue'),
-          meta: { title: '分块预览', feature: '分块预览' },
+          component: () => import('@/views/kb/ChunkPreviewView.vue'),
+          meta: { title: '分块预览', desc: '查看文档分块内容与溯源元数据' },
         },
         {
           path: 'space',

@@ -75,6 +75,27 @@ async function rotateTokens(): Promise<void> {
   }
 }
 
+/**
+ * 供 axios 之外的通道复用同一套一次性 refresh_token 轮换逻辑(SSE 流式问答走 fetch)。
+ * 并发调用共享同一个刷新 Promise。
+ */
+export function refreshAccessToken(): Promise<void> {
+  refreshing ??= rotateTokens().finally(() => {
+    refreshing = null
+  })
+  return refreshing
+}
+
+/** SSE 等自定义 fetch 请求所需的基地址与鉴权头 */
+export function apiBaseUrl(): string {
+  return baseURL
+}
+
+export function authHeader(): Record<string, string> {
+  const token = session.getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 http.interceptors.response.use(
   (res) => res,
   async (error: AxiosError) => {
@@ -94,10 +115,7 @@ http.interceptors.response.use(
     if (refreshable) {
       config._retry = true
       try {
-        refreshing ??= rotateTokens().finally(() => {
-          refreshing = null
-        })
-        await refreshing
+        await refreshAccessToken()
         return http(config) // 用新令牌重放原请求(最多重试一次)
       } catch (refreshError) {
         if (isHardExpired(refreshError)) {

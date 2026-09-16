@@ -29,7 +29,7 @@ const memberMap = computed(() => {
   return map
 })
 
-/** 动作码 → 中文标签;未知码原样展示 */
+/** 动作码 → 中文标签;与后端 AuditAction 枚举保持同步,未知码原样展示 */
 const ACTION_LABELS: Record<string, string> = {
   'auth.register': '注册',
   'auth.login_success': '登录',
@@ -42,6 +42,11 @@ const ACTION_LABELS: Record<string, string> = {
   'space.member_added': '添加成员',
   'space.member_removed': '移除成员',
   'space.member_role_changed': '成员角色变更',
+  'kb.created': '知识库创建',
+  'kb.updated': '知识库变更',
+  'kb.deleted': '知识库删除',
+  'document.uploaded': '文档上传',
+  'document.deleted': '文档删除',
 }
 
 function actionLabel(action: string): string {

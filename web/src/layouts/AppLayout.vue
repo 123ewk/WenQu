@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import * as session from '@/api/session'
 import AppSidebar from '@/components/AppSidebar.vue'
+import UploadProgress from '@/components/UploadProgress.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -25,6 +26,9 @@ onMounted(() => {
       <header class="app-topbar">
         <h1>{{ route.meta.title }}</h1>
         <span v-if="route.meta.desc" class="topbar-desc">{{ route.meta.desc }}</span>
+        <div class="topbar-right">
+          <UploadProgress />
+        </div>
       </header>
       <main class="app-content">
         <router-view />
@@ -32,3 +36,12 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+</style>
