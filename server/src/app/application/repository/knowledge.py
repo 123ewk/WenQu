@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.domain.models import Document, KnowledgeBase
+from app.domain.models import Chunk, Document, KnowledgeBase
 
 
 class KnowledgeBaseRepositoryImpl:
@@ -82,6 +82,66 @@ class DocumentRepositoryImpl:
                 select(Document)
                 .where(Document.kb_id == kb_id)
                 .order_by(Document.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        return items, int(total or 0)
+
+
+class ChunkRepositoryImpl:
+    """分块仓储:仅流水线使用,幂等重建(先删后插)。"""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+
+    def replace_for_document(
+        self,
+        document: Document,
+        drafts: list[tuple[int, str, list[float] | None, dict]],
+    ) -> None:
+        import jieba
+        from sqlalchemy import delete
+        from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: F401
+
+        from app.domain.models import Chunk
+
+        self._db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+        for seq, content, embedding, meta in drafts:
+            tokens = " ".join(jieba.cut_for_search(content))
+            self._db.add(
+                Chunk(
+                    document_id=document.id,
+                    space_id=document.space_id,
+                    seq=seq,
+                    content=content,
+                    embedding=embedding,
+                    tsv=func.to_tsvector("simple", tokens),
+                    meta=meta,
+                )
+            )
+        self._db.flush()
+
+
+class ChunkQueryRepositoryImpl:
+    """分块读取:不返回 embedding 列(体积大且前端无用),只给溯源所需字段。"""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+
+    def list_for_document(
+        self, document_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Chunk], int]:
+        from app.domain.models import Chunk
+
+        total = self._db.scalar(
+            select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)
+        )
+        items = list(
+            self._db.scalars(
+                select(Chunk)
+                .where(Chunk.document_id == document_id)
+                .order_by(Chunk.seq)
                 .limit(limit)
                 .offset(offset)
             )

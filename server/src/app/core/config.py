@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     parser_grpc_addr: str = Field("localhost:50051", validation_alias="PARSER_GRPC_ADDR")
     parser_grpc_token: str = Field("", validation_alias="PARSER_GRPC_TOKEN")
 
+    # ---- 模型(ADR-4:后台任务并发预算信号量,供应商限速的保守起配) ----
+    model_bg_concurrency: int = Field(2, validation_alias="APP_MODEL_BG_CONCURRENCY")
+
+    # ---- 检索 ----
+    retrieval_min_score: float = Field(0.3, validation_alias="APP_RETRIEVAL_MIN_SCORE")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
 

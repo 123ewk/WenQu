@@ -16,12 +16,12 @@ from concurrent import futures
 
 import grpc
 
+from parser_service.formats import UnsupportedFormatError, parse_document
 from parser_service.pb import parser_pb2, parser_pb2_grpc
 
 logger = logging.getLogger("parser_service")
 
 _TOKEN_METADATA_KEY = "x-parser-token"
-_PLAIN_TEXT_FORMATS = frozenset({"txt", "md", "markdown"})
 
 
 class _TokenInterceptor(grpc.ServerInterceptor):
@@ -44,23 +44,24 @@ class _TokenInterceptor(grpc.ServerInterceptor):
 
 
 class ParserService(parser_pb2_grpc.ParserServiceServicer):
-    """M0:纯文本直通解析(验证契约与链路);PDF/Office/表格解析器 M2 接入。"""
+    """按格式分发解析(实现见 formats.py);脏文档异常归一为 DATA_LOSS,不泄漏内部信息。"""
 
     def Parse(
         self, request: parser_pb2.ParseRequest, context: grpc.ServicerContext
     ) -> parser_pb2.ParseResponse:
-        if request.format not in _PLAIN_TEXT_FORMATS:
+        try:
+            blocks, meta = parse_document(request.format, request.content)
+        except UnsupportedFormatError as exc:
             context.abort(
-                grpc.StatusCode.UNIMPLEMENTED,
-                f"format={request.format!r} 的解析器随 M2 交付",
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"unsupported format: {exc} (pdf/docx/xlsx/pptx/md/txt)",
             )
-        text = request.content.decode("utf-8", errors="replace")
-        blocks = [
-            parser_pb2.Block(type="paragraph", text=segment.strip())
-            for segment in text.split("\n\n")
-            if segment.strip()
-        ]
-        return parser_pb2.ParseResponse(document_id=request.document_id, blocks=blocks)
+        except Exception:  # noqa: BLE001 — 解析器任何崩溃都不应带出堆栈给调用方
+            logger.exception(
+                "parse failed document_id=%s format=%s", request.document_id, request.format
+            )
+            context.abort(grpc.StatusCode.DATA_LOSS, "document parse failed")
+        return parser_pb2.ParseResponse(document_id=request.document_id, blocks=blocks, meta=meta)
 
 
 def serve(listen_addr: str, token: str) -> None:

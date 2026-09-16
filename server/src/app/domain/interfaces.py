@@ -7,15 +7,20 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from typing import Protocol
 
 from app.domain.models import (
     AuditLog,
+    Chunk,
+    Conversation,
     Document,
     KnowledgeBase,
     Membership,
+    Message,
     RefreshToken,
     Space,
+    Task,
     User,
 )
 
@@ -72,3 +77,93 @@ class DocumentRepository(Protocol):
     def list_for_kb(
         self, kb_id: uuid.UUID, limit: int, offset: int
     ) -> tuple[list[Document], int]: ...
+
+
+class ChunkRepository(Protocol):
+    def replace_for_document(
+        self,
+        document: Document,
+        drafts: list[tuple[int, str, list[float] | None, dict]],
+    ) -> None:
+        """幂等重建:先删后插。drafts = [(seq, content, embedding, meta)]。"""
+
+
+class TaskRepository(Protocol):
+    def enqueue(self, task: Task) -> Task: ...
+    def get(self, task_id: uuid.UUID) -> Task | None: ...
+    def claim(self, worker_id: str) -> Task | None:
+        """SKIP LOCKED 认领一条到期待处理任务(置 running 并记认领人)。"""
+    def mark_succeeded(self, task: Task) -> None: ...
+    def mark_failed(self, task: Task, error: str) -> bool:
+        """失败闭环:重试(退避)或落死信;返回是否已死信。"""
+    def recover_stale(self) -> int:
+        """陈旧 claim 回收:超 timeout_s 仍 running 的任务重新入队;返回回收数。"""
+
+
+class RetrievalRepository(Protocol):
+    """混合检索候选召回(两路独立,Q可合并);租户谓词在实现层强制。"""
+
+    def vector_search(
+        self,
+        space_id: uuid.UUID,
+        embedding: list[float],
+        kb_ids: list[uuid.UUID] | None,
+        limit: int,
+        min_similarity: float = 0.0,
+    ) -> list[tuple[Chunk, Document, float]]: ...
+
+    def fulltext_search(
+        self,
+        space_id: uuid.UUID,
+        jieba_tokens: str,
+        kb_ids: list[uuid.UUID] | None,
+        limit: int,
+    ) -> list[tuple[Chunk, Document, float]]: ...
+
+
+class ConversationRepository(Protocol):
+    def create(self, conversation: Conversation) -> Conversation: ...
+    def get(self, conversation_id: uuid.UUID) -> Conversation | None: ...
+    def save(self, conversation: Conversation) -> Conversation: ...
+    def delete(self, conversation: Conversation) -> None: ...
+    def list_for_user(
+        self, space_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Conversation]: ...
+
+
+class MessageRepository(Protocol):
+    def add(self, message: Message) -> Message: ...
+    def list_for_conversation(self, conversation_id: uuid.UUID) -> list[Message]: ...
+    def next_seq(self, conversation_id: uuid.UUID) -> int: ...
+
+
+class ChatGateway(Protocol):
+    """对话网关(真实实现走模型层 SSE;测试用假实现)。"""
+
+    def chat_stream(
+        self, messages: list[dict[str, str]], model_id: str | None = None
+    ) -> Iterator[str]: ...
+
+
+class ParserGateway(Protocol):
+    """解析服务网关(真实实现走 gRPC,测试用假实现)。"""
+
+    def parse(
+        self, document_id: str, fmt: str, content: bytes
+    ) -> tuple[list[object], dict[str, str]]: ...
+
+
+class EmbeddingGateway(Protocol):
+    """向量化网关(真实实现走模型层,测试用假实现)。model_id 缺省用全局默认。"""
+
+    def embed(
+        self, texts: list[str], model_id: str | None = None
+    ) -> list[list[float]]: ...
+
+
+class ChunkQueryRepository(Protocol):
+    """分块读取(前端分块查看页):按文档分页列块,含溯源元数据。"""
+
+    def list_for_document(
+        self, document_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Chunk], int]: ...

@@ -11,16 +11,19 @@ from __future__ import annotations
 import uuid
 from pathlib import PurePosixPath
 
+from app.application.service.ingestion import enqueue_document_ingest
 from app.core.errors import AppError, ErrorCode
 from app.core.storage import ObjectStorage
 from app.domain.enums import AuditAction, DocumentStatus, Role
 from app.domain.interfaces import (
     AuditRepository,
+    ChunkQueryRepository,
     DocumentRepository,
     KnowledgeBaseRepository,
     SpaceRepository,
+    TaskRepository,
 )
-from app.domain.models import AuditLog, Document, KnowledgeBase, User
+from app.domain.models import AuditLog, Chunk, Document, KnowledgeBase, User
 
 SUPPORTED_FORMATS: dict[str, str] = {
     ".pdf": "pdf",
@@ -41,6 +44,8 @@ class KnowledgeService:
         spaces: SpaceRepository,
         audit: AuditRepository,
         storage: ObjectStorage,
+        tasks: TaskRepository,
+        chunks: ChunkQueryRepository,
         upload_max_mb: int = 50,
     ) -> None:
         self._kbs = kbs
@@ -48,6 +53,8 @@ class KnowledgeService:
         self._spaces = spaces
         self._audit = audit
         self._storage = storage
+        self._tasks = tasks
+        self._chunks = chunks
         self._upload_max_bytes = upload_max_mb * 1024 * 1024
 
     # ---------------------------- 知识库 CRUD ----------------------------
@@ -139,6 +146,7 @@ class KnowledgeService:
             )
         )
         self._storage.put(document.source, content, content_type)
+        enqueue_document_ingest(self._tasks, document.id)
         self._log(
             user.id, space_id, AuditAction.DOCUMENT_UPLOADED, safe_name, ip,
             kb_id=str(kb_id), document_id=str(document.id),
@@ -181,6 +189,23 @@ class KnowledgeService:
         )
         self._storage.delete(document.source)
         self._documents.delete(document)  # chunks 由 FK CASCADE 清理
+
+    def list_chunks(
+        self,
+        user: User,
+        space_id: uuid.UUID,
+        kb_id: uuid.UUID,
+        document_id: uuid.UUID,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Chunk], int]:
+        """分块查看页数据源:门槛与查看文档一致(任意成员)。"""
+        self._require_role(space_id, user.id, Role.VIEWER)
+        self._get_kb_in_space(space_id, kb_id)
+        document = self._documents.get(document_id)
+        if document is None or document.kb_id != kb_id:
+            raise AppError(ErrorCode.DOCUMENT_NOT_FOUND, "文档不存在", http_status=404)
+        return self._chunks.list_for_document(document_id, limit, offset)
 
     # ---------------------------- 内部 ----------------------------
 

@@ -5,7 +5,11 @@ description = "WenQu 文档知识库 RAG 平台 — 独立文档解析服务(gRP
 requires-python = ">=3.11"
 dependencies = [
     "grpcio>=1.66",
+    "openpyxl>=3.1.5",
     "protobuf>=5.27",
+    "pymupdf>=1.28.2",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
 ]
 
 [dependency-groups]

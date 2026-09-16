@@ -59,6 +59,18 @@ class DocumentPage(BaseModel):
     total: int
 
 
+class ChunkOut(BaseModel):
+    id: str
+    seq: int
+    content: str
+    meta: dict
+
+
+class ChunkPage(BaseModel):
+    items: list[ChunkOut]
+    total: int
+
+
 def _kb_out(kb: KnowledgeBase) -> KnowledgeBaseOut:
     return KnowledgeBaseOut(
         id=str(kb.id),
@@ -68,6 +80,15 @@ def _kb_out(kb: KnowledgeBase) -> KnowledgeBaseOut:
         embedding_model=kb.embedding_model,
         embedding_dim=kb.embedding_dim,
         created_at=kb.created_at,
+    )
+
+
+def _chunk_out(chunk: object) -> ChunkOut:
+    return ChunkOut(
+        id=str(chunk.id),  # type: ignore[attr-defined]
+        seq=chunk.seq,  # type: ignore[attr-defined]
+        content=chunk.content,  # type: ignore[attr-defined]
+        meta=chunk.meta or {},  # type: ignore[attr-defined]
     )
 
 
@@ -196,3 +217,17 @@ def delete_document(
     ip: str = Depends(get_client_ip),
 ) -> None:
     service.delete_document(user, space_id, kb_id, document_id, ip)
+
+
+@router.get("/{kb_id}/documents/{document_id}/chunks", response_model=ChunkPage)
+def list_chunks(
+    space_id: uuid.UUID,
+    kb_id: uuid.UUID,
+    document_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user),
+    service: KnowledgeService = Depends(get_knowledge_service),
+) -> ChunkPage:
+    items, total = service.list_chunks(user, space_id, kb_id, document_id, limit, offset)
+    return ChunkPage(items=[_chunk_out(c) for c in items], total=total)

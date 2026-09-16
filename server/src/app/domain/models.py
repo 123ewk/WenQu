@@ -29,6 +29,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.domain.enums import DocumentStatus, TaskStatus
+
 
 class Base(DeclarativeBase):
     pass
@@ -177,7 +179,9 @@ class Document(Base):
     format: Mapped[str] = mapped_column(String(16))  # pdf | docx | xlsx | pptx | md | txt
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     source: Mapped[str] = mapped_column(String(512))
-    status: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default=DocumentStatus.PENDING, index=True
+    )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -235,7 +239,7 @@ class Task(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     type: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
-    status: Mapped[str] = mapped_column(String(16), index=True)
+    status: Mapped[str] = mapped_column(String(16), default=TaskStatus.PENDING, index=True)
     max_retry: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     timeout_s: Mapped[int] = mapped_column(Integer, default=600, server_default="600")
     claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -252,4 +256,50 @@ class Task(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Conversation(Base):
+    """会话:空间内的多轮问答容器(知识库范围可限定;M2 单 KB,多 KB 走 kb_ids)。"""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_space_created", "space_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), default="新会话", server_default="新会话")
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Message(Base):
+    """消息:assistant 消息存引用 JSONB(chunk_id + 摘录 + 分数),支撑引用溯源回链。"""
+
+    __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_conversation_seq", "conversation_id", "seq"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    seq: Mapped[int] = mapped_column(Integer)
+    citations: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )

@@ -356,3 +356,514 @@ def test_kb_and_document_api_flow(client) -> None:
     resp = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth)
     actions = {item["action"] for item in resp.json()["items"]}
     assert {"kb.created", "document.uploaded", "document.deleted", "kb.deleted"} <= actions
+
+
+def test_chunk_preview_api(client) -> None:
+    """分块预览:登录可用,标题生成面包屑,超长文本按预算切分。"""
+    user = _register(client, "chunkuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+
+    assert client.post(
+        "/api/v1/chunks/preview", json={"text": "内容"}
+    ).status_code == 401
+
+    text = "# 接入指南\n\n" + "。".join(f"配置步骤{i}说明文字内容" for i in range(80)) + "。"
+    resp = client.post(
+        "/api/v1/chunks/preview", json={"text": text, "format": "md"}, headers=auth
+    )
+    assert resp.status_code == 200, resp.text
+    chunks = resp.json()
+    assert len(chunks) > 1
+    assert all(c["tokens"] <= 512 for c in chunks)
+    assert all(c["breadcrumb"] == ["接入指南"] for c in chunks)
+    assert all(c["kind"] == "text" for c in chunks)
+
+
+def test_task_queue_claim_retry_dead_and_recover(client) -> None:
+    """DB 队列(ADR-2)真实语义:SKIP LOCKED 认领、退避重试、死信、陈旧 claim 回收。"""
+    import uuid as uuid_mod
+
+    from app.application.repository.tasks import TaskRepositoryImpl
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus, TaskStatus, TaskType
+    from app.domain.models import Document, KnowledgeBase, Task
+
+    user = _register(client, "queueuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "队列空间"}, headers=auth).json()["id"]
+
+    session_factory = get_session_factory()
+    with session_factory() as db:
+        kb = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="队列库")
+        db.add(kb)
+        db.flush()
+        doc = Document(
+            kb_id=kb.id,
+            space_id=kb.space_id,
+            filename="q.txt",
+            format="txt",
+            source=f"{kb.space_id}/{kb.id}/{uuid_mod.uuid4()}/q.txt",
+            status=DocumentStatus.PENDING,
+        )
+        db.add(doc)
+        db.flush()
+        repo = TaskRepositoryImpl(db)
+        task = repo.enqueue(
+            Task(
+                type=TaskType.INGEST_DOCUMENT,
+                payload={"document_id": str(doc.id)},
+                status=TaskStatus.PENDING,
+                max_retry=2,
+                timeout_s=1,
+            )
+        )
+        db.commit()
+        task_id = task.id
+
+    # 认领:库中可能有其它用例遗留的 pending 任务,循环认领直到拿到本任务
+    # (SKIP LOCKED 语义:已锁行被跳过而非等待,由下面 db2 断言验证)
+    def claim_until(repo, worker: str, wanted: int):
+        for _ in range(50):
+            task_row = repo.claim(worker)
+            if task_row is None:
+                return None
+            if task_row.id == wanted:
+                return task_row
+        raise AssertionError("未能在 50 次内认领到目标任务")
+
+    with session_factory() as db1, session_factory() as db2:
+        repo1, repo2 = TaskRepositoryImpl(db1), TaskRepositoryImpl(db2)
+        first = claim_until(repo1, "worker-1", task_id)
+        assert first is not None and first.id == task_id
+        # 目标任务已被 db1 的行锁占用:db2 认领不会拿到同一行(不阻塞)
+        second = repo2.claim("worker-2")
+        assert second is None or second.id != task_id
+        db1.commit()
+        db2.rollback()
+
+    # 退避重试:第 1 次失败 → pending 且 run_after 推后(退避期内不可被认领)
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        task = repo.get(task_id)
+        assert task is not None
+        assert repo.mark_failed(task, "boom") is False
+        assert task.status == TaskStatus.PENDING and task.retry_count == 1
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        for _ in range(50):  # 退避期内,任何 worker 都认领不到本任务
+            claimed_row = repo.claim("worker-3")
+            assert claimed_row is None or claimed_row.id != task_id
+            if claimed_row is None:
+                break
+        db.rollback()
+
+    # 第 2 次失败 → 死信(达到 max_retry)
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        task = repo.get(task_id)
+        assert task is not None
+        assert repo.mark_failed(task, "boom again") is True
+        assert task.status == TaskStatus.DEAD and task.retry_count == 2
+        assert "boom again" in (task.last_error or "")
+        db.commit()
+
+    # 陈旧 claim 回收:running 且 claimed_at 早于 timeout_s → 重新入队
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        stale = repo.enqueue(
+            Task(
+                type=TaskType.INGEST_DOCUMENT,
+                payload={"document_id": str(doc.id)},
+                status=TaskStatus.PENDING,
+                max_retry=3,
+                timeout_s=1,
+            )
+        )
+        db.commit()
+        stale_id = stale.id
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        claimed = claim_until(repo, "worker-4", stale_id)
+        assert claimed is not None and claimed.id == stale_id
+        # 伪造成"很久以前认领":直接改 claimed_at 到过去
+        from sqlalchemy import text as sql_text
+
+        db.execute(
+            sql_text("UPDATE tasks SET claimed_at = now() - interval '1 hour' WHERE id = :tid"),
+            {"tid": str(stale_id)},
+        )
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        assert repo.recover_stale() == 1
+        db.commit()
+
+    with session_factory() as db:
+        repo = TaskRepositoryImpl(db)
+        recovered = repo.get(stale_id)
+        assert recovered is not None
+        assert recovered.status == TaskStatus.PENDING
+        assert recovered.retry_count == 1
+        assert recovered.claimed_by is None
+
+
+def test_hybrid_retrieval_real_pg(client) -> None:
+    """混合检索真库验证:向量路与全文路独立命中,RRF 融合,租户隔离,权限 404/403。"""
+    import uuid as uuid_mod
+
+    import jieba
+    from sqlalchemy import func
+
+    from app.api.deps import get_embedding_gateway
+    from app.application.repository.retrieval import RetrievalRepositoryImpl
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document, KnowledgeBase
+
+    # 假 embedder:1024 维空间里,相关文本落在 e0 附近、无关文本落在 e1 附近
+    def _vec(primary: bool) -> list[float]:
+        v = [0.0] * 1024
+        v[0 if primary else 1] = 1.0
+        return v
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            return [
+                _vec("检索" in t or "算法" in t or "rrf" in t.lower()) for t in texts
+            ]
+
+    import app.main as main_module
+
+    created = main_module.create_app()
+    created.dependency_overrides[get_embedding_gateway] = StubEmbedder
+    from fastapi.testclient import TestClient
+
+    owner = _register(client, "retrievalowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "检索空间"}, headers=auth).json()["id"]
+
+    # 造两个知识库:一个含目标内容(嵌入向量贴近查询),一个含干扰内容
+    with get_session_factory()() as db:
+        kb_ok = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="目标库")
+        kb_other = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="干扰库")
+        db.add(kb_ok)
+        db.add(kb_other)
+        db.flush()
+        doc_ok = Document(
+            kb_id=kb_ok.id, space_id=kb_ok.space_id, filename="算法说明.md", format="md",
+            source=f"{space_id}/{kb_ok.id}/d1", status=DocumentStatus.COMPLETED,
+        )
+        doc_other = Document(
+            kb_id=kb_other.id, space_id=kb_other.space_id, filename="无关.md", format="md",
+            source=f"{space_id}/{kb_other.id}/d2", status=DocumentStatus.COMPLETED,
+        )
+        db.add(doc_ok)
+        db.add(doc_other)
+        db.flush()
+        db.add(
+            Chunk(
+                document_id=doc_ok.id, space_id=doc_ok.space_id, seq=0,
+                content="混合检索算法通过 RRF 融合向量与全文两路排名。",
+                embedding=_vec(True),
+                tsv=func.to_tsvector(
+                    "simple",
+                    " ".join(
+                        jieba.cut_for_search("混合检索算法通过 RRF 融合向量与全文两路排名。")
+                    ),
+                ),
+            )
+        )
+        db.add(
+            Chunk(
+                document_id=doc_other.id, space_id=doc_other.space_id, seq=0,
+                content="完全无关的报销制度说明。",
+                embedding=_vec(False),
+                tsv=func.to_tsvector(
+                    "simple", " ".join(jieba.cut_for_search("完全无关的报销制度说明。"))
+                ),
+            )
+        )
+        db.commit()
+
+    # 仓储层直测:两路各自都能命中目标块
+    with get_session_factory()() as db:
+        repo = RetrievalRepositoryImpl(db)
+        vector_hits = repo.vector_search(uuid_mod.UUID(space_id), _vec(True), None, 5)
+        assert vector_hits and "混合检索算法" in vector_hits[0][0].content
+        fulltext_hits = repo.fulltext_search(
+            uuid_mod.UUID(space_id), " ".join(jieba.cut_for_search("检索算法")), None, 5
+        )
+        assert fulltext_hits and "混合检索算法" in fulltext_hits[0][0].content
+        # 租户谓词:换一个空间查同一内容 → 空
+        assert repo.vector_search(uuid_mod.uuid4(), _vec(True), None, 5) == []
+        assert repo.fulltext_search(uuid_mod.uuid4(), "检索", None, 5) == []
+        # kb_ids 收窄
+        narrowed = repo.vector_search(
+            uuid_mod.UUID(space_id), _vec(True), [kb_other.id], 5
+        )
+        assert all(doc.kb_id == kb_other.id for _c, doc, _s in narrowed)
+
+    # API 层:走完整路由(依赖覆盖假 embedder)
+    other = _register(client, "retrievalother")
+    other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "混合检索算法", "top_k": 3},
+        headers=other_auth,
+    )
+    assert resp.status_code == 404  # 非成员 → 防枚举 404
+
+    with TestClient(created, raise_server_exceptions=False) as overridden:
+        resp = overridden.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "混合检索算法", "top_k": 3},
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        hits = resp.json()
+        assert hits and "混合检索算法" in hits[0]["content"]
+        assert hits[0]["score"] > 0
+        assert hits[0]["vector_rank"] is not None or hits[0]["fulltext_rank"] is not None
+        assert hits[0]["meta"].get("kind") in (None, "text")
+
+
+def test_qa_sse_flow_with_citations(client) -> None:
+    """问答闭环:SSE 事件时序、引用落库可回溯、会话隔离、无资料不调模型。"""
+    import uuid as uuid_mod
+
+    import jieba
+    from fastapi.testclient import TestClient
+    from sqlalchemy import func
+
+    import app.main as main_module
+    from app.api.deps import get_chat_gateway, get_embedding_gateway
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document, KnowledgeBase
+
+    def _vec(primary: bool) -> list[float]:
+        v = [0.0] * 1024
+        v[0 if primary else 1] = 1.0
+        return v
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            return [_vec("检索" in t or "算法" in t) for t in texts]
+
+    class StubChat:
+        def __init__(self) -> None:
+            self.prompts: list[list[dict]] = []
+
+        def chat_stream(self, messages, model_id=None):
+            self.prompts.append(messages)
+            yield "根据资料 [1],"
+            yield "混合检索采用 RRF 融合。"
+
+    stub_chat = StubChat()
+    overridden_app = main_module.create_app()
+    overridden_app.dependency_overrides[get_embedding_gateway] = StubEmbedder
+    overridden_app.dependency_overrides[get_chat_gateway] = lambda: stub_chat
+
+    owner = _register(client, "qaowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "问答空间"}, headers=auth).json()["id"]
+
+    with get_session_factory()() as db:
+        kb = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="问答库")
+        db.add(kb)
+        db.flush()
+        doc = Document(
+            kb_id=kb.id, space_id=kb.space_id, filename="检索手册.md", format="md",
+            source=f"{space_id}/{kb.id}/d", status=DocumentStatus.COMPLETED,
+        )
+        db.add(doc)
+        db.flush()
+        db.add(
+            Chunk(
+                document_id=doc.id, space_id=doc.space_id, seq=0,
+                content="混合检索算法使用 RRF 融合向量与全文排名。",
+                embedding=_vec(True),
+                tsv=func.to_tsvector(
+                    "simple",
+                    " ".join(jieba.cut_for_search("混合检索算法使用 RRF 融合向量与全文排名。")),
+                ),
+            )
+        )
+        db.commit()
+
+    with TestClient(overridden_app, raise_server_exceptions=False) as qa_client:
+        # 权限:非成员 404(校验前置在流开始前,所以能拿到 404 而非 200 流)
+        other = _register(client, "qaother")
+        other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "混合检索算法是什么"},
+            headers=other_auth,
+        )
+        assert resp.status_code == 404
+
+        # 空提问 400(同样是前置校验)
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask", json={"question": ""}, headers=auth
+        )
+        assert resp.status_code == 422  # pydantic min_length
+
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "混合检索算法是什么", "top_k": 3},
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+        events = []
+        for line in resp.text.splitlines():
+            if line.startswith("data: "):
+                import json as json_mod
+
+                events.append(json_mod.loads(line[len("data: ") :]))
+
+        types = [e["type"] for e in events]
+        assert types == ["meta", "citations", "delta", "delta", "done"], types
+        conversation_id = events[0]["conversation_id"]
+
+        # 引用可回溯:携带 chunk_id/文件名/摘录
+        citation = events[1]["citations"][0]
+        assert citation["filename"] == "检索手册.md"
+        assert citation["chunk_id"] and citation["excerpt"]
+        assert events[-1]["cited_indexes"] == [1]
+
+        # 提示词确实带上编号资料
+        system_prompt = stub_chat.prompts[0][0]["content"]
+        assert "[1] 来源:检索手册.md" in system_prompt
+
+        # 落库消息带引用(刷新页面后仍可回链)
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        messages = resp.json()
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[1]["citations"][0]["chunk_id"] == citation["chunk_id"]
+        assert messages[1]["content"].startswith("根据资料 [1]")
+
+        # 会话列表;他人拿不到我的会话(404 防枚举)
+        listed = qa_client.get(f"/api/v1/spaces/{space_id}/conversations", headers=auth)
+        assert [c["id"] for c in listed.json()] == [conversation_id]
+        client.post(
+            f"/api/v1/spaces/{space_id}/members",
+            json={"username": "qaother", "role": 20},
+            headers=auth,
+        )
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
+            headers=other_auth,
+        )
+        assert resp.status_code == 404
+
+        # 无检索命中 → 不调模型,给固定提示
+        before = len(stub_chat.prompts)
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "完全不相关的报销问题", "top_k": 3},
+            headers=auth,
+        )
+        import json as json_mod
+
+        cold = [
+            json_mod.loads(line[len("data: ") :])
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert "没有检索到" in cold[2]["text"]
+        assert len(stub_chat.prompts) == before  # 未调模型
+
+
+def test_maintenance_purges_expired_tokens_and_old_audit(client) -> None:
+    """维护任务真库验证:过期 refresh 清除、审计保留期边界(不误删保留期内)。"""
+    import uuid as uuid_mod
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from app.application.service.maintenance import MaintenanceService
+    from app.core.db import get_session_factory
+    from app.domain.enums import AuditAction
+    from app.domain.models import AuditLog, RefreshToken
+
+    user = _register(client, "maintuser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "维护空间"}, headers=auth
+    ).json()["id"]
+    user_id = uuid_mod.UUID(
+        client.get("/api/v1/users/me", headers=auth).json()["id"]
+    )
+
+    now = datetime.now(UTC)
+    with get_session_factory()() as db:
+        # 一个已过期、一个仍有效
+        db.add(
+            RefreshToken(
+                user_id=user_id,
+                token_hash="a" * 64,
+                expires_at=now - timedelta(hours=1),
+            )
+        )
+        db.add(
+            RefreshToken(
+                user_id=user_id,
+                token_hash="b" * 64,
+                expires_at=now + timedelta(days=1),
+            )
+        )
+        # 一条过期审计、一条保留期内审计
+        old_log = AuditLog(
+            actor_id=user_id,
+            space_id=uuid_mod.UUID(space_id),
+            action=AuditAction.SPACE_UPDATED,
+            target="old",
+        )
+        db.add(old_log)
+        db.flush()
+        db.execute(
+            sql_text(
+                "UPDATE audit_logs SET created_at = now() - interval '200 days' "
+                "WHERE id = :i"
+            ),
+            {"i": str(old_log.id)},
+        )
+        db.add(
+            AuditLog(
+                actor_id=user_id,
+                space_id=uuid_mod.UUID(space_id),
+                action=AuditAction.SPACE_UPDATED,
+                target="recent",
+            )
+        )
+        db.commit()
+
+    # 保留期 180 天(默认):200 天前那条应被删,今天的保留
+    with get_session_factory()() as db:
+        service = MaintenanceService(db, audit_retention_days=180)
+        removed_tokens, removed_logs = service.run_all()
+        assert removed_tokens == 1  # 只删过期那条
+        assert removed_logs == 1  # 只删 200 天前那条
+
+    with get_session_factory()() as db:
+        lookup = sql_text(
+            "SELECT token_hash FROM refresh_tokens WHERE token_hash IN (:a, :b)"
+        )
+        remaining_tokens = db.scalars(lookup, {"a": "a" * 64, "b": "b" * 64}).all()
+        assert remaining_tokens == ["b" * 64]
+        remaining_audit = db.execute(
+            sql_text("SELECT target FROM audit_logs WHERE space_id = :s"),
+            {"s": space_id},
+        ).all()
+        targets = {row[0] for row in remaining_audit}
+        assert "recent" in targets and "old" not in targets
