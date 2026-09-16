@@ -28,7 +28,7 @@ from app.api.deps import get_embedding_gateway, get_storage
 from app.core.db import get_session_factory
 from app.core.storage import MemoryStorage
 from app.domain.enums import DocumentStatus
-from app.domain.models import Chunk, Document, KnowledgeBase
+from app.domain.models import Chunk, Document
 from app.main import create_app
 
 
