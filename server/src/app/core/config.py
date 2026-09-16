@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     parser_grpc_addr: str = Field("localhost:50051", validation_alias="PARSER_GRPC_ADDR")
     parser_grpc_token: str = Field("", validation_alias="PARSER_GRPC_TOKEN")
 
+    # ---- 上传 ----
+    upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
+
     # ---- 认证与加密 ----
     jwt_secret: str = Field("", validation_alias="APP_JWT_SECRET")
     master_key: str = Field("", validation_alias="APP_MASTER_KEY")

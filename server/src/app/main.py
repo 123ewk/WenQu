@@ -12,6 +12,7 @@ from fastapi.responses import Response
 
 from app.api.routes import auth as auth_routes
 from app.api.routes import health as health_routes
+from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import users as users_routes
 from app.core.config import get_settings
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_routes.router)
     app.include_router(users_routes.router)
     app.include_router(spaces_routes.router)
+    app.include_router(knowledge_routes.router)
     return app
 
 
