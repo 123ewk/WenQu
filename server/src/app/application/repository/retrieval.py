@@ -30,8 +30,13 @@ class RetrievalRepositoryImpl:
         embedding: list[float],
         kb_ids: list[uuid.UUID] | None,
         limit: int,
+        min_similarity: float = 0.0,
     ) -> list[tuple[Chunk, Document, float]]:
-        """余弦距离升序;同时返回相似度(1 - distance)便于展示。"""
+        """余弦距离升序;同时返回相似度(1 - distance)便于展示与阈值过滤。
+
+        min_similarity:低于该余弦相似度的候选视为不相关直接丢弃。没有它时"知识库
+        无相关内容"的问题也会拿到 top-K 噪声块,诱发无依据作答(引用可信度受损)。
+        """
         distance = Chunk.embedding.cosine_distance(embedding).label("distance")
         stmt = (
             select(Chunk, Document, distance)
@@ -43,6 +48,8 @@ class RetrievalRepositoryImpl:
             .order_by(distance)
             .limit(limit)
         )
+        if min_similarity > 0:
+            stmt = stmt.where(distance <= 1.0 - min_similarity)
         if kb_ids:
             stmt = stmt.where(Document.kb_id.in_(kb_ids))
         rows = self._db.execute(stmt).all()

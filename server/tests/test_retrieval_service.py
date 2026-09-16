@@ -9,6 +9,7 @@ import pytest
 
 from app.application.service.retrieval import (
     DEFAULT_FULLTEXT_WEIGHT,
+    DEFAULT_MIN_VECTOR_SCORE,
     DEFAULT_RRF_K,
     DEFAULT_VECTOR_WEIGHT,
     RetrievalService,
@@ -61,9 +62,10 @@ class FakeRetrievalRepo:
         self.calls: list[tuple] = []
         self.received_tokens: str | None = None
 
-    def vector_search(self, space_id, embedding, kb_ids, limit):
+    def vector_search(self, space_id, embedding, kb_ids, limit, min_similarity=0.0):
         self.calls.append(("vector", space_id, limit))
-        return self.vector_hits
+        self.received_min_similarity = min_similarity
+        return [hit for hit in self.vector_hits if hit[2] >= min_similarity]
 
     def fulltext_search(self, space_id, jieba_tokens, kb_ids, limit):
         self.calls.append(("fulltext", space_id, limit))
@@ -169,3 +171,24 @@ def test_cross_space_search_rejected_in_m2() -> None:
     with pytest.raises(AppError) as exc_info:
         env.service.search(env.user.id, env.space.id, "查询", space_ids=[uuid.uuid4()])
     assert exc_info.value.code_str == "VALIDATION_ERROR"
+
+
+def test_vector_threshold_filters_irrelevant_hits() -> None:
+    """低于阈值的向量候选被丢弃:避免"知识库无相关内容"时仍拿噪声块作答。"""
+    env = build_env(vector_specs=["高相关", "低相关"])
+    # build_env 给每个命中依次 1.0, 0.9 的相似度;把阈值抬到 0.95 后只剩第一个
+    env.service._min_vector_score = 0.95  # noqa: SLF001 — 单测直接调阈值
+    results = env.service.search(env.user.id, env.space.id, "查询")
+    assert [r.content for r in results] == ["高相关"]
+
+
+def test_default_threshold_is_conservative_and_documented() -> None:
+    env = build_env()
+    assert DEFAULT_MIN_VECTOR_SCORE == 0.3
+    env.service.search(env.user.id, env.space.id, "查询")
+    assert env.repo.received_min_similarity == DEFAULT_MIN_VECTOR_SCORE
+
+
+def test_no_hits_returns_empty_for_no_result_branch() -> None:
+    env = build_env(vector_specs=[], fulltext_specs=[])
+    assert env.service.search(env.user.id, env.space.id, "完全不相关") == []

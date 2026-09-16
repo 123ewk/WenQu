@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # ---- 模型(ADR-4:后台任务并发预算信号量,供应商限速的保守起配) ----
     model_bg_concurrency: int = Field(2, validation_alias="APP_MODEL_BG_CONCURRENCY")
 
+    # ---- 检索 ----
+    retrieval_min_score: float = Field(0.3, validation_alias="APP_RETRIEVAL_MIN_SCORE")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
 

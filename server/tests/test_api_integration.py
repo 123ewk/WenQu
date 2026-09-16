@@ -629,3 +629,156 @@ def test_hybrid_retrieval_real_pg(client) -> None:
         assert hits[0]["score"] > 0
         assert hits[0]["vector_rank"] is not None or hits[0]["fulltext_rank"] is not None
         assert hits[0]["meta"].get("kind") in (None, "text")
+
+
+def test_qa_sse_flow_with_citations(client) -> None:
+    """问答闭环:SSE 事件时序、引用落库可回溯、会话隔离、无资料不调模型。"""
+    import uuid as uuid_mod
+
+    import jieba
+    from fastapi.testclient import TestClient
+    from sqlalchemy import func
+
+    import app.main as main_module
+    from app.api.deps import get_chat_gateway, get_embedding_gateway
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document, KnowledgeBase
+
+    def _vec(primary: bool) -> list[float]:
+        v = [0.0] * 1024
+        v[0 if primary else 1] = 1.0
+        return v
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            return [_vec("检索" in t or "算法" in t) for t in texts]
+
+    class StubChat:
+        def __init__(self) -> None:
+            self.prompts: list[list[dict]] = []
+
+        def chat_stream(self, messages, model_id=None):
+            self.prompts.append(messages)
+            yield "根据资料 [1],"
+            yield "混合检索采用 RRF 融合。"
+
+    stub_chat = StubChat()
+    overridden_app = main_module.create_app()
+    overridden_app.dependency_overrides[get_embedding_gateway] = StubEmbedder
+    overridden_app.dependency_overrides[get_chat_gateway] = lambda: stub_chat
+
+    owner = _register(client, "qaowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "问答空间"}, headers=auth).json()["id"]
+
+    with get_session_factory()() as db:
+        kb = KnowledgeBase(space_id=uuid_mod.UUID(space_id), name="问答库")
+        db.add(kb)
+        db.flush()
+        doc = Document(
+            kb_id=kb.id, space_id=kb.space_id, filename="检索手册.md", format="md",
+            source=f"{space_id}/{kb.id}/d", status=DocumentStatus.COMPLETED,
+        )
+        db.add(doc)
+        db.flush()
+        db.add(
+            Chunk(
+                document_id=doc.id, space_id=doc.space_id, seq=0,
+                content="混合检索算法使用 RRF 融合向量与全文排名。",
+                embedding=_vec(True),
+                tsv=func.to_tsvector(
+                    "simple",
+                    " ".join(jieba.cut_for_search("混合检索算法使用 RRF 融合向量与全文排名。")),
+                ),
+            )
+        )
+        db.commit()
+
+    with TestClient(overridden_app, raise_server_exceptions=False) as qa_client:
+        # 权限:非成员 404(校验前置在流开始前,所以能拿到 404 而非 200 流)
+        other = _register(client, "qaother")
+        other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "混合检索算法是什么"},
+            headers=other_auth,
+        )
+        assert resp.status_code == 404
+
+        # 空提问 400(同样是前置校验)
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask", json={"question": ""}, headers=auth
+        )
+        assert resp.status_code == 422  # pydantic min_length
+
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "混合检索算法是什么", "top_k": 3},
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+        events = []
+        for line in resp.text.splitlines():
+            if line.startswith("data: "):
+                import json as json_mod
+
+                events.append(json_mod.loads(line[len("data: ") :]))
+
+        types = [e["type"] for e in events]
+        assert types == ["meta", "citations", "delta", "delta", "done"], types
+        conversation_id = events[0]["conversation_id"]
+
+        # 引用可回溯:携带 chunk_id/文件名/摘录
+        citation = events[1]["citations"][0]
+        assert citation["filename"] == "检索手册.md"
+        assert citation["chunk_id"] and citation["excerpt"]
+        assert events[-1]["cited_indexes"] == [1]
+
+        # 提示词确实带上编号资料
+        system_prompt = stub_chat.prompts[0][0]["content"]
+        assert "[1] 来源:检索手册.md" in system_prompt
+
+        # 落库消息带引用(刷新页面后仍可回链)
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        messages = resp.json()
+        assert [m["role"] for m in messages] == ["user", "assistant"]
+        assert messages[1]["citations"][0]["chunk_id"] == citation["chunk_id"]
+        assert messages[1]["content"].startswith("根据资料 [1]")
+
+        # 会话列表;他人拿不到我的会话(404 防枚举)
+        listed = qa_client.get(f"/api/v1/spaces/{space_id}/conversations", headers=auth)
+        assert [c["id"] for c in listed.json()] == [conversation_id]
+        client.post(
+            f"/api/v1/spaces/{space_id}/members",
+            json={"username": "qaother", "role": 20},
+            headers=auth,
+        )
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
+            headers=other_auth,
+        )
+        assert resp.status_code == 404
+
+        # 无检索命中 → 不调模型,给固定提示
+        before = len(stub_chat.prompts)
+        resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "完全不相关的报销问题", "top_k": 3},
+            headers=auth,
+        )
+        import json as json_mod
+
+        cold = [
+            json_mod.loads(line[len("data: ") :])
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert "没有检索到" in cold[2]["text"]
+        assert len(stub_chat.prompts) == before  # 未调模型

@@ -257,3 +257,49 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class Conversation(Base):
+    """会话:空间内的多轮问答容器(知识库范围可限定;M2 单 KB,多 KB 走 kb_ids)。"""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_space_created", "space_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(128), default="新会话", server_default="新会话")
+    meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Message(Base):
+    """消息:assistant 消息存引用 JSONB(chunk_id + 摘录 + 分数),支撑引用溯源回链。"""
+
+    __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_conversation_seq", "conversation_id", "seq"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    seq: Mapped[int] = mapped_column(Integer)
+    citations: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

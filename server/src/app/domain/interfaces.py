@@ -7,14 +7,17 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from typing import Protocol
 
 from app.domain.models import (
     AuditLog,
     Chunk,
+    Conversation,
     Document,
     KnowledgeBase,
     Membership,
+    Message,
     RefreshToken,
     Space,
     Task,
@@ -106,6 +109,7 @@ class RetrievalRepository(Protocol):
         embedding: list[float],
         kb_ids: list[uuid.UUID] | None,
         limit: int,
+        min_similarity: float = 0.0,
     ) -> list[tuple[Chunk, Document, float]]: ...
 
     def fulltext_search(
@@ -115,6 +119,30 @@ class RetrievalRepository(Protocol):
         kb_ids: list[uuid.UUID] | None,
         limit: int,
     ) -> list[tuple[Chunk, Document, float]]: ...
+
+
+class ConversationRepository(Protocol):
+    def create(self, conversation: Conversation) -> Conversation: ...
+    def get(self, conversation_id: uuid.UUID) -> Conversation | None: ...
+    def save(self, conversation: Conversation) -> Conversation: ...
+    def delete(self, conversation: Conversation) -> None: ...
+    def list_for_user(
+        self, space_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Conversation]: ...
+
+
+class MessageRepository(Protocol):
+    def add(self, message: Message) -> Message: ...
+    def list_for_conversation(self, conversation_id: uuid.UUID) -> list[Message]: ...
+    def next_seq(self, conversation_id: uuid.UUID) -> int: ...
+
+
+class ChatGateway(Protocol):
+    """对话网关(真实实现走模型层 SSE;测试用假实现)。"""
+
+    def chat_stream(
+        self, messages: list[dict[str, str]], model_id: str | None = None
+    ) -> Iterator[str]: ...
 
 
 class ParserGateway(Protocol):

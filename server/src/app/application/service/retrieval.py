@@ -25,6 +25,9 @@ from app.domain.interfaces import (
 DEFAULT_RRF_K = 60
 DEFAULT_VECTOR_WEIGHT = 0.7
 DEFAULT_FULLTEXT_WEIGHT = 0.3
+# 向量路最小余弦相似度:低于此值视为不相关。各厂商 embedding 分布不同,
+# 可通过 APP_RETRIEVAL_MIN_SCORE 调整;调低=召回更多但噪声上升。
+DEFAULT_MIN_VECTOR_SCORE = 0.3
 
 
 @dataclass
@@ -80,6 +83,7 @@ class RetrievalService:
         vector_weight: float = DEFAULT_VECTOR_WEIGHT,
         fulltext_weight: float = DEFAULT_FULLTEXT_WEIGHT,
         candidate_multiplier: int = 3,
+        min_vector_score: float = DEFAULT_MIN_VECTOR_SCORE,
     ) -> None:
         self._chunks = chunks
         self._kbs = kbs
@@ -90,6 +94,7 @@ class RetrievalService:
         self._vector_weight = vector_weight
         self._fulltext_weight = fulltext_weight
         self._candidate_multiplier = candidate_multiplier
+        self._min_vector_score = min_vector_score
 
     def search(
         self,
@@ -109,7 +114,9 @@ class RetrievalService:
 
         candidates = max(top_k * self._candidate_multiplier, top_k)
         embedding = self._embedder.embed([query], model_id)[0]
-        vector_hits = self._chunks.vector_search(scoped, embedding, kb_ids, candidates)
+        vector_hits = self._chunks.vector_search(
+            scoped, embedding, kb_ids, candidates, min_similarity=self._min_vector_score
+        )
         tokens = " ".join(jieba.cut_for_search(query))
         fulltext_hits = self._chunks.fulltext_search(scoped, tokens, kb_ids, candidates)
 
