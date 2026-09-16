@@ -2,7 +2,7 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help version compose-dev-up compose-dev-down db-migrate \
-        server-install server-run server-test server-lint \
+        server-install server-run server-test server-lint server-openapi \
         parser-install parser-gen parser-run parser-test parser-lint \
         web-install web-dev web-build
 
@@ -32,6 +32,9 @@ server-test: ## 运行主服务测试
 
 server-lint: ## 主服务静态检查(ruff + mypy)
 	cd server && uv run ruff check . && uv run mypy src
+
+server-openapi: ## 导出 OpenAPI 契约到 docs/api/openapi.json(前端类型生成源;改路由后必跑)
+	cd server && uv run python -c "import json,pathlib;from app.main import create_app;schema=create_app().openapi();p=pathlib.Path('../docs/api/openapi.json');p.parent.mkdir(parents=True,exist_ok=True);p.write_text(json.dumps(schema,ensure_ascii=False,indent=2),encoding='utf-8')"
 
 parser-install: ## 安装解析服务依赖
 	cd parser && uv sync --locked

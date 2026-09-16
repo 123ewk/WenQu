@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # ---- 认证与加密 ----
     jwt_secret: str = Field("", validation_alias="APP_JWT_SECRET")
     master_key: str = Field("", validation_alias="APP_MASTER_KEY")
+    access_token_minutes: int = Field(24 * 60, validation_alias="APP_ACCESS_TOKEN_MINUTES")
+    refresh_token_days: int = Field(7, validation_alias="APP_REFRESH_TOKEN_DAYS")
+    audit_retention_days: int = Field(180, validation_alias="APP_AUDIT_RETENTION_DAYS")
 
     # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
     otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")

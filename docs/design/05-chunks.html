@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 05/09 分块预览(文档「预览分块」点入的右侧全高抽屉 960px)
+  布局栅格:背景为知识库详情(压暗示意)+ 右侧全高抽屉 960px:头部(文件名+分块策略+重新解析)
+            + 左右分栏 40/60(左:分块列表 行高 64px;右:选中分块详情=完整内容+元数据)
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px
+  状态/交互:列表点击选中高亮 → 右侧详情切换(含表格分块的样式化渲染) · 类型标签(标题/段落/表格)
+            · 长列表为虚拟滚动示意(JS 生成 120 条,行高 64px)
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分块预览 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .tbl { @apply w-full text-left text-sm; }
+  .tbl th { @apply h-10 px-4 text-xs font-normal text-ink-4 bg-surface border-b border-line whitespace-nowrap; }
+  .tbl td { @apply h-11 px-4 border-b border-line text-ink-2 align-middle; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══ 背景:知识库详情(压暗,仅示意来源) ═══ -->
+<div class="absolute inset-0 overflow-hidden select-none" aria-hidden="true">
+  <aside class="w-60 h-full bg-white border-r border-line"></aside>
+  <div class="absolute left-60 right-0 top-0 h-14 border-b border-line bg-white"></div>
+  <div class="absolute left-60 right-0 top-14 px-8 py-6">
+    <div class="text-lg font-semibold text-ink">合同模板库</div>
+    <div class="card overflow-hidden mt-5">
+      <table class="tbl">
+        <thead><tr><th class="w-[34%]">文件名</th><th>大小</th><th>状态</th><th>上传时间</th><th class="text-right">操作</th></tr></thead>
+        <tbody>
+          <tr><td>产品需求说明书 v2.3.pdf</td><td>8.2 MB</td><td>已完成</td><td>今天 10:21</td><td class="text-right"><span class="text-primary underline underline-offset-2">预览分块</span></td></tr>
+          <tr><td>数据安全管理规范.docx</td><td>1.1 MB</td><td>已完成</td><td>昨天 16:32</td><td></td></tr>
+          <tr><td>合同审批制度.docx</td><td>890 KB</td><td>已完成</td><td>09-12 14:05</td><td></td></tr>
+          <tr><td>员工手册 2024.pdf</td><td>3.9 MB</td><td>已完成</td><td>09-12 11:20</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="absolute inset-0 bg-ink/25"></div>
+</div>
+
+<!-- ═══ 分块预览抽屉 960px ═══ -->
+<div class="absolute right-0 top-0 h-full w-[960px] bg-white border-l border-line flex flex-col z-40">
+  <!-- 头部 -->
+  <div class="h-14 shrink-0 border-b border-line px-5 flex items-center gap-3">
+    <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+    <span class="text-[15px] font-semibold text-ink truncate">产品需求说明书 v2.3.pdf</span>
+    <span class="w-px h-4 bg-line"></span>
+    <span class="text-xs text-ink-4 shrink-0">分块策略:512 token / 重叠 15%</span>
+    <div class="ml-auto flex items-center gap-1">
+      <button class="btn-secondary !h-8 !px-3 text-[13px]" onclick="toast('已加入重新解析队列')"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重新解析</button>
+      <a href="04-kb-detail.html" class="icon-btn" title="关闭"><i data-lucide="x" class="w-4 h-4"></i></a>
+    </div>
+  </div>
+
+  <div class="flex-1 flex min-h-0">
+    <!-- 左 40%:分块列表(虚拟滚动示意,行高 64px) -->
+    <div class="w-[40%] shrink-0 border-r border-line flex flex-col">
+      <div class="px-4 py-2.5 border-b border-line flex items-center justify-between shrink-0">
+        <span class="text-xs text-ink-4">共 <span class="text-ink-2">86</span> 个分块</span>
+        <div class="flex items-center gap-1.5 text-[11px]">
+          <span class="px-1.5 py-0.5 rounded bg-primary-soft text-primary">标题</span>
+          <span class="px-1.5 py-0.5 rounded bg-surface border border-line text-ink-3">段落</span>
+          <span class="px-1.5 py-0.5 rounded bg-warning/10 text-[#B45309]">表格</span>
+        </div>
+      </div>
+      <div id="chunkList" class="flex-1 overflow-y-auto"></div>
+    </div>
+
+    <!-- 右 60%:选中分块详情 -->
+    <div class="flex-1 min-w-0 flex flex-col">
+      <div class="px-5 py-3 border-b border-line flex items-center justify-between shrink-0">
+        <span class="text-[13px] font-medium text-ink">分块详情</span>
+        <span class="text-xs text-ink-4 mono" id="detailNo">#0001</span>
+      </div>
+      <div id="chunkDetail" class="flex-1 overflow-y-auto px-5 py-4"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end" style="transform:translateX(-360px)"></div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  const typeBadge = t => t === '标题' ? '<span class="px-1.5 py-0.5 rounded bg-primary-soft text-primary text-[11px] leading-none">标题</span>'
+    : t === '表格' ? '<span class="px-1.5 py-0.5 rounded bg-warning/10 text-[#B45309] text-[11px] leading-none">表格</span>'
+    : '<span class="px-1.5 py-0.5 rounded bg-surface border border-line text-ink-3 text-[11px] leading-none">段落</span>';
+
+  /* ── 分块数据(前 6 条为详细示例,其余程序生成;实际实现为虚拟滚动) ── */
+  const detailed = [
+    { type: '标题', tokens: 24, page: 1, path: '封面', chars: 38,
+      html: '<h3 class="text-base font-semibold text-ink">产品需求说明书 v2.3</h3><p class="text-[13px] text-ink-3 mt-2">问渠 产品团队 · 2025-08 · 密级:内部</p>' },
+    { type: '段落', tokens: 486, page: 2, path: '1. 文档概述', chars: 612,
+      html: '<h3 class="text-[15px] font-semibold text-ink">1. 文档概述</h3><p class="text-sm leading-[1.8] text-ink-2 mt-2">本文档描述 WenQu 文档知识库 RAG 平台 v2.3 版本的产品需求,包括核心功能、非功能需求与验收标准。v2.3 的主要变更:新增多空间隔离、引用溯源角标与 Agent 工具调用过程展示。</p><p class="text-sm leading-[1.8] text-ink-2 mt-2">预期读者:产品、研发、测试与运维同学。阅读本文档前建议先阅读《WenQu 架构设计》第 1 章。</p>' },
+    { type: '标题', tokens: 18, page: 3, path: '2. 产品定位', chars: 26,
+      html: '<h3 class="text-[15px] font-semibold text-ink">2. 产品定位与目标用户</h3>' },
+    { type: '表格', tokens: 512, page: 3, path: '2. 产品定位 > 功能矩阵', chars: 598,
+      html: '<h3 class="text-[15px] font-semibold text-ink">核心功能矩阵</h3><div class="border border-line rounded-lg overflow-hidden mt-3"><table class="w-full text-[13px]"><thead><tr class="bg-surface"><th class="text-left px-3.5 py-2 border-b border-line font-medium text-ink w-[24%]">功能</th><th class="text-left px-3.5 py-2 border-b border-line font-medium text-ink">说明</th><th class="text-left px-3.5 py-2 border-b border-line font-medium text-ink w-[16%]">支持版本</th></tr></thead><tbody><tr><td class="px-3.5 py-2 border-b border-line text-ink-2">引用溯源</td><td class="px-3.5 py-2 border-b border-line text-ink-2">回答中的角标可点开,查看来源文档、页码与原文分块</td><td class="px-3.5 py-2 border-b border-line text-ink-2">v2.0+</td></tr><tr><td class="px-3.5 py-2 border-b border-line text-ink-2">多空间隔离</td><td class="px-3.5 py-2 border-b border-line text-ink-2">空间内知识库、成员、API Key 相互隔离</td><td class="px-3.5 py-2 border-b border-line text-ink-2">v2.1+</td></tr><tr><td class="px-3.5 py-2 border-b border-line text-ink-2">Agent 模式</td><td class="px-3.5 py-2 border-b border-line text-ink-2">回答前展示工具调用过程卡片,可展开查看参数与返回</td><td class="px-3.5 py-2 border-b border-line text-ink-2">v2.3+</td></tr></tbody></table></div>' },
+    { type: '段落', tokens: 502, page: 4, path: '2.1 核心功能', chars: 655,
+      html: '<h3 class="text-[15px] font-semibold text-ink">2.1 核心功能</h3><p class="text-sm leading-[1.8] text-ink-2 mt-2">平台以「知识库」为组织单元。用户上传 PDF / Word / Excel / PPT / Markdown 文档后,系统按 排队 → 解析 → 分块 → 向量化 四步完成入库,全程状态可见;检索采用向量与关键词混合召回,可选 Rerank 重排序。</p><ul class="list-disc pl-5 text-sm leading-[1.8] text-ink-2 mt-2 space-y-1"><li>分块默认 512 token,重叠 15%,可在空间级配置;</li><li>对话回答要求强制引用,无引用内容需显式声明;</li><li>所有异步任务失败必须给出人话原因与重试入口。</li></ul>' },
+    { type: '段落', tokens: 468, page: 5, path: '2.2 非功能需求', chars: 594,
+      html: '<h3 class="text-[15px] font-semibold text-ink">2.2 非功能需求</h3><p class="text-sm leading-[1.8] text-ink-2 mt-2">检索接口 P95 延迟 ≤ 800ms(不含生成);流式首字延迟 ≤ 1.5s;单空间文档数上限 10,000,单文件 ≤ 100MB。审计日志保留 180 天,支持导出 CSV。</p>' },
+  ];
+  const fillers = [
+    { t: '段落', p: 6, path: '3. 详细需求' }, { t: '标题', p: 7, path: '3.1 文档接入' },
+    { t: '段落', p: 7, path: '3.1 文档接入' }, { t: '表格', p: 8, path: '3.2 解析流水线' },
+    { t: '段落', p: 9, path: '3.3 检索与排序' }, { t: '段落', p: 10, path: '3.4 对话与引用' },
+  ];
+  const fillerText = '本节内容按章节顺序自动分块,分块时保留标题层级作为元数据,便于检索结果按「所属标题路径」聚合展示。表格类内容按行组切分,保证单块不超过 512 token 且不跨表头。';
+  const chunks = [];
+  detailed.forEach((c, i) => chunks.push({ no: i + 1, ...c }));
+  for (let i = 6; i < 120; i++) {
+    const f = fillers[i % fillers.length];
+    chunks.push({ no: i + 1, type: f.t, tokens: 380 + (i * 37) % 140, page: f.p, path: f.path, chars: 420 + (i * 53) % 260, plain: fillerText });
+  }
+
+  /* ── 渲染左侧列表 ── */
+  let selected = 3; /* 默认选中表格分块,展示样式化表格 */
+  function renderList() {
+    const box = $('chunkList');
+    box.innerHTML = chunks.map(c => `
+      <div class="h-16 px-4 flex flex-col justify-center gap-1.5 cursor-pointer border-b border-line/70 border-l-2 ${c.no === selected ? 'bg-primary-soft border-l-primary' : 'border-l-transparent hover:bg-surface'}" onclick="selectChunk(${c.no})">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] text-ink-4 mono w-9 shrink-0">#${String(c.no).padStart(4, '0')}</span>
+          ${typeBadge(c.type)}
+          <span class="ml-auto text-[11px] text-ink-4 mono shrink-0">${c.tokens} tok</span>
+        </div>
+        <div class="text-xs text-ink-3 leading-snug line-clamp-2 pl-9">${(c.html ? c.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 64) : c.plain.slice(0, 40))}</div>
+      </div>`).join('');
+  }
+  /* ── 渲染右侧详情 ── */
+  function renderDetail() {
+    const c = chunks[selected - 1];
+    $('detailNo').textContent = '#' + String(c.no).padStart(4, '0');
+    $('chunkDetail').innerHTML = `
+      <div class="grid grid-cols-4 gap-3 rounded-lg bg-surface px-4 py-3">
+        <div><div class="text-[11px] text-ink-4">页码</div><div class="text-[13px] text-ink mt-0.5">P${c.page}</div></div>
+        <div class="col-span-2 min-w-0"><div class="text-[11px] text-ink-4">所属标题路径</div><div class="text-[13px] text-ink mt-0.5 truncate">${c.path}</div></div>
+        <div><div class="text-[11px] text-ink-4">字符数 / 类型</div><div class="text-[13px] text-ink mt-0.5">${c.chars} · ${c.type}</div></div>
+      </div>
+      <div class="mt-4">${c.html || `<p class="text-sm leading-[1.8] text-ink-2">${c.plain}</p>`}</div>`;
+  }
+  function selectChunk(no) { selected = no; renderList(); renderDetail(); }
+  renderList(); renderDetail();
+
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

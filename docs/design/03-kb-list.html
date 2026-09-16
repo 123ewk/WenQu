@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 03/09 知识库列表
+  布局栅格:侧边栏 240 + 顶栏 56 + 内容区(标题行 + 卡片网格 4 列,卡片约 280px)
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px
+  状态/交互:正常/加载骨架屏/空状态/错误态(右下角原型切换) · 新建模态框(嵌入模型下拉+重建警示)
+            · 重命名模态框 · 删除二次确认(级联范围红色警示) · 卡片 ⋯ 菜单 · 右上 toast
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-danger { @apply h-9 px-4 rounded-lg bg-danger hover:bg-[#DC2626] text-white text-sm font-medium inline-flex items-center justify-center transition-colors; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .pop-item { @apply w-full flex items-center gap-2 h-8 px-2 rounded-md text-[13px] text-ink-2 hover:bg-surface cursor-pointer; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .skel { @apply rounded-md bg-[#EDEFF2] animate-pulse; }
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 侧边栏 240px ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="building-2" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">产品研发部</span>
+        <span class="block text-[11px] text-ink-4">Admin</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">我的空间</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">产品研发部</span><span class="text-[11px] text-ink-4">Admin</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span><span class="text-[11px] text-ink-4">Viewer</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span><span class="text-[11px] text-ink-4">Owner</span></a>
+      <div class="my-1.5 border-t border-line"></div>
+      <a class="pop-item text-primary"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>新建空间</a>
+    </div>
+  </div>
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item nav-active"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a class="nav-item text-ink-4 cursor-default hover:bg-transparent" title="仅系统管理员可见">
+      <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide flex-1">审计日志</span>
+      <i data-lucide="lock" class="w-3 h-3 shrink-0 text-ink-4 sb-hide"></i>
+    </a>
+  </nav>
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">王砚</span>
+        <span class="block text-[11px] text-ink-4">产品研发部 · Admin</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 右侧区域 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-3">
+    <h1 class="text-base font-semibold text-ink">知识库</h1>
+    <div class="ml-auto flex items-center gap-1">
+      <div class="relative">
+        <button onclick="togglePop('upPop')" class="icon-btn relative" title="上传进度">
+          <i data-lucide="cloud-upload" class="w-[18px] h-[18px]"></i>
+          <span class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-primary text-white text-[10px] grid place-items-center">2</span>
+        </button>
+        <div id="upPop" data-pop class="hidden absolute right-0 top-10 w-80 pop !p-0 overflow-hidden">
+          <div class="px-4 py-3 border-b border-line flex items-center justify-between">
+            <span class="text-[13px] font-medium text-ink">上传进度</span>
+            <span class="text-xs text-ink-4">2 个进行中 · 1 个已完成</span>
+          </div>
+          <div class="px-4 py-3 border-b border-line">
+            <div class="flex justify-between text-xs text-ink-3 mb-1.5"><span>总进度</span><span class="mono">68%</span></div>
+            <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+          </div>
+          <div class="divide-y divide-line/70">
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">产品需求说明书 v2.3.pdf</span><span class="text-ink-4 mono">68%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">8.2 MB · 解析中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-spreadsheet" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">Q3 营销预算.xlsx</span><span class="text-ink-4 mono">32%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:32%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">356 KB · 上传中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">客服话术手册.pdf</span><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span></div>
+                <div class="text-[11px] text-ink-4 mt-1">4.8 MB · 12.4s</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-[1240px] px-8 py-6">
+
+      <!-- 页头 -->
+      <div class="flex items-center justify-between mb-5">
+        <div>
+          <div class="text-lg font-semibold text-ink">知识库</div>
+          <div class="text-xs text-ink-4 mt-0.5">共 8 个 · 当前空间:产品研发部</div>
+        </div>
+        <button onclick="openModal('newKbModal')" class="btn-primary"><i data-lucide="plus" class="w-4 h-4"></i>新建知识库</button>
+      </div>
+
+      <!-- ── 正常态:卡片网格 ── -->
+      <div id="view-normal" class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <!-- 卡片 × 8 -->
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="book-open" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">产品手册库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">面向客户的产品使用说明与常见问题</div>
+          <div class="text-xs text-ink-4 mt-3">文档 24 · 分块 1,842</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">2 小时前更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '产品手册库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '产品手册库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="file-code-2" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">技术文档库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">架构设计、接口文档与部署手册</div>
+          <div class="text-xs text-ink-4 mt-3">文档 58 · 分块 4,930</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">昨天更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '技术文档库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '技术文档库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="file-signature" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">合同模板库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">标准合同模板与审批制度文件</div>
+          <div class="text-xs text-ink-4 mt-3">文档 12 · 分块 864</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bce-embedding · 768</span>
+            <span class="text-xs text-ink-4">3 天前更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '合同模板库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '合同模板库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="scale" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">规章制度库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">人事、财务与行政管理制度</div>
+          <div class="text-xs text-ink-4 mt-3">文档 31 · 分块 2,057</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">5 天前更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '规章制度库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '规章制度库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="notebook-pen" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">会议纪要库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">周会、评审会与专项会议记录</div>
+          <div class="text-xs text-ink-4 mt-3">文档 96 · 分块 3,412</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">上周更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '会议纪要库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '会议纪要库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="telescope" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">竞品分析库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">竞品公开资料与对比研究报告</div>
+          <div class="text-xs text-ink-4 mt-3">文档 8 · 分块 612</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>text-embedding-v3</span>
+            <span class="text-xs text-ink-4">上周更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '竞品分析库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '竞品分析库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="headset" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">客服话术库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">标准应答话术与问题升级流程</div>
+          <div class="text-xs text-ink-4 mt-3">文档 15 · 分块 988</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">09-02 更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '客服话术库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '客服话术库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+        <a href="04-kb-detail.html" class="group relative block p-5 rounded-xl border border-line bg-white hover:border-ink-4/50 transition-colors">
+          <div class="flex items-start gap-3">
+            <div class="w-10 h-10 rounded-lg bg-primary-soft grid place-items-center shrink-0"><i data-lucide="graduation-cap" class="w-5 h-5 text-primary"></i></div>
+          </div>
+          <div class="text-[15px] font-semibold text-ink mt-3 group-hover:text-primary transition-colors">培训资料库</div>
+          <div class="text-[13px] text-ink-3 truncate mt-1">新人入职培训课程与考核材料</div>
+          <div class="text-xs text-ink-4 mt-3">文档 19 · 分块 1,105</div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-line/70">
+            <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1"><i data-lucide="box" class="w-3 h-3"></i>bge-m3 · 1024</span>
+            <span class="text-xs text-ink-4">08-28 更新</span>
+          </div>
+          <button class="icon-btn absolute right-3 top-3" onclick="cardMenu(event, this)"><i data-lucide="more-horizontal" class="w-4 h-4"></i></button>
+          <div class="cardMenu hidden absolute right-3 top-12 w-32 pop">
+            <a class="pop-item" onclick="renameKb(this, '培训资料库')"><i data-lucide="pencil" class="w-3.5 h-3.5 text-ink-4"></i>重命名</a>
+            <a class="pop-item text-danger hover:bg-danger/5" onclick="delKb(this, '培训资料库')"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i>删除</a>
+          </div>
+        </a>
+      </div>
+
+      <!-- ── 加载中:骨架屏 ── -->
+      <div id="view-loading" class="hidden grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div class="p-5 rounded-xl border border-line bg-white">
+          <div class="skel w-10 h-10 rounded-lg"></div>
+          <div class="skel h-4 w-24 mt-4"></div>
+          <div class="skel h-3 w-40 mt-2.5"></div>
+          <div class="skel h-3 w-28 mt-4"></div>
+          <div class="skel h-8 w-full mt-4"></div>
+        </div>
+        <div class="p-5 rounded-xl border border-line bg-white">
+          <div class="skel w-10 h-10 rounded-lg"></div>
+          <div class="skel h-4 w-28 mt-4"></div>
+          <div class="skel h-3 w-36 mt-2.5"></div>
+          <div class="skel h-3 w-24 mt-4"></div>
+          <div class="skel h-8 w-full mt-4"></div>
+        </div>
+        <div class="p-5 rounded-xl border border-line bg-white">
+          <div class="skel w-10 h-10 rounded-lg"></div>
+          <div class="skel h-4 w-20 mt-4"></div>
+          <div class="skel h-3 w-44 mt-2.5"></div>
+          <div class="skel h-3 w-32 mt-4"></div>
+          <div class="skel h-8 w-full mt-4"></div>
+        </div>
+        <div class="p-5 rounded-xl border border-line bg-white">
+          <div class="skel w-10 h-10 rounded-lg"></div>
+          <div class="skel h-4 w-24 mt-4"></div>
+          <div class="skel h-3 w-32 mt-2.5"></div>
+          <div class="skel h-3 w-28 mt-4"></div>
+          <div class="skel h-8 w-full mt-4"></div>
+        </div>
+      </div>
+
+      <!-- ── 空状态 ── -->
+      <div id="view-empty" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <svg width="96" height="72" viewBox="0 0 96 72" fill="none" stroke="#9CA3AF" stroke-width="1.5">
+            <rect x="18" y="14" width="60" height="46" rx="6"/>
+            <path d="M18 26h60"/>
+            <path d="M30 22h12"/>
+            <path d="M48 52v-12m0 0l-6 6m6-6l6 6" stroke="#4F6EF2"/>
+          </svg>
+          <div class="text-[15px] font-semibold text-ink mt-5">创建第一个知识库</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">上传团队文档,让知识随时可问、可溯源</div>
+          <button onclick="openModal('newKbModal')" class="btn-primary mt-5"><i data-lucide="plus" class="w-4 h-4"></i>新建知识库</button>
+        </div>
+      </div>
+
+      <!-- ── 错误状态 ── -->
+      <div id="view-error" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <div class="w-12 h-12 rounded-full bg-danger/10 grid place-items-center"><i data-lucide="triangle-alert" class="w-5 h-5 text-danger"></i></div>
+          <div class="text-[15px] font-semibold text-ink mt-4">加载失败</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">网络连接超时,请稍后重试</div>
+          <button class="btn-secondary mt-5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重试</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ── 新建 / 重命名 知识库 模态框 ── -->
+<div id="newKbModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('newKbModal')"></div>
+  <div class="relative card w-[440px] p-6">
+    <div class="text-base font-semibold text-ink">新建知识库</div>
+    <div class="mt-5 space-y-4">
+      <div>
+        <label class="block text-[13px] text-ink-2 mb-1.5">名称 <span class="text-danger">*</span></label>
+        <input id="newKbName" class="input" placeholder="例如:产品手册库">
+      </div>
+      <div>
+        <label class="block text-[13px] text-ink-2 mb-1.5">描述</label>
+        <textarea class="input !h-auto py-2 resize-none" rows="2" placeholder="简要说明该知识库的用途(选填)"></textarea>
+      </div>
+      <div>
+        <label class="block text-[13px] text-ink-2 mb-1.5">嵌入模型</label>
+        <div class="relative">
+          <select class="input appearance-none pr-8">
+            <option>bge-m3 · 1024 维(推荐)</option>
+            <option>bce-embedding-base_v1 · 768 维</option>
+            <option>text-embedding-v3 · 1024 维</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+        </div>
+      </div>
+      <div class="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2.5 text-xs leading-relaxed text-[#B45309]">
+        <i data-lucide="triangle-alert" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>创建后更换嵌入模型需要重建索引,耗时与文档量成正比,请谨慎选择。
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('newKbModal')">取消</button>
+      <button class="btn-primary" onclick="closeModal('newKbModal');toast('知识库已创建')">创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- 重命名模态框 -->
+<div id="renameKbModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('renameKbModal')"></div>
+  <div class="relative card w-[400px] p-6">
+    <div class="text-base font-semibold text-ink">重命名知识库</div>
+    <div class="mt-5">
+      <label class="block text-[13px] text-ink-2 mb-1.5">名称</label>
+      <input id="renameKbName" class="input">
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('renameKbModal')">取消</button>
+      <button class="btn-primary" onclick="closeModal('renameKbModal');toast('已重命名')">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除二次确认模态框 -->
+<div id="delKbModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('delKbModal')"></div>
+  <div class="relative card w-[440px] p-6">
+    <div class="flex items-start gap-3">
+      <div class="w-9 h-9 rounded-full bg-danger/10 grid place-items-center shrink-0"><i data-lucide="trash-2" class="w-4 h-4 text-danger"></i></div>
+      <div>
+        <div class="text-base font-semibold text-ink">删除知识库「<span id="delKbName">会议纪要库</span>」?</div>
+        <p class="text-[13px] text-ink-3 mt-1.5 leading-relaxed">该操作将级联删除以下内容,删除后<span class="text-danger font-medium">不可恢复</span>:</p>
+        <div class="mt-2.5 rounded-lg bg-surface border border-line/70 px-3 py-2 space-y-1">
+          <div class="flex items-center gap-2 text-[13px] text-ink-2"><span class="w-1 h-1 rounded-full bg-danger"></span>96 个文档(含原始文件)</div>
+          <div class="flex items-center gap-2 text-[13px] text-ink-2"><span class="w-1 h-1 rounded-full bg-danger"></span>3,412 个文本分块</div>
+          <div class="flex items-center gap-2 text-[13px] text-ink-2"><span class="w-1 h-1 rounded-full bg-danger"></span>全部向量索引数据</div>
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('delKbModal')">取消</button>
+      <button class="btn-danger" onclick="closeModal('delKbModal');toast('知识库已删除')">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型状态</span>
+  <button class="st-btn st-on" onclick="setState('normal', this)">正常</button>
+  <button class="st-btn" onclick="setState('loading', this)">加载中</button>
+  <button class="st-btn" onclick="setState('empty', this)">空</button>
+  <button class="st-btn" onclick="setState('error', this)">错误</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  function togglePop(id) {
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  function openModal(id) { $(id).classList.remove('hidden'); }
+  function closeModal(id) { $(id).classList.add('hidden'); }
+  function cardMenu(e, btn) {
+    e.preventDefault(); e.stopPropagation();
+    const menu = btn.nextElementSibling;
+    document.querySelectorAll('.cardMenu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    menu.classList.toggle('hidden');
+  }
+  function renameKb(el, name) {
+    $('renameKbName').value = name;
+    el.closest('.cardMenu').classList.add('hidden');
+    openModal('renameKbModal');
+  }
+  function delKb(el, name) {
+    $('delKbName').textContent = name;
+    el.closest('.cardMenu').classList.add('hidden');
+    openModal('delKbModal');
+  }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  function setState(s, btn) {
+    ['normal', 'loading', 'empty', 'error'].forEach(k => $('view-' + k).classList.toggle('hidden', k !== s));
+    document.querySelectorAll('.st-btn').forEach(b => b.classList.remove('st-on'));
+    btn.classList.add('st-on');
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

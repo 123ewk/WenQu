@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 01/09 登录 / 注册(无侧边栏,独立布局)
+  布局栅格:视口居中单卡片 420px,背景纯浅灰 + 极淡主色几何色块
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px
+  状态/交互:登录↔注册 Tab 切换 · 字段下方红字行内报错(点登录/注册触发校验) · 密码可见性切换
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .field-err { @apply text-xs text-danger mt-1.5 hidden items-center gap-1; }
+</style>
+</head>
+<body class="h-full bg-surface text-ink-2 overflow-hidden">
+  <!-- 背景:极淡主色几何色块,不放大图 -->
+  <div class="fixed inset-0 pointer-events-none overflow-hidden">
+    <div class="absolute -top-28 -left-24 w-[440px] h-[440px] bg-primary/[0.05] rounded-[64px] rotate-12"></div>
+    <div class="absolute -bottom-32 -right-20 w-[520px] h-[520px] bg-primary/[0.04] rounded-[72px] -rotate-6"></div>
+    <div class="absolute top-24 right-40 w-64 h-64 rounded-full border border-primary/10"></div>
+    <div class="absolute bottom-16 left-48 w-4 h-4 rounded bg-primary/10"></div>
+  </div>
+
+  <div class="relative h-full grid place-items-center">
+    <div>
+      <div class="w-[420px] bg-white border border-line rounded-xl px-8 pt-8 pb-7">
+        <!-- Logo + 标语 -->
+        <div class="flex flex-col items-center">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-primary grid place-items-center text-white text-[15px] font-semibold">问</div>
+            <span class="text-lg font-semibold text-ink">问渠</span>
+            <span class="text-xs text-ink-4 -ml-1 mt-1">WenQu</span>
+          </div>
+          <p class="text-[13px] text-ink-3 mt-2.5">让团队知识随时可问</p>
+        </div>
+
+        <!-- Tab 登录 / 注册 -->
+        <div class="grid grid-cols-2 mt-6 border-b border-line">
+          <button id="tab-login" onclick="switchTab('login')" class="h-10 text-sm font-medium text-primary border-b-2 border-primary -mb-px">登录</button>
+          <button id="tab-reg" onclick="switchTab('reg')" class="h-10 text-sm text-ink-3 hover:text-ink border-b-2 border-transparent -mb-px transition-colors">注册</button>
+        </div>
+
+        <!-- 登录表单 -->
+        <form id="form-login" class="mt-5 space-y-4" onsubmit="return false;">
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">账号</label>
+            <input id="li-account" class="input" placeholder="邮箱或用户名">
+            <p id="li-account-err" class="field-err"><svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>请输入账号</p>
+          </div>
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">密码</label>
+            <div class="relative">
+              <input id="li-pwd" type="password" class="input pr-10" placeholder="请输入密码">
+              <button type="button" onclick="togglePwd('li-pwd', this)" class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 grid place-items-center text-ink-4 hover:text-ink-2">
+                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <p id="li-pwd-err" class="field-err"><svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>密码长度至少 8 位</p>
+          </div>
+          <button onclick="doLogin()" class="btn-primary w-full mt-1">登 录</button>
+        </form>
+
+        <!-- 注册表单 -->
+        <form id="form-reg" class="mt-5 space-y-4 hidden" onsubmit="return false;">
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">昵称</label>
+            <input id="rg-name" class="input" placeholder="团队内显示的名称">
+            <p id="rg-name-err" class="field-err">请输入昵称</p>
+          </div>
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">账号</label>
+            <input id="rg-account" class="input" placeholder="邮箱或用户名">
+            <p id="rg-account-err" class="field-err">请输入账号</p>
+          </div>
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">密码</label>
+            <input id="rg-pwd" type="password" class="input" placeholder="至少 8 位">
+            <p id="rg-pwd-err" class="field-err">密码长度至少 8 位</p>
+          </div>
+          <div>
+            <label class="block text-[13px] text-ink-2 mb-1.5">确认密码</label>
+            <input id="rg-pwd2" type="password" class="input" placeholder="再次输入密码">
+            <p id="rg-pwd2-err" class="field-err">两次输入的密码不一致</p>
+          </div>
+          <button onclick="doReg()" class="btn-primary w-full mt-1">注 册</button>
+        </form>
+      </div>
+
+      <!-- 卡片外底部说明 -->
+      <p class="text-center text-xs text-ink-4 mt-5">登录即代表同意<a class="hover:text-primary cursor-pointer">《服务条款》</a>与<a class="hover:text-primary cursor-pointer">《隐私政策》</a></p>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    function switchTab(t) {
+      const login = t === 'login';
+      $('form-login').classList.toggle('hidden', !login);
+      $('form-reg').classList.toggle('hidden', login);
+      $('tab-login').className = login
+        ? 'h-10 text-sm font-medium text-primary border-b-2 border-primary -mb-px'
+        : 'h-10 text-sm text-ink-3 hover:text-ink border-b-2 border-transparent -mb-px transition-colors';
+      $('tab-reg').className = login
+        ? 'h-10 text-sm text-ink-3 hover:text-ink border-b-2 border-transparent -mb-px transition-colors'
+        : 'h-10 text-sm font-medium text-primary border-b-2 border-primary -mb-px';
+    }
+    function showErr(id, on) { $(id).classList.toggle('hidden', !on); $(id).classList.toggle('flex', on); }
+    function togglePwd(id, btn) {
+      const el = $(id); el.type = el.type === 'password' ? 'text' : 'password';
+      btn.style.color = el.type === 'text' ? '#4F6EF2' : '';
+    }
+    function doLogin() {
+      showErr('li-account-err', !$('li-account').value.trim());
+      showErr('li-pwd-err', $('li-pwd').value.length < 8);
+      if ($('li-account').value.trim() && $('li-pwd').value.length >= 8) alert('演示:登录成功,进入对话页');
+    }
+    function doReg() {
+      const ok = $('rg-name').value.trim() && $('rg-account').value.trim() && $('rg-pwd').value.length >= 8 && $('rg-pwd').value === $('rg-pwd2').value;
+      showErr('rg-name-err', !$('rg-name').value.trim());
+      showErr('rg-account-err', !$('rg-account').value.trim());
+      showErr('rg-pwd-err', $('rg-pwd').value.length < 8);
+      showErr('rg-pwd2-err', !$('rg-pwd2').value || $('rg-pwd').value !== $('rg-pwd2').value);
+      if (ok) alert('演示:注册成功,请登录');
+    }
+  </script>
+</body>
+</html>

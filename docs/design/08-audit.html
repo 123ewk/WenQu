@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 08/09 审计日志(仅系统管理员可见)
+  布局栅格:侧边栏 240 + 顶栏 56 + 内容区:筛选条一行 + 纯表格(card 内,行高 44px)+ 分页器
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px · 表格行高 44px
+  状态/交互:筛选条(时间范围/动作类型/操作人搜索/空间)+ 导出 · 结果列绿点/红点 · 分页器
+            · 正常/加载/空/错误四态(右下角切换) · 整页无其他装饰
+  注:本页演示系统管理员视角,侧边栏「审计日志」正常点亮
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>审计日志 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .pop-item { @apply w-full flex items-center gap-2 h-8 px-2 rounded-md text-[13px] text-ink-2 hover:bg-surface cursor-pointer; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .skel { @apply rounded-md bg-[#EDEFF2] animate-pulse; }
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+  .tbl { @apply w-full text-left text-sm; }
+  .tbl th { @apply h-10 px-4 text-xs font-normal text-ink-4 bg-surface border-b border-line whitespace-nowrap; }
+  .tbl td { @apply h-11 px-4 border-b border-line text-ink-2 align-middle; }
+  .tbl tbody tr:hover td { background: #FAFBFC; }
+  .act-badge { @apply inline-flex items-center h-5 px-1.5 rounded-md text-[11px] bg-surface border border-line text-ink-3 leading-none whitespace-nowrap; }
+  .pg-btn { @apply h-8 min-w-8 px-2 rounded-lg border border-line bg-white text-[13px] text-ink-2 inline-flex items-center justify-center hover:bg-surface disabled:opacity-40; }
+  .pg-on { @apply border-primary/40 bg-primary-soft text-primary font-medium hover:bg-primary-soft; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 侧边栏 240px(系统管理员视角) ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="shield" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">全部空间</span>
+        <span class="block text-[11px] text-ink-4">系统管理员</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">全部空间(跨空间视图)</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">全部空间</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">产品研发部</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span></a>
+    </div>
+  </div>
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a href="08-audit.html" class="nav-item nav-active"><i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide">审计日志</span></a>
+  </nav>
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-ink text-white text-xs font-medium grid place-items-center shrink-0">root</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">系管理员</span>
+        <span class="block text-[11px] text-ink-4">root@system</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 右侧区域 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-3">
+    <h1 class="text-base font-semibold text-ink">审计日志</h1>
+    <span class="text-xs text-ink-4">保留 180 天 · 仅系统管理员可见</span>
+    <div class="ml-auto"></div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-[1240px] px-8 py-6">
+
+      <!-- 筛选条 -->
+      <div class="flex items-center gap-2.5 mb-4">
+        <div class="relative">
+          <select class="input appearance-none pr-8 !w-36">
+            <option>最近 24 小时</option><option selected>近 7 天</option><option>近 30 天</option><option>自定义范围</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+        </div>
+        <div class="relative">
+          <select class="input appearance-none pr-8 !w-32">
+            <option selected>全部动作</option><option>登录</option><option>文档</option><option>知识库</option><option>成员</option><option>API Key</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+        </div>
+        <div class="relative">
+          <i data-lucide="search" class="w-3.5 h-3.5 text-ink-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+          <input class="input !w-44 pl-8" placeholder="搜索操作人">
+        </div>
+        <div class="relative">
+          <select class="input appearance-none pr-8 !w-40">
+            <option selected>全部空间</option><option>产品研发部</option><option>市场部知识空间</option><option>个人空间</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+        </div>
+        <button class="btn-secondary ml-auto"><i data-lucide="download" class="w-4 h-4"></i>导出</button>
+      </div>
+
+      <!-- ── 正常态:纯表格 ── -->
+      <div id="view-normal" class="card overflow-hidden">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th class="w-[160px]">时间</th>
+              <th class="w-[140px]">操作人</th>
+              <th class="w-[130px]">动作类型</th>
+              <th>对象</th>
+              <th class="w-[100px]">结果</th>
+              <th class="w-[130px]">IP</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 10:24:31</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-ink text-white text-[10px] grid place-items-center shrink-0">r</span><span class="text-[13px]">系管理员</span></div></td>
+              <td><span class="act-badge">登录</span></td>
+              <td class="text-[13px] text-ink-3">Web 控制台</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.11</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 10:21:05</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-primary-soft text-primary text-[10px] grid place-items-center shrink-0">王</span><span class="text-[13px]">王砚</span></div></td>
+              <td><span class="act-badge">文档上传</span></td>
+              <td class="text-[13px] text-ink-3">产品需求说明书 v2.3.pdf → 产品研发部 / 产品手册库</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.23</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 10:18:44</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-primary-soft text-primary text-[10px] grid place-items-center shrink-0">王</span><span class="text-[13px]">王砚</span></div></td>
+              <td><span class="act-badge">文档上传</span></td>
+              <td class="text-[13px] text-ink-3">Q3 营销预算.xlsx → 产品研发部 / 产品手册库</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.23</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 10:02:17</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#E6F7F1] text-[#0E9F6E] text-[10px] grid place-items-center shrink-0">林</span><span class="text-[13px]">林晚晴</span></div></td>
+              <td><span class="act-badge">检索请求</span></td>
+              <td class="text-[13px] text-ink-3">合同模板库 · query="合同审批 超过5万元"</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.9.104</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 09:47:03</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#E8F0FE] text-[#3B6FE0] text-[10px] grid place-items-center shrink-0">赵</span><span class="text-[13px]">赵子昂</span></div></td>
+              <td><span class="act-badge">成员角色变更</span></td>
+              <td class="text-[13px] text-ink-3">周舟:Editor → Admin(产品研发部)</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.31</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-16 09:12:56</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#F3F0FF] text-[#7C5CE0] text-[10px] grid place-items-center shrink-0">陈</span><span class="text-[13px]">未知用户(chen.mo)</span></div></td>
+              <td><span class="act-badge">登录</span></td>
+              <td class="text-[13px] text-ink-3">密码错误(第 3 次尝试)</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-danger"></span>拒绝</span></td>
+              <td class="mono text-[13px] text-ink-3">59.110.144.7</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-15 22:41:18</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-primary-soft text-primary text-[10px] grid place-items-center shrink-0">王</span><span class="text-[13px]">王砚</span></div></td>
+              <td><span class="act-badge">Key 吊销</span></td>
+              <td class="text-[13px] text-ink-3">ci-pipeline-old(sk-****1c93)</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.23</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-15 18:05:52</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#E8F0FE] text-[#3B6FE0] text-[10px] grid place-items-center shrink-0">赵</span><span class="text-[13px]">赵子昂</span></div></td>
+              <td><span class="act-badge">知识库创建</span></td>
+              <td class="text-[13px] text-ink-3">培训资料库(bge-m3 · 1024 维)</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.31</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-15 16:33:40</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#E6F7F1] text-[#0E9F6E] text-[10px] grid place-items-center shrink-0">林</span><span class="text-[13px]">林晚晴</span></div></td>
+              <td><span class="act-badge">文档删除</span></td>
+              <td class="text-[13px] text-ink-3">旧版话术草稿.docx → 产品研发部 / 客服话术库</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.9.104</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-15 16:31:12</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#FFF4E5] text-[#B45309] text-[10px] grid place-items-center shrink-0">周</span><span class="text-[13px]">周舟</span></div></td>
+              <td><span class="act-badge">文档删除</span></td>
+              <td class="text-[13px] text-ink-3">旧版话术草稿.docx → 产品研发部 / 客服话术库</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-danger"></span>拒绝</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.9.77</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-15 14:20:09</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-[#FFF4E5] text-[#B45309] text-[10px] grid place-items-center shrink-0">周</span><span class="text-[13px]">周舟</span></div></td>
+              <td><span class="act-badge">空间设置变更</span></td>
+              <td class="text-[13px] text-ink-3">默认检索参数 topK: 8 → 10</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-danger"></span>拒绝</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.9.77</td>
+            </tr>
+            <tr>
+              <td class="mono text-[13px] text-ink-3">09-14 11:08:45</td>
+              <td><div class="flex items-center gap-2"><span class="w-5 h-5 rounded-full bg-ink text-white text-[10px] grid place-items-center shrink-0">r</span><span class="text-[13px]">系管理员</span></div></td>
+              <td><span class="act-badge">成员移除</span></td>
+              <td class="text-[13px] text-ink-3">离职账号 legacy.bot → 市场部知识空间</td>
+              <td><span class="inline-flex items-center gap-1.5 text-[13px]"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>成功</span></td>
+              <td class="mono text-[13px] text-ink-3">10.2.8.11</td>
+            </tr>
+          </tbody>
+        </table>
+        <!-- 分页器 -->
+        <div class="flex items-center justify-between px-4 h-14">
+          <span class="text-[13px] text-ink-4">共 <span class="text-ink-2">1,284</span> 条记录</span>
+          <div class="flex items-center gap-1.5">
+            <button class="pg-btn" disabled><i data-lucide="chevron-left" class="w-3.5 h-3.5"></i></button>
+            <button class="pg-btn pg-on">1</button>
+            <button class="pg-btn">2</button>
+            <button class="pg-btn">3</button>
+            <span class="px-1 text-ink-4 text-[13px]">…</span>
+            <button class="pg-btn">43</button>
+            <button class="pg-btn"><i data-lucide="chevron-right" class="w-3.5 h-3.5"></i></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 加载中 ── -->
+      <div id="view-loading" class="hidden card overflow-hidden p-4 space-y-5">
+        <div class="flex items-center gap-4"><div class="skel h-4 w-32"></div><div class="skel h-4 w-20"></div><div class="skel h-4 w-16"></div><div class="skel h-4 w-64 ml-auto"></div></div>
+        <div class="flex items-center gap-4"><div class="skel h-4 w-28"></div><div class="skel h-4 w-24"></div><div class="skel h-4 w-20"></div><div class="skel h-4 w-56 ml-auto"></div></div>
+        <div class="flex items-center gap-4"><div class="skel h-4 w-36"></div><div class="skel h-4 w-16"></div><div class="skel h-4 w-24"></div><div class="skel h-4 w-48 ml-auto"></div></div>
+        <div class="flex items-center gap-4"><div class="skel h-4 w-24"></div><div class="skel h-4 w-28"></div><div class="skel h-4 w-16"></div><div class="skel h-4 w-60 ml-auto"></div></div>
+      </div>
+
+      <!-- ── 空状态 ── -->
+      <div id="view-empty" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <svg width="96" height="72" viewBox="0 0 96 72" fill="none" stroke="#9CA3AF" stroke-width="1.5">
+            <rect x="24" y="12" width="48" height="48" rx="6"/>
+            <path d="M34 26h28M34 36h20" />
+            <circle cx="62" cy="50" r="8" stroke="#4F6EF2"/>
+            <path d="M68 56l6 6" stroke="#4F6EF2"/>
+          </svg>
+          <div class="text-[15px] font-semibold text-ink mt-5">没有符合条件的审计记录</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">调整时间范围或筛选条件后重试</div>
+        </div>
+      </div>
+
+      <!-- ── 错误状态 ── -->
+      <div id="view-error" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <div class="w-12 h-12 rounded-full bg-danger/10 grid place-items-center"><i data-lucide="triangle-alert" class="w-5 h-5 text-danger"></i></div>
+          <div class="text-[15px] font-semibold text-ink mt-4">加载失败</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">日志服务暂时不可用,请稍后重试</div>
+          <button class="btn-secondary mt-5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重试</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型状态</span>
+  <button class="st-btn st-on" onclick="setState('normal', this)">正常</button>
+  <button class="st-btn" onclick="setState('loading', this)">加载中</button>
+  <button class="st-btn" onclick="setState('empty', this)">空</button>
+  <button class="st-btn" onclick="setState('error', this)">错误</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  function togglePop(id) {
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  function setState(s, btn) {
+    ['normal', 'loading', 'empty', 'error'].forEach(k => $('view-' + k).classList.toggle('hidden', k !== s));
+    document.querySelectorAll('.st-btn').forEach(b => b.classList.remove('st-on'));
+    btn.classList.add('st-on');
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

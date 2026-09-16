@@ -7,11 +7,20 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
-from app.api.routes.health import router as health_router
+from app.api.routes import auth as auth_routes
+from app.api.routes import health as health_routes
+from app.api.routes import spaces as spaces_routes
+from app.api.routes import users as users_routes
 from app.core.config import get_settings
-from app.core.errors import AppError, app_error_handler, unhandled_error_handler
+from app.core.errors import (
+    AppError,
+    app_error_handler,
+    unhandled_error_handler,
+    validation_error_handler,
+)
 from app.core.logging import request_id_var, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -20,6 +29,7 @@ logger = logging.getLogger(__name__)
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(Exception, unhandled_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 
 def create_app() -> FastAPI:
@@ -57,7 +67,10 @@ def create_app() -> FastAPI:
         return response
 
     register_error_handlers(app)
-    app.include_router(health_router)
+    app.include_router(health_routes.router)
+    app.include_router(auth_routes.router)
+    app.include_router(users_routes.router)
+    app.include_router(spaces_routes.router)
     return app
 
 

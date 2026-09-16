@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 04/09 知识库详情(三个 Tab)
+  布局栅格:侧边栏 240 + 顶栏 56(面包屑)+ 内容区:页头(名称+统计条)+ Tab 导航 + Tab 面板
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px · 表格行高 44px
+  状态/交互:Tab A 文档管理(状态步进条+耗时 / 失败行展开原因+重试 / 拖拽遮罩) · Tab B 检索测试
+            (左 60% 结果+分数进度条,右 40% 参数面板:向量权重滑块/topK/阈值/Rerank 开关)
+            · Tab C 设置(嵌入模型变更→红色「重建索引」确认) · Viewer 只读预览(右下角切换身份)
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合同模板库 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-danger { @apply h-9 px-4 rounded-lg bg-danger hover:bg-[#DC2626] text-white text-sm font-medium inline-flex items-center justify-center transition-colors; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .pop-item { @apply w-full flex items-center gap-2 h-8 px-2 rounded-md text-[13px] text-ink-2 hover:bg-surface cursor-pointer; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+
+  .tbl { @apply w-full text-left text-sm; }
+  .tbl th { @apply h-10 px-4 text-xs font-normal text-ink-4 bg-surface border-b border-line whitespace-nowrap; }
+  .tbl td { @apply h-11 px-4 border-b border-line text-ink-2 align-middle; }
+  .tbl tbody tr:hover td { background: #FAFBFC; }
+
+  .tab-btn { @apply h-11 px-1 -mb-px text-sm text-ink-3 hover:text-ink border-b-2 border-transparent transition-colors inline-flex items-center gap-1.5; }
+  .tab-on { @apply text-primary font-medium border-primary; }
+
+  /* 状态步进条 */
+  .stg { @apply w-1.5 h-1.5 rounded-full bg-line shrink-0; }
+  .stg-done { @apply bg-success; }
+  .stg-cur { @apply bg-primary ring-2 ring-primary/15; }
+  .stg-line { @apply w-3 h-px bg-line shrink-0; }
+  .stg-line-done { @apply bg-success; }
+
+  /* 开关(peer 标记必须写在 input 元素上,@apply 不能引用 peer) */
+  .switch { @apply relative inline-flex items-center cursor-pointer shrink-0; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 侧边栏 240px ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="building-2" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">产品研发部</span>
+        <span class="block text-[11px] text-ink-4">Admin</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">我的空间</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">产品研发部</span><span class="text-[11px] text-ink-4">Admin</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span><span class="text-[11px] text-ink-4">Viewer</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span><span class="text-[11px] text-ink-4">Owner</span></a>
+      <div class="my-1.5 border-t border-line"></div>
+      <a class="pop-item text-primary"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>新建空间</a>
+    </div>
+  </div>
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item nav-active"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a class="nav-item text-ink-4 cursor-default hover:bg-transparent" title="仅系统管理员可见">
+      <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide flex-1">审计日志</span>
+      <i data-lucide="lock" class="w-3 h-3 shrink-0 text-ink-4 sb-hide"></i>
+    </a>
+  </nav>
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">王砚</span>
+        <span class="block text-[11px] text-ink-4">产品研发部 · Admin</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 右侧区域 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-2">
+    <a href="03-kb-list.html" class="text-[13px] text-ink-3 hover:text-primary">知识库</a>
+    <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-ink-4"></i>
+    <span class="text-[13px] text-ink font-medium">合同模板库</span>
+    <div class="ml-auto flex items-center gap-1">
+      <div class="relative">
+        <button onclick="togglePop('upPop')" class="icon-btn relative" title="上传进度">
+          <i data-lucide="cloud-upload" class="w-[18px] h-[18px]"></i>
+          <span class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-primary text-white text-[10px] grid place-items-center">2</span>
+        </button>
+        <div id="upPop" data-pop class="hidden absolute right-0 top-10 w-80 pop !p-0 overflow-hidden">
+          <div class="px-4 py-3 border-b border-line flex items-center justify-between">
+            <span class="text-[13px] font-medium text-ink">上传进度</span>
+            <span class="text-xs text-ink-4">2 个进行中 · 1 个已完成</span>
+          </div>
+          <div class="px-4 py-3 border-b border-line">
+            <div class="flex justify-between text-xs text-ink-3 mb-1.5"><span>总进度</span><span class="mono">68%</span></div>
+            <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+          </div>
+          <div class="divide-y divide-line/70">
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">产品需求说明书 v2.3.pdf</span><span class="text-ink-4 mono">68%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">8.2 MB · 解析中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-spreadsheet" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">Q3 营销预算.xlsx</span><span class="text-ink-4 mono">32%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:32%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">356 KB · 上传中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">客服话术手册.pdf</span><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span></div>
+                <div class="text-[11px] text-ink-4 mt-1">4.8 MB · 12.4s</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-[1240px] px-8 py-6">
+      <!-- 页头:名称 + 统计条 -->
+      <div class="flex items-center gap-3">
+        <div class="text-lg font-semibold text-ink" id="kbTitle">合同模板库</div>
+        <button class="icon-btn !w-7 !h-7" title="重命名" onclick="toast('演示:打开重命名')"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+      </div>
+      <div class="flex items-center gap-5 mt-2 text-[13px] text-ink-3">
+        <span>文档 <span class="text-ink font-medium">12</span></span>
+        <span class="w-px h-3 bg-line"></span>
+        <span>分块 <span class="text-ink font-medium">864</span></span>
+        <span class="w-px h-3 bg-line"></span>
+        <span>存储 <span class="text-ink font-medium">156 MB</span></span>
+        <span class="w-px h-3 bg-line"></span>
+        <span class="inline-flex items-center gap-1.5">索引状态 <span class="w-2 h-2 rounded-full bg-success"></span><span class="text-success">已就绪</span></span>
+      </div>
+
+      <!-- Tab 导航 -->
+      <div class="flex items-center gap-6 border-b border-line mt-5">
+        <button id="tab-a" class="tab-btn tab-on" onclick="setTab('a')">文档管理</button>
+        <button id="tab-b" class="tab-btn" onclick="setTab('b')">检索测试</button>
+        <button id="tab-c" class="tab-btn" onclick="setTab('c')">设置</button>
+      </div>
+
+      <!-- ═══ Tab A 文档管理 ═══ -->
+      <div id="view-a" class="pt-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs text-ink-4">支持 PDF / Word / Excel / PPT / Markdown,单文件 ≤ 100 MB;整页拖入即可上传</div>
+          <button class="btn-primary viewer-hide" onclick="showDrag(true)"><i data-lucide="upload" class="w-4 h-4"></i>上传文档</button>
+        </div>
+        <div class="card overflow-hidden">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th class="w-[34%]">文件名</th>
+                <th class="w-[10%]">大小</th>
+                <th class="w-[30%]">状态(排队 → 解析 → 分块 → 向量化 → 完成)</th>
+                <th class="w-[14%]">上传时间</th>
+                <th class="text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">产品需求说明书 v2.3.pdf</span></div></td>
+                <td class="text-ink-3 text-[13px]">8.2 MB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span></span>
+                    <span class="text-xs whitespace-nowrap"><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span> <span class="text-ink-4 mono">12.4s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">今天 10:21</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析" onclick="toast('已加入重新解析队列')"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">数据安全管理规范.docx</span></div></td>
+                <td class="text-ink-3 text-[13px]">1.1 MB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-cur"></span><span class="stg-line"></span><span class="stg"></span></span>
+                    <span class="text-xs whitespace-nowrap text-ink-2">向量化 <span class="text-ink-4 mono">2.8s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">今天 10:18</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-spreadsheet" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">Q3 营销预算.xlsx</span></div></td>
+                <td class="text-ink-3 text-[13px]">356 KB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-cur"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span></span>
+                    <span class="text-xs whitespace-nowrap text-ink-2">分块 <span class="text-ink-4 mono">1.5s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">今天 10:18</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-code-2" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">退款政策 FAQ.md</span></div></td>
+                <td class="text-ink-3 text-[13px]">42 KB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-cur"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span></span>
+                    <span class="text-xs whitespace-nowrap text-ink-2">解析 <span class="text-ink-4 mono">0.8s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">今天 10:17</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="presentation" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">产品发布流程.pptx</span></div></td>
+                <td class="text-ink-3 text-[13px]">12.6 MB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span><span class="stg-line"></span><span class="stg"></span></span>
+                    <span class="text-xs whitespace-nowrap text-ink-4">排队中</span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">今天 10:17</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <span class="text-[13px] text-ink-4 mr-1">排队后可预览</span>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <!-- 失败行:可展开 -->
+              <tr class="cursor-pointer" onclick="toggleFail()">
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">客服话术手册.pdf</span></div></td>
+                <td class="text-ink-3 text-[13px]">4.8 MB</td>
+                <td>
+                  <div class="flex items-center gap-2">
+                    <span class="badge bg-danger/10 text-danger text-[11px] h-5 px-1.5 rounded-md inline-flex items-center gap-1">失败</span>
+                    <i data-lucide="chevron-down" id="failChevron" class="w-3.5 h-3.5 text-ink-4 transition-transform"></i>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">昨天 16:40</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr id="failRow" class="hidden">
+                <td colspan="5" class="!h-auto py-0 border-b border-line">
+                  <div class="bg-surface rounded-lg m-3 px-4 py-3 flex items-start gap-3">
+                    <i data-lucide="circle-alert" class="w-4 h-4 text-danger mt-0.5 shrink-0"></i>
+                    <div class="flex-1">
+                      <div class="text-[13px] text-ink-2 leading-relaxed">解析失败:文件已加密(有密码保护),无法读取内容。请解除密码后重新上传,或联系文档提供方获取可编辑版本。</div>
+                      <button class="btn-secondary !h-7 !px-2.5 text-xs mt-2.5" onclick="event.stopPropagation();toast('已重新加入解析队列')"><i data-lucide="refresh-cw" class="w-3 h-3"></i>重试</button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">员工手册 2024.pdf</span></div></td>
+                <td class="text-ink-3 text-[13px]">3.9 MB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span></span>
+                    <span class="text-xs whitespace-nowrap"><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span> <span class="text-ink-4 mono">34.2s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">昨天 16:32</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+              <tr>
+                <td><div class="flex items-center gap-2.5"><i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i><span class="text-ink truncate">合同审批制度.docx</span></div></td>
+                <td class="text-ink-3 text-[13px]">890 KB</td>
+                <td>
+                  <div class="flex items-center gap-2" title="排队 → 解析 → 分块 → 向量化 → 完成">
+                    <span class="flex items-center"><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span><span class="stg-line stg-line-done"></span><span class="stg stg-done"></span></span>
+                    <span class="text-xs whitespace-nowrap"><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span> <span class="text-ink-4 mono">9.8s</span></span>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">09-12 14:05</td>
+                <td>
+                  <div class="flex items-center justify-end gap-1">
+                    <a href="05-chunks.html" class="text-[13px] text-primary hover:underline mr-1 whitespace-nowrap">预览分块</a>
+                    <button class="icon-btn !w-7 !h-7" title="重新解析"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i></button>
+                    <button class="icon-btn !w-7 !h-7 hover:text-danger viewer-hide" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ═══ Tab B 检索测试 ═══ -->
+      <div id="view-b" class="pt-4 hidden">
+        <div class="flex items-center gap-2.5">
+          <input class="input !h-11 flex-1" value="合同审批 超过5万元" placeholder="输入一句话,测试知识库召回效果">
+          <button class="btn-primary !h-11 !px-5" onclick="toast('已按当前参数重新检索')"><i data-lucide="search" class="w-4 h-4"></i>检索</button>
+        </div>
+        <div class="text-xs text-ink-4 mt-3">检索耗时 <span class="mono">236 ms</span> · 命中 3 条</div>
+
+        <div class="flex gap-6 mt-4 items-start">
+          <!-- 左 60%:结果列表 -->
+          <div class="w-[60%] space-y-3">
+            <div class="card p-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-[13px] text-ink-2 leading-relaxed line-clamp-3">5.1 审批金额分级:合同金额超过 5 万元(含)的,须依次经部门负责人、法务、财务负责人三级审批;金额超过 20 万元(含)的,增加分管副总裁加签环节,加签人可要求补充说明材料。</div>
+                  <button class="text-primary text-xs mt-2" onclick="toggleScore(this)">展开得分明细</button>
+                </div>
+                <div class="text-right shrink-0">
+                  <div class="text-xl font-semibold text-primary mono leading-none">0.91</div>
+                  <div class="text-xs text-ink-4 mt-1.5 flex items-center gap-1 justify-end"><i data-lucide="file-text" class="w-3 h-3"></i>合同审批制度.docx · P3</div>
+                </div>
+              </div>
+              <div class="scoreBody hidden mt-3 pt-3 border-t border-line/70 space-y-2.5">
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>向量相似度</span><span class="mono">0.88</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:88%"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>关键词得分(BM25)</span><span class="mono">0.76</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-ink-4" style="width:76%"></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="card p-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-[13px] text-ink-2 leading-relaxed line-clamp-3">5.2 审批时效:各级审批人应在 2 个工作日内完成审批,超时未处理的将由系统自动提醒并抄送其直属上级。紧急合同可申请加急通道,由财务负责人直接审批。</div>
+                  <button class="text-primary text-xs mt-2" onclick="toggleScore(this)">展开得分明细</button>
+                </div>
+                <div class="text-right shrink-0">
+                  <div class="text-xl font-semibold text-primary mono leading-none">0.87</div>
+                  <div class="text-xs text-ink-4 mt-1.5 flex items-center gap-1 justify-end"><i data-lucide="file-text" class="w-3 h-3"></i>合同审批制度.docx · P4</div>
+                </div>
+              </div>
+              <div class="scoreBody hidden mt-3 pt-3 border-t border-line/70 space-y-2.5">
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>向量相似度</span><span class="mono">0.83</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:83%"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>关键词得分(BM25)</span><span class="mono">0.71</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-ink-4" style="width:71%"></div></div>
+                </div>
+              </div>
+            </div>
+            <div class="card p-4">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-[13px] text-ink-2 leading-relaxed line-clamp-3">第六章 合同管理:公司对外签订的采购、销售、服务类合同金额超过 5 万元的,一律使用标准模板并走线上审批流程;未达 5 万元的,由部门负责人审批后即可用印。</div>
+                  <button class="text-primary text-xs mt-2" onclick="toggleScore(this)">展开得分明细</button>
+                </div>
+                <div class="text-right shrink-0">
+                  <div class="text-xl font-semibold text-primary mono leading-none">0.84</div>
+                  <div class="text-xs text-ink-4 mt-1.5 flex items-center gap-1 justify-end"><i data-lucide="file-text" class="w-3 h-3"></i>员工手册 2024.pdf · P21</div>
+                </div>
+              </div>
+              <div class="scoreBody hidden mt-3 pt-3 border-t border-line/70 space-y-2.5">
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>向量相似度</span><span class="mono">0.79</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:79%"></div></div>
+                </div>
+                <div>
+                  <div class="flex justify-between text-xs text-ink-3 mb-1"><span>关键词得分(BM25)</span><span class="mono">0.69</span></div>
+                  <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-ink-4" style="width:69%"></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右 40%:参数面板 -->
+          <div class="flex-1 card p-5">
+            <div class="flex items-center gap-2">
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 text-ink-3"></i>
+              <span class="text-sm font-semibold text-ink">检索参数</span>
+              <button class="btn-ghost ml-auto !h-7 text-xs" onclick="resetParams()">重置</button>
+            </div>
+            <div class="mt-5 space-y-5">
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[13px] text-ink-2">向量权重</span>
+                  <span class="text-[13px] mono text-ink" id="vecWLabel">0.7</span>
+                </div>
+                <input id="vecW" type="range" min="0" max="1" step="0.05" value="0.7" class="w-full accent-primary" oninput="onVecW(this)">
+                <div class="flex justify-between text-[11px] text-ink-4 mt-1"><span>0(纯关键词)</span><span>1(纯向量)</span></div>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-[13px] text-ink-2">关键词权重</span>
+                <span class="text-[13px] mono text-ink-4" id="kwWLabel">0.3 · 自动互补</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-[13px] text-ink-2">topK(返回条数)</span>
+                <input type="number" value="8" min="1" max="50" class="input !w-24 !h-8 text-center">
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-[13px] text-ink-2">相似度阈值</span>
+                <input type="number" value="0" min="0" max="1" step="0.05" class="input !w-24 !h-8 text-center">
+              </div>
+              <div class="flex items-center justify-between pt-1">
+                <div>
+                  <div class="text-[13px] text-ink-2">启用 Rerank</div>
+                  <div class="text-[11px] text-ink-4 mt-0.5">对候选分块重排序,更准但增加约 200ms</div>
+                </div>
+                <label class="switch">
+                  <input type="checkbox" class="peer sr-only">
+                  <div class="w-9 h-5 bg-[#D1D5DB] peer-checked:bg-primary rounded-full transition-colors relative after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:w-4 after:h-4 after:bg-white after:rounded-full after:transition-transform peer-checked:after:translate-x-4"></div>
+                </label>
+              </div>
+            </div>
+            <div class="text-xs text-ink-4 mt-5 pt-4 border-t border-line">以上参数仅用于本次测试,不会修改知识库默认配置。</div>
+            <button class="btn-secondary w-full mt-3" onclick="toast('已用当前参数重新检索')"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>用当前参数重新检索</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══ Tab C 设置 ═══ -->
+      <div id="view-c" class="pt-4 hidden">
+        <div class="max-w-[560px] space-y-5">
+          <div class="card p-6">
+            <div class="text-sm font-semibold text-ink">基本信息</div>
+            <div class="mt-4 space-y-4">
+              <div>
+                <label class="block text-[13px] text-ink-2 mb-1.5">名称</label>
+                <input class="input" value="合同模板库">
+              </div>
+              <div>
+                <label class="block text-[13px] text-ink-2 mb-1.5">描述</label>
+                <textarea class="input !h-auto py-2 resize-none" rows="2">标准合同模板与审批制度文件</textarea>
+              </div>
+              <button class="btn-primary" onclick="toast('设置已保存')">保存</button>
+            </div>
+          </div>
+          <div class="card p-6">
+            <div class="text-sm font-semibold text-ink">嵌入模型</div>
+            <div class="mt-4">
+              <div class="relative">
+                <select id="embedSel" class="input appearance-none pr-8" onchange="onEmbedChange(this)">
+                  <option selected>bce-embedding-base_v1 · 768 维(当前)</option>
+                  <option>bge-m3 · 1024 维</option>
+                  <option>text-embedding-v3 · 1024 维</option>
+                </select>
+                <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+              </div>
+              <div class="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2.5 text-xs leading-relaxed text-[#B45309] mt-3">
+                <i data-lucide="triangle-alert" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>更换嵌入模型将重建全部 864 个分块的向量索引,期间该知识库检索不可用。
+              </div>
+              <div id="rebuildRow" class="hidden items-center justify-between mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5">
+                <span class="text-[13px] text-ink-2">检测到模型变更,需确认后执行重建</span>
+                <button class="btn-danger !h-8 text-[13px]" onclick="openModal('rebuildModal')">重建索引</button>
+              </div>
+            </div>
+          </div>
+          <div class="card p-6">
+            <div class="text-sm font-semibold text-ink">Rerank 模型</div>
+            <div class="mt-4">
+              <div class="relative">
+                <select class="input appearance-none pr-8">
+                  <option selected>不启用(默认)</option>
+                  <option>bge-reranker-v2-m3</option>
+                </select>
+                <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+              </div>
+              <div class="text-xs text-ink-4 mt-2">启用后对话与检索测试将先粗召回再重排序,精度更高,延迟增加约 200ms。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 拖拽遮罩 -->
+<div id="dragMask" class="hidden fixed inset-0 z-[55]">
+  <div class="absolute inset-0 bg-primary-soft/90"></div>
+  <div class="absolute inset-4 border-2 border-dashed border-primary rounded-2xl grid place-items-center">
+    <div class="text-center">
+      <i data-lucide="upload" class="w-8 h-8 text-primary mx-auto"></i>
+      <div class="text-base font-semibold text-primary mt-3">松开即上传</div>
+      <div class="text-[13px] text-primary/80 mt-1">支持多文件,将上传至「合同模板库」</div>
+    </div>
+  </div>
+</div>
+
+<!-- 重建索引二次确认 -->
+<div id="rebuildModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('rebuildModal')"></div>
+  <div class="relative card w-[420px] p-6">
+    <div class="flex items-start gap-3">
+      <div class="w-9 h-9 rounded-full bg-danger/10 grid place-items-center shrink-0"><i data-lucide="database" class="w-4 h-4 text-danger"></i></div>
+      <div>
+        <div class="text-base font-semibold text-ink">确认重建索引?</div>
+        <p class="text-[13px] text-ink-3 mt-1.5 leading-relaxed">将对 864 个分块全部重新向量化,预计 6 分钟。期间「合同模板库」<span class="text-danger font-medium">检索不可用</span>,进行中的对话不受影响。</p>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('rebuildModal');onEmbedChangeCancel()">取消</button>
+      <button class="btn-danger" onclick="closeModal('rebuildModal');startRebuild()">重建索引</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型演示</span>
+  <button class="st-btn st-on" onclick="setTab('a', this)">文档管理</button>
+  <button class="st-btn" onclick="setTab('b', this)">检索测试</button>
+  <button class="st-btn" onclick="setTab('c', this)">设置</button>
+  <button class="st-btn" onclick="showDrag(true)">拖拽态</button>
+  <span class="w-px h-4 bg-line mx-1"></span>
+  <button class="st-btn st-on" id="roleAdmin" onclick="setRole('admin', this)">身份:Admin</button>
+  <button class="st-btn" id="roleViewer" onclick="setRole('viewer', this)">Viewer</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  function togglePop(id) {
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  function openModal(id) { $(id).classList.remove('hidden'); }
+  function closeModal(id) { $(id).classList.add('hidden'); }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  /* Tab 切换(支持从原型条调用) */
+  function setTab(t, btn) {
+    ['a', 'b', 'c'].forEach(k => $('view-' + k).classList.toggle('hidden', k !== t));
+    ['a', 'b', 'c'].forEach(k => {
+      $('tab-' + k).className = k === t ? 'tab-btn tab-on' : 'tab-btn';
+      if (btn) document.querySelectorAll('.fixed.bottom-4 .st-btn').forEach(b => { if (b.textContent.trim() === { a: '文档管理', b: '检索测试', c: '设置' }[k]) b.classList.toggle('st-on', k === t); });
+    });
+  }
+  /* 失败行展开 */
+  function toggleFail() {
+    $('failRow').classList.toggle('hidden');
+    $('failChevron').classList.toggle('rotate-180');
+  }
+  /* 拖拽遮罩 */
+  function showDrag(on) { $('dragMask').classList.toggle('hidden', !on); }
+  $('dragMask').addEventListener('click', () => showDrag(false));
+  /* 得分明细展开 */
+  function toggleScore(btn) {
+    const body = btn.closest('.card').querySelector('.scoreBody');
+    const open = body.classList.toggle('hidden');
+    btn.textContent = open ? '展开得分明细' : '收起得分明细';
+  }
+  /* 权重联动 */
+  function onVecW(el) {
+    const v = parseFloat(el.value);
+    $('vecWLabel').textContent = v.toFixed(2).replace(/0$/, '').replace(/\.$/, '.0');
+    $('vecWLabel').textContent = v.toFixed(2);
+    $('kwWLabel').textContent = (1 - v).toFixed(2) + ' · 自动互补';
+  }
+  function resetParams() {
+    $('vecW').value = 0.7; onVecW($('vecW'));
+    toast('已重置为默认参数');
+  }
+  /* 嵌入模型变更 → 重建索引按钮 */
+  let embedChanged = false;
+  function onEmbedChange(sel) {
+    embedChanged = sel.selectedIndex !== 0;
+    $('rebuildRow').classList.toggle('hidden', !embedChanged);
+    $('rebuildRow').classList.toggle('flex', embedChanged);
+    if (embedChanged) toast('嵌入模型已变更,需重建索引后生效');
+  }
+  function onEmbedChangeCancel() {
+    $('embedSel').selectedIndex = 0;
+    embedChanged = false;
+    $('rebuildRow').classList.add('hidden');
+    $('rebuildRow').classList.remove('flex');
+  }
+  function startRebuild() {
+    $('rebuildRow').classList.add('hidden'); $('rebuildRow').classList.remove('flex');
+    toast('已开始重建索引,预计 6 分钟');
+  }
+  /* Viewer 权限演示 */
+  function setRole(r, btn) {
+    document.querySelectorAll('.viewer-hide').forEach(el => el.classList.toggle('hidden', r === 'viewer'));
+    $('tab-c').classList.toggle('hidden', r === 'viewer');
+    if (r === 'viewer') setTab('a');
+    $('roleAdmin').classList.toggle('st-on', r === 'admin');
+    $('roleViewer').classList.toggle('st-on', r === 'viewer');
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

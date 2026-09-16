@@ -10,6 +10,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wenqu
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: wenqu
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U wenqu -d wenqu"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +41,14 @@ jobs:
           uv run ruff check .
           uv run mypy src
 
-      - name: 测试
+      - name: 数据库迁移验证
         working-directory: server
+        env:
+          APP_DATABASE_URL: postgresql+psycopg://wenqu:ci@localhost:5432/wenqu
+        run: uv run alembic upgrade head
+
+      - name: 测试(单元 + PG 集成)
+        working-directory: server
+        env:
+          APP_DATABASE_URL: postgresql+psycopg://wenqu:ci@localhost:5432/wenqu
         run: uv run pytest

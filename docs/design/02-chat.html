@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 02/09 对话页(核心页,三栏)
+  布局栅格:侧边栏 240 + 会话列表 260 + 聊天区(flex-1,内容 max-w 768 居中)+ 引用抽屉 380(flex 列,滑出/收起)
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px
+  状态/交互:①Agent 工具卡片(默认折叠,可展开) ②引用角标 [1][2][3] → 引用抽屉(默认展开,可关闭)
+            ③流式输出:闪烁光标 + 输入区「停止生成」(点停止切换为发送态) ④未命中浅黄提示条
+            ⑤空会话状态:点左栏「新建对话」查看 ⑥知识库范围多选(输入区左侧) ⑦顶栏上传进度浮窗
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>对话 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .pop-item { @apply w-full flex items-center gap-2 h-8 px-2 rounded-md text-[13px] text-ink-2 hover:bg-surface cursor-pointer; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+
+  /* Markdown 排版(助手消息) */
+  .md { @apply text-sm leading-[1.7] text-ink-2; }
+  .md p { @apply my-2; }
+  .md ul { @apply list-disc pl-5 my-2 space-y-1; }
+  .md ol { @apply list-decimal pl-5 my-2 space-y-1; }
+  .md strong { @apply text-ink font-semibold; }
+  .md .icode { @apply bg-surface border border-line rounded px-1 py-0.5 text-[13px]; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+
+  /* 代码块 */
+  .codeblock { @apply rounded-lg border border-line overflow-hidden my-3; }
+  .codeblock-head { @apply flex items-center justify-between px-3.5 h-9 bg-surface border-b border-line; }
+  .codeblock pre { @apply px-4 py-3 text-[13px] leading-[1.7] overflow-x-auto bg-[#FBFBFC]; }
+  .tk-k { color: #4F6EF2; } .tk-s { color: #0E9F6E; } .tk-c { color: #9CA3AF; font-style: italic; } .tk-n { color: #B45309; }
+
+  /* 引用角标 */
+  .cite { @apply inline-flex items-center justify-center align-super ml-1 w-4 h-4 rounded-full bg-primary hover:bg-primary-hover text-white text-[10px] leading-none cursor-pointer transition-colors; }
+
+  /* 流式光标 */
+  .blink { display: inline-block; width: 2px; height: 16px; background: #4F6EF2; vertical-align: -2px; margin-left: 2px; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  /* 原型状态切换按钮(非设计的一部分) */
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 左侧固定侧边栏 240px ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <!-- 空间切换器 -->
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="building-2" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">产品研发部</span>
+        <span class="block text-[11px] text-ink-4">Admin</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">我的空间</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">产品研发部</span><span class="text-[11px] text-ink-4">Admin</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span><span class="text-[11px] text-ink-4">Viewer</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span><span class="text-[11px] text-ink-4">Owner</span></a>
+      <div class="my-1.5 border-t border-line"></div>
+      <a class="pop-item text-primary"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>新建空间</a>
+    </div>
+  </div>
+  <!-- 中部导航 -->
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item nav-active"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a class="nav-item text-ink-4 cursor-default hover:bg-transparent" title="仅系统管理员可见">
+      <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide flex-1">审计日志</span>
+      <i data-lucide="lock" class="w-3 h-3 shrink-0 text-ink-4 sb-hide"></i>
+    </a>
+  </nav>
+  <!-- 底部用户 -->
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">王砚</span>
+        <span class="block text-[11px] text-ink-4">产品研发部 · Admin</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 会话列表 260px ═══════════ -->
+<section class="w-[260px] shrink-0 h-full bg-white border-r border-line flex flex-col">
+  <div class="p-3 shrink-0">
+    <button onclick="newChat()" class="btn-primary w-full"><i data-lucide="plus" class="w-4 h-4"></i>新建对话</button>
+  </div>
+  <div class="px-4 pb-2 text-[11px] text-ink-4">今天</div>
+  <div class="flex-1 overflow-y-auto px-2 space-y-0.5 pb-3" id="sessionList">
+    <!-- 会话项 -->
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer bg-primary-soft" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink leading-snug line-clamp-2 pr-8">合同审批流程咨询:超过 5 万元的三级审批节点</div>
+      <div class="flex items-center gap-2 mt-1.5"><span class="text-[11px] text-ink-4">10:31</span><span class="text-[11px] text-primary">3 条引用</span></div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">日志脱敏的 Python 实现</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">10:25</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">API 鉴权方式与 Key 管理</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">09:47</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="px-2 pt-3 pb-1 text-[11px] text-ink-4">昨天</div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">退款政策的适用条件与流程</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">昨天 17:20</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">产品发布 checklist 梳理</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">昨天 14:03</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="px-2 pt-3 pb-1 text-[11px] text-ink-4">本周更早</div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">新员工入职材料清单</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">09-12</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+    <div class="sess group relative rounded-lg px-3 py-2.5 cursor-pointer hover:bg-surface" onclick="selectSession(this)">
+      <div class="text-[13px] text-ink-2 leading-snug line-clamp-2 pr-8">竞品对比分析要点</div>
+      <div class="text-[11px] text-ink-4 mt-1.5">09-11</div>
+      <div class="absolute right-1.5 top-1.5 hidden group-hover:flex items-center gap-0.5 bg-white/95 rounded-md border border-line p-0.5">
+        <button class="icon-btn !w-6 !h-6" title="重命名"><i data-lucide="pencil" class="w-3 h-3"></i></button>
+        <button class="icon-btn !w-6 !h-6 hover:text-danger" title="删除"><i data-lucide="trash-2" class="w-3 h-3"></i></button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 右侧区域:顶栏 + 聊天区 + 引用抽屉 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+
+  <!-- 顶栏 56px -->
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-3">
+    <h1 class="text-base font-semibold text-ink">对话</h1>
+    <span class="text-xs text-ink-4">qwen2.5-72b-instruct · 引用可溯源</span>
+    <div class="ml-auto flex items-center gap-1">
+      <!-- 上传进度浮窗入口 -->
+      <div class="relative">
+        <button onclick="togglePop('upPop')" class="icon-btn relative" title="上传进度">
+          <i data-lucide="cloud-upload" class="w-[18px] h-[18px]"></i>
+          <span class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-primary text-white text-[10px] grid place-items-center">2</span>
+        </button>
+        <div id="upPop" data-pop class="hidden absolute right-0 top-10 w-80 pop !p-0 overflow-hidden">
+          <div class="px-4 py-3 border-b border-line flex items-center justify-between">
+            <span class="text-[13px] font-medium text-ink">上传进度</span>
+            <span class="text-xs text-ink-4">2 个进行中 · 1 个已完成</span>
+          </div>
+          <div class="px-4 py-3 border-b border-line">
+            <div class="flex justify-between text-xs text-ink-3 mb-1.5"><span>总进度</span><span class="mono">68%</span></div>
+            <div class="h-1.5 rounded-full bg-surface overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+          </div>
+          <div class="divide-y divide-line/70">
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">产品需求说明书 v2.3.pdf</span><span class="text-ink-4 mono">68%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:68%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">8.2 MB · 解析中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-spreadsheet" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">Q3 营销预算.xlsx</span><span class="text-ink-4 mono">32%</span></div>
+                <div class="h-1 rounded-full bg-surface mt-1.5 overflow-hidden"><div class="h-full rounded-full bg-primary" style="width:32%"></div></div>
+                <div class="text-[11px] text-ink-4 mt-1">356 KB · 上传中</div>
+              </div>
+            </div>
+            <div class="px-4 py-2.5 flex items-center gap-2.5">
+              <i data-lucide="file-text" class="w-4 h-4 text-ink-3 shrink-0"></i>
+              <div class="flex-1 min-w-0">
+                <div class="flex justify-between text-xs"><span class="truncate text-ink-2">客服话术手册.pdf</span><span class="text-success inline-flex items-center gap-0.5"><i data-lucide="check" class="w-3 h-3"></i>已完成</span></div>
+                <div class="text-[11px] text-ink-4 mt-1">4.8 MB · 12.4s</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="flex-1 flex min-h-0">
+    <!-- ───── 聊天列 ───── -->
+    <div class="flex-1 min-w-0 flex flex-col relative">
+
+      <!-- 消息滚动区 -->
+      <div class="flex-1 overflow-y-auto">
+        <!-- 对话视图 -->
+        <div id="chatView" class="max-w-[768px] mx-auto px-6 py-6">
+          <div class="flex items-center gap-3 my-1 mb-6">
+            <div class="h-px flex-1 bg-line"></div><span class="text-xs text-ink-4">今天</span><div class="h-px flex-1 bg-line"></div>
+          </div>
+
+          <!-- U1 用户消息 -->
+          <div class="flex justify-end mb-6">
+            <div class="max-w-[80%] bg-surface rounded-xl rounded-br-sm px-4 py-2.5 text-sm text-ink leading-relaxed">合同审批流程中,超过 5 万元的合同需要哪些审批节点?</div>
+          </div>
+
+          <!-- A1 助手:Agent 卡片 + 引用回答 -->
+          <div class="mb-8">
+            <div class="text-xs text-ink-4 mb-2">qwen2.5-72b-instruct · 10:13</div>
+            <!-- Agent 工具调用卡片(默认折叠) -->
+            <div class="rounded-lg border border-line mb-2">
+              <button onclick="toggleAgent()" class="w-full flex items-center gap-2 px-3.5 h-10 text-left">
+                <i data-lucide="wrench" class="w-3.5 h-3.5 text-ink-3 shrink-0"></i>
+                <span class="text-[13px] font-medium text-ink">检索知识库</span>
+                <span class="badge bg-success/10 text-success text-[11px] inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md"><span class="w-1.5 h-1.5 rounded-full bg-success"></span>已完成</span>
+                <span class="text-xs text-ink-4 ml-auto mr-2 mono">412ms</span>
+                <i data-lucide="chevron-down" id="agentChevron" class="w-3.5 h-3.5 text-ink-4 transition-transform"></i>
+              </button>
+              <div id="agentBody" class="hidden px-3.5 pb-3 pt-0.5 space-y-1.5 border-t border-line/70 mt-2.5">
+                <div class="text-xs leading-relaxed"><span class="text-ink-4 inline-block w-10 shrink-0">参数</span><span class="mono text-ink-2">query="5万元以上合同 审批节点" · top_k=8 · kb=[合同模板库, 规章制度库]</span></div>
+                <div class="text-xs leading-relaxed"><span class="text-ink-4 inline-block w-10 shrink-0">返回</span><span class="text-ink-2">命中 6 个分块,最高相似度 0.91,已作为引用 [1][2]</span></div>
+              </div>
+            </div>
+            <div class="md">
+              <p>根据《合同审批制度》,金额超过 <strong>5 万元</strong>的合同需依次经过以下审批节点<button class="cite" onclick="openCite()">1</button>:</p>
+              <ol>
+                <li><strong>部门负责人审批</strong>——确认预算归属与业务必要性;</li>
+                <li><strong>法务合规审查</strong>——核对条款与公司标准模板的差异,重大偏差需出具书面法律意见<button class="cite" onclick="openCite()">1</button>;</li>
+                <li><strong>财务负责人审批</strong>——金额超过 20 万元时,还需分管副总裁加签<button class="cite" onclick="openCite()">2</button>。</li>
+              </ol>
+              <p>整个流程平均耗时约 3 个工作日,审批进度可在 OA 系统中实时查看<button class="cite" onclick="openCite()">1</button>。</p>
+            </div>
+          </div>
+
+          <!-- U2 -->
+          <div class="flex justify-end mb-6">
+            <div class="max-w-[80%] bg-surface rounded-xl rounded-br-sm px-4 py-2.5 text-sm text-ink leading-relaxed">按《数据安全管理规范》,帮我写一个 Python 函数,对日志里的手机号和身份证号做脱敏</div>
+          </div>
+
+          <!-- A2 助手:代码块 -->
+          <div class="mb-8">
+            <div class="text-xs text-ink-4 mb-2">qwen2.5-72b-instruct · 10:18</div>
+            <div class="md">
+              <p>规范 4.2 节要求:手机号保留前 3 位与后 4 位,身份证号保留前 6 位与后 4 位,其余以 <span class="icode">*</span> 替代<button class="cite" onclick="openCite()">3</button>。参考实现:</p>
+              <div class="codeblock">
+                <div class="codeblock-head">
+                  <span class="text-xs text-ink-3">python</span>
+                  <button onclick="copyCode(this)" class="btn-ghost !h-6 text-xs gap-1"><i data-lucide="copy" class="w-3 h-3"></i>复制</button>
+                </div>
+                <pre><code><span class="tk-k">import</span> re
+
+<span class="tk-k">def</span> <span class="tk-n">mask_sensitive</span>(log: <span class="tk-n">str</span>) -> <span class="tk-n">str</span>:
+    <span class="tk-c"># 手机号:保留前 3 位与后 4 位,如 138****5678</span>
+    log = re.sub(<span class="tk-s">r"\b(1[3-9]\d)\d{4}(\d{4})\b"</span>, <span class="tk-s">r"\1****\2"</span>, log)
+    <span class="tk-c"># 身份证号:保留前 6 位与后 4 位(18 位)</span>
+    log = re.sub(<span class="tk-s">r"\b(\d{6})\d{8}(\w{4})\b"</span>, <span class="tk-s">r"\1********\2"</span>, log)
+    <span class="tk-k">return</span> log</code></pre>
+              </div>
+              <p>该函数已覆盖规范中列出的两类字段;银行卡号的脱敏规则见规范 4.3 节<button class="cite" onclick="openCite()">3</button>。</p>
+            </div>
+          </div>
+
+          <!-- U3 -->
+          <div class="flex justify-end mb-6">
+            <div class="max-w-[80%] bg-surface rounded-xl rounded-br-sm px-4 py-2.5 text-sm text-ink leading-relaxed">我们公司可以给实习生购买商业保险吗?</div>
+          </div>
+
+          <!-- A3 助手:知识库未命中 -->
+          <div class="mb-8">
+            <div class="text-xs text-ink-4 mb-2">qwen2.5-72b-instruct · 10:25</div>
+            <div class="flex items-start gap-2 rounded-lg bg-warning/10 px-3 py-2 text-[13px] text-[#B45309] mb-2">
+              <i data-lucide="triangle-alert" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>知识库中没有找到相关内容,以下为通用参考。
+            </div>
+            <div class="md">
+              <p>当前空间的知识库中没有检索到与「实习生商业保险」相关的制度条文。通常企业会为实习生投保<strong>实习责任险 / 意外险</strong>以覆盖用工风险,但投保方案、保费承担与口径建议先与 HR 确认。</p>
+              <p>确认后可将相关制度补充至《员工手册》,知识库即可准确回答此类问题。</p>
+            </div>
+          </div>
+
+          <!-- U4 -->
+          <div class="flex justify-end mb-6">
+            <div class="max-w-[80%] bg-surface rounded-xl rounded-br-sm px-4 py-2.5 text-sm text-ink leading-relaxed">WenQu 的 API 怎么鉴权?</div>
+          </div>
+
+          <!-- A4 助手:流式输出中 -->
+          <div class="mb-4">
+            <div class="text-xs text-ink-4 mb-2">qwen2.5-72b-instruct · 正在生成…</div>
+            <div class="md">
+              <p id="streamText">API 采用 <strong>Bearer Token</strong> 鉴权:在「API Key」页面创建 Key 后,将其放入请求头 <span class="icode">Authorization: Bearer &lt;your_key&gt;</span>。注意,Key 仅在创建时完整展示一次,若丢失需要在管理页<span class="blink" id="streamCursor"></span></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 空会话状态 -->
+        <div id="emptyView" class="hidden h-full grid place-items-center">
+          <div class="text-center -mt-16">
+            <div class="mx-auto w-14 h-14 rounded-2xl bg-surface border border-line grid place-items-center">
+              <i data-lucide="messages-square" class="w-6 h-6 text-ink-4"></i>
+            </div>
+            <div class="text-base font-semibold text-ink mt-4">向你的知识库提问</div>
+            <div class="text-[13px] text-ink-3 mt-1.5">已接入当前空间 3 个知识库,回答自带引用溯源</div>
+            <div class="flex items-center justify-center gap-2 mt-5">
+              <button class="chip rounded-full border border-line px-3.5 h-8 text-[13px] text-ink-3 hover:border-primary hover:text-primary transition-colors" onclick="useChip(this)">合同审批的金额分界是多少?</button>
+              <button class="chip rounded-full border border-line px-3.5 h-8 text-[13px] text-ink-3 hover:border-primary hover:text-primary transition-colors" onclick="useChip(this)">日志脱敏有哪些规则?</button>
+              <button class="chip rounded-full border border-line px-3.5 h-8 text-[13px] text-ink-3 hover:border-primary hover:text-primary transition-colors" onclick="useChip(this)">如何用 API 上传文档?</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部输入区 -->
+      <div class="shrink-0 border-t border-line bg-white">
+        <div class="max-w-[768px] mx-auto px-6 py-3.5">
+          <div class="flex items-end gap-2.5">
+            <!-- 知识库范围选择器 -->
+            <div class="relative shrink-0">
+              <button onclick="togglePop('kbPop')" class="btn-secondary !px-3 max-w-[190px]">
+                <i data-lucide="library-big" class="w-4 h-4 text-ink-3 shrink-0"></i>
+                <span id="kbScopeLabel" class="truncate">知识库范围:全部(3)</span>
+                <i data-lucide="chevron-up" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>
+              </button>
+              <div id="kbPop" data-pop class="hidden absolute bottom-full mb-2 left-0 w-80 pop !p-0">
+                <div class="px-3.5 py-2.5 border-b border-line flex items-center justify-between">
+                  <span class="text-[13px] font-medium text-ink">检索范围</span>
+                  <label class="flex items-center gap-1.5 text-xs text-ink-3 cursor-pointer"><input type="checkbox" class="accent-primary w-3.5 h-3.5" checked onchange="toggleAllKb(this)">全选</label>
+                </div>
+                <div class="p-1.5">
+                  <label class="pop-item cursor-pointer"><input type="checkbox" class="kb-cb accent-primary w-3.5 h-3.5" checked onchange="updateKbScope()">产品手册库<span class="ml-auto text-[11px] text-ink-4">24 文档</span></label>
+                  <label class="pop-item cursor-pointer"><input type="checkbox" class="kb-cb accent-primary w-3.5 h-3.5" checked onchange="updateKbScope()">技术文档库<span class="ml-auto text-[11px] text-ink-4">58 文档</span></label>
+                  <label class="pop-item cursor-pointer"><input type="checkbox" class="kb-cb accent-primary w-3.5 h-3.5" checked onchange="updateKbScope()">合同模板库<span class="ml-auto text-[11px] text-ink-4">12 文档</span></label>
+                </div>
+              </div>
+            </div>
+            <!-- 输入框(自动增高) -->
+            <textarea id="chatInput" rows="1" placeholder="向知识库提问…"
+              class="flex-1 resize-none rounded-lg border border-line px-3.5 py-2 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition leading-relaxed max-h-40"
+              oninput="autoGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg()}"></textarea>
+            <!-- 发送 / 停止生成 -->
+            <button id="sendBtn" onclick="sendMsg()" class="hidden w-9 h-9 shrink-0 rounded-lg bg-primary hover:bg-primary-hover text-white grid place-items-center transition-colors" title="发送">
+              <i data-lucide="arrow-up" class="w-4 h-4"></i>
+            </button>
+            <button id="stopBtn" onclick="stopGen()" class="shrink-0 h-9 px-3.5 rounded-lg border border-line bg-white hover:bg-surface text-[13px] text-ink-2 inline-flex items-center gap-1.5 transition-colors" title="停止生成">
+              <i data-lucide="square" class="w-3 h-3 text-danger fill-danger"></i>停止生成
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ───── 引用抽屉 380px(默认展开) ───── -->
+    <aside id="citeDrawer" class="w-[380px] shrink-0 h-full bg-white border-l border-line flex flex-col overflow-hidden transition-[width] duration-200">
+      <div class="w-[380px] flex flex-col h-full">
+        <div class="h-14 shrink-0 border-b border-line px-4 flex items-center gap-2">
+          <i data-lucide="book-open-text" class="w-4 h-4 text-ink-3"></i>
+          <span class="text-sm font-semibold text-ink">引用来源</span>
+          <span class="badge bg-primary-soft text-primary h-5 px-1.5 rounded-md text-[11px] inline-flex items-center">3</span>
+          <button class="icon-btn ml-auto" onclick="closeCite()" title="关闭"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        <div class="flex-1 overflow-y-auto divide-y divide-line/80">
+          <!-- 引用 1 -->
+          <div class="p-4">
+            <div class="flex items-center gap-2">
+              <i data-lucide="file-text" class="w-4 h-4 text-primary shrink-0"></i>
+              <span class="text-[13px] font-medium text-ink truncate flex-1">合同审批制度.docx</span>
+              <span class="text-xs text-ink-4 shrink-0">P3 · 分块 #12</span>
+            </div>
+            <div class="mt-2.5 rounded-lg bg-surface border border-line/70 p-3 text-[13px] leading-relaxed text-ink-2">
+              <span class="clamp line-clamp-3">5.1 审批金额分级:合同金额超过 5 万元(含)的,须依次经部门负责人、法务、财务负责人三级审批;金额超过 20 万元(含)的,在三级审批通过后增加分管副总裁加签环节,加签人可要求补充说明材料。</span>
+              <button class="text-primary text-xs mt-1.5" onclick="toggleClamp(this)">展开全文</button>
+            </div>
+            <div class="flex items-center justify-between mt-2.5">
+              <span class="text-xs text-ink-4">相似度 <span class="mono text-ink-2">0.91</span></span>
+              <button class="btn-secondary !h-7 !px-2.5 text-xs">查看文档</button>
+            </div>
+          </div>
+          <!-- 引用 2 -->
+          <div class="p-4">
+            <div class="flex items-center gap-2">
+              <i data-lucide="file-text" class="w-4 h-4 text-primary shrink-0"></i>
+              <span class="text-[13px] font-medium text-ink truncate flex-1">合同审批制度.docx</span>
+              <span class="text-xs text-ink-4 shrink-0">P4 · 分块 #13</span>
+            </div>
+            <div class="mt-2.5 rounded-lg bg-surface border border-line/70 p-3 text-[13px] leading-relaxed text-ink-2">
+              <span class="clamp line-clamp-3">5.2 法务审查重点:合同标的、违约责任、付款条件与公司标准模板的偏差超过 10% 时,须由法务出具书面法律意见;重大偏差未附法律意见的,流程系统将自动驳回。</span>
+              <button class="text-primary text-xs mt-1.5" onclick="toggleClamp(this)">展开全文</button>
+            </div>
+            <div class="flex items-center justify-between mt-2.5">
+              <span class="text-xs text-ink-4">相似度 <span class="mono text-ink-2">0.88</span></span>
+              <button class="btn-secondary !h-7 !px-2.5 text-xs">查看文档</button>
+            </div>
+          </div>
+          <!-- 引用 3 -->
+          <div class="p-4">
+            <div class="flex items-center gap-2">
+              <i data-lucide="file-text" class="w-4 h-4 text-primary shrink-0"></i>
+              <span class="text-[13px] font-medium text-ink truncate flex-1">数据安全管理规范.docx</span>
+              <span class="text-xs text-ink-4 shrink-0">P12 · 分块 #47</span>
+            </div>
+            <div class="mt-2.5 rounded-lg bg-surface border border-line/70 p-3 text-[13px] leading-relaxed text-ink-2">
+              <span class="clamp line-clamp-3">4.2 日志脱敏要求:所有应用日志中出现的手机号、身份证号、银行卡号字段,必须在写入存储前完成掩码处理。手机号保留前三位与后四位,身份证号保留前六位与后四位,其余位以 * 替代,禁止明文落盘。</span>
+              <button class="text-primary text-xs mt-1.5" onclick="toggleClamp(this)">展开全文</button>
+            </div>
+            <div class="flex items-center justify-between mt-2.5">
+              <span class="text-xs text-ink-4">相似度 <span class="mono text-ink-2">0.92</span></span>
+              <button class="btn-secondary !h-7 !px-2.5 text-xs">查看文档</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<!-- toast 容器 -->
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed top-[68px] left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型演示</span>
+  <button class="st-btn st-on" onclick="demo('conversation', this)">对话中</button>
+  <button class="st-btn" onclick="demo('streaming', this)">流式生成</button>
+  <button class="st-btn" onclick="demo('empty', this)">空会话</button>
+  <button class="st-btn" onclick="demo('drawer', this)">引用抽屉开/关</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  /* ── 全局弹层 ── */
+  function togglePop(id) {
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  /* ── 侧边栏折叠 ── */
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  if (window.innerWidth < 1360) $('sidebar').classList.add('sb-collapsed');
+  /* ── Agent 卡片 ── */
+  function toggleAgent() {
+    $('agentBody').classList.toggle('hidden');
+    $('agentChevron').classList.toggle('rotate-180');
+  }
+  /* ── 引用抽屉 ── */
+  function openCite() {
+    $('citeDrawer').classList.remove('w-0', 'border-l-0');
+    $('citeDrawer').classList.add('w-[380px]');
+  }
+  function closeCite() {
+    $('citeDrawer').classList.add('w-0', 'border-l-0');
+    $('citeDrawer').classList.remove('w-[380px]');
+  }
+  function toggleClamp(btn) {
+    const el = btn.parentElement.querySelector('.clamp');
+    const folded = el.classList.toggle('line-clamp-3');
+    btn.textContent = folded ? '展开全文' : '收起';
+  }
+  /* ── 会话切换 / 空会话 ── */
+  function newChat() {
+    $('chatView').classList.add('hidden');
+    $('emptyView').classList.remove('hidden');
+    document.querySelectorAll('.sess').forEach(s => s.classList.remove('bg-primary-soft'));
+    setStreaming(false);
+  }
+  function selectSession(el) {
+    $('chatView').classList.remove('hidden');
+    $('emptyView').classList.add('hidden');
+    document.querySelectorAll('.sess').forEach(s => { s.classList.remove('bg-primary-soft'); s.classList.add('hover:bg-surface'); });
+    el.classList.add('bg-primary-soft'); el.classList.remove('hover:bg-surface');
+  }
+  function useChip(btn) {
+    $('chatInput').value = btn.textContent.trim();
+    $('chatInput').focus(); autoGrow($('chatInput'));
+  }
+  /* ── 流式 / 发送状态 ── */
+  function setStreaming(on) {
+    $('streamCursor').style.display = on ? '' : 'none';
+    $('sendBtn').classList.toggle('hidden', on);
+    $('stopBtn').classList.toggle('hidden', !on);
+  }
+  function stopGen() { setStreaming(false); toast('已停止生成'); }
+  function sendMsg() { toast('演示:已发送,等待流式回答'); }
+  function autoGrow(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
+  /* ── 知识库范围 ── */
+  function updateKbScope() {
+    const cbs = [...document.querySelectorAll('.kb-cb')];
+    const n = cbs.filter(c => c.checked).length;
+    $('kbScopeLabel').textContent = n === cbs.length ? `知识库范围:全部(${cbs.length})` : n === 0 ? '未选择知识库' : `知识库范围:已选 ${n} 个`;
+    document.querySelector('#kbPop input[type=checkbox]').checked = n === cbs.length;
+  }
+  function toggleAllKb(main) {
+    document.querySelectorAll('.kb-cb').forEach(c => c.checked = main.checked);
+    updateKbScope();
+  }
+  /* ── 复制 / toast ── */
+  function copyCode(btn) { toast('已复制到剪贴板'); }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  /* ── 原型演示切换 ── */
+  function demo(mode, btn) {
+    document.querySelectorAll('.st-btn').forEach(b => b.classList.remove('st-on'));
+    btn.classList.add('st-on');
+    if (mode === 'conversation') { selectSession(document.querySelector('.sess')); setStreaming(false); openCite(); }
+    if (mode === 'streaming') { selectSession(document.querySelector('.sess')); setStreaming(true); }
+    if (mode === 'empty') { newChat(); }
+    if (mode === 'drawer') { $('citeDrawer').classList.contains('w-0') ? openCite() : closeCite(); }
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

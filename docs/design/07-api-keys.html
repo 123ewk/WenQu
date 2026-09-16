@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 07/09 API Key
+  布局栅格:侧边栏 240 + 顶栏 56 + 内容区:页头 + 说明条 + Key 表格(card 内,行高 44px)
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px · 表格行高 44px
+  状态/交互:新建 Key 模态框两步(表单 → 一次性展示页:深色代码块+复制+红色警示+我已保存)
+            · 吊销二次确认(写清后果) · 正常/加载/空/错误四态(右下角切换) · 掩码等宽字体
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API Key · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-danger { @apply h-9 px-4 rounded-lg bg-danger hover:bg-[#DC2626] text-white text-sm font-medium inline-flex items-center justify-center transition-colors; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .pop-item { @apply w-full flex items-center gap-2 h-8 px-2 rounded-md text-[13px] text-ink-2 hover:bg-surface cursor-pointer; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .skel { @apply rounded-md bg-[#EDEFF2] animate-pulse; }
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+  .tbl { @apply w-full text-left text-sm; }
+  .tbl th { @apply h-10 px-4 text-xs font-normal text-ink-4 bg-surface border-b border-line whitespace-nowrap; }
+  .tbl td { @apply h-11 px-4 border-b border-line text-ink-2 align-middle; }
+  .tbl tbody tr:hover td { background: #FAFBFC; }
+  .cap-badge { @apply inline-flex items-center h-5 px-1.5 rounded-md text-[11px] bg-primary-soft text-primary leading-none; }
+  .cap-badge-gray { @apply inline-flex items-center h-5 px-1.5 rounded-md text-[11px] bg-surface border border-line text-ink-3 leading-none; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 侧边栏 240px ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="building-2" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">产品研发部</span>
+        <span class="block text-[11px] text-ink-4">Admin</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">我的空间</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">产品研发部</span><span class="text-[11px] text-ink-4">Admin</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span><span class="text-[11px] text-ink-4">Viewer</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span><span class="text-[11px] text-ink-4">Owner</span></a>
+      <div class="my-1.5 border-t border-line"></div>
+      <a class="pop-item text-primary"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>新建空间</a>
+    </div>
+  </div>
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item nav-active"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a class="nav-item text-ink-4 cursor-default hover:bg-transparent" title="仅系统管理员可见">
+      <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide flex-1">审计日志</span>
+      <i data-lucide="lock" class="w-3 h-3 shrink-0 text-ink-4 sb-hide"></i>
+    </a>
+  </nav>
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">王砚</span>
+        <span class="block text-[11px] text-ink-4">产品研发部 · Admin</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 右侧区域 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-3">
+    <h1 class="text-base font-semibold text-ink">API Key</h1>
+    <div class="ml-auto"></div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-[1240px] px-8 py-6">
+      <!-- 页头 + 说明条 -->
+      <div class="flex items-center justify-between mb-4">
+        <div class="text-lg font-semibold text-ink">API Key</div>
+        <button class="btn-primary" onclick="openNewKey()"><i data-lucide="plus" class="w-4 h-4"></i>新建 Key</button>
+      </div>
+      <div class="flex items-start gap-2.5 rounded-lg bg-surface px-4 py-3 text-[13px] text-ink-3 leading-relaxed mb-5">
+        <i data-lucide="info" class="w-4 h-4 mt-0.5 shrink-0 text-ink-4"></i>
+        <span>Key 用于程序化接入,可限定能力与知识库范围。请妥善保管,一旦泄露请立即吊销并新建。</span>
+      </div>
+
+      <!-- ── 正常态:表格 ── -->
+      <div id="view-normal" class="card overflow-hidden">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>Key</th>
+              <th>能力</th>
+              <th>允许的知识库</th>
+              <th>创建时间</th>
+              <th>最近使用</th>
+              <th class="text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="keyRows">
+            <tr>
+              <td><span class="text-ink text-[13px] font-medium">ci-pipeline</span><div class="text-[11px] text-ink-4 mt-0.5">CI 构建后同步接口文档</div></td>
+              <td><span class="mono text-[13px] text-ink-2 bg-surface border border-line rounded px-2 py-0.5">sk-****4f2a</span></td>
+              <td><span class="cap-badge">对话检索</span></td>
+              <td class="text-[13px]">产品手册库、技术文档库</td>
+              <td class="text-ink-4 text-[13px]">2025-08-12</td>
+              <td class="text-ink-4 text-[13px]">2 小时前</td>
+              <td class="text-right"><button class="text-[13px] text-danger hover:underline" onclick="revokeKey('ci-pipeline')">吊销</button></td>
+            </tr>
+            <tr>
+              <td><span class="text-ink text-[13px] font-medium">support-bot</span><div class="text-[11px] text-ink-4 mt-0.5">客服机器人知识问答</div></td>
+              <td><span class="mono text-[13px] text-ink-2 bg-surface border border-line rounded px-2 py-0.5">sk-****9d31</span></td>
+              <td class="space-x-1"><span class="cap-badge">对话检索</span><span class="cap-badge-gray">文档管理</span></td>
+              <td class="text-[13px]">全部知识库</td>
+              <td class="text-ink-4 text-[13px]">2025-09-01</td>
+              <td class="text-ink-4 text-[13px]">昨天 22:41</td>
+              <td class="text-right"><button class="text-[13px] text-danger hover:underline" onclick="revokeKey('support-bot')">吊销</button></td>
+            </tr>
+            <tr>
+              <td><span class="text-ink text-[13px] font-medium">analytics-weekly</span><div class="text-[11px] text-ink-4 mt-0.5">周报数据拉取脚本</div></td>
+              <td><span class="mono text-[13px] text-ink-2 bg-surface border border-line rounded px-2 py-0.5">sk-****7c08</span></td>
+              <td><span class="cap-badge">对话检索</span></td>
+              <td class="text-[13px]">竞品分析库</td>
+              <td class="text-ink-4 text-[13px]">2025-06-30</td>
+              <td class="text-ink-4 text-[13px]">从未使用</td>
+              <td class="text-right"><button class="text-[13px] text-danger hover:underline" onclick="revokeKey('analytics-weekly')">吊销</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ── 加载中 ── -->
+      <div id="view-loading" class="hidden card overflow-hidden p-4 space-y-4">
+        <div class="flex items-center gap-4"><div class="skel h-4 w-28"></div><div class="skel h-4 w-24"></div><div class="skel h-4 w-20"></div><div class="skel h-4 w-32 ml-auto"></div></div>
+        <div class="flex items-center gap-4"><div class="skel h-4 w-24"></div><div class="skel h-4 w-28"></div><div class="skel h-4 w-16"></div><div class="skel h-4 w-28 ml-auto"></div></div>
+        <div class="flex items-center gap-4"><div class="skel h-4 w-32"></div><div class="skel h-4 w-20"></div><div class="skel h-4 w-24"></div><div class="skel h-4 w-24 ml-auto"></div></div>
+      </div>
+
+      <!-- ── 空状态 ── -->
+      <div id="view-empty" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <svg width="96" height="72" viewBox="0 0 96 72" fill="none" stroke="#9CA3AF" stroke-width="1.5">
+            <circle cx="38" cy="30" r="14"/>
+            <path d="M48 40l22 22m0 0h-8m8 0v-8" stroke="#4F6EF2"/>
+            <circle cx="34" cy="26" r="2" fill="#9CA3AF" stroke="none"/>
+          </svg>
+          <div class="text-[15px] font-semibold text-ink mt-5">还没有 API Key</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">创建 Key 后,即可在程序中调用检索与对话接口</div>
+          <button class="btn-primary mt-5" onclick="openNewKey()"><i data-lucide="plus" class="w-4 h-4"></i>新建 Key</button>
+        </div>
+      </div>
+
+      <!-- ── 错误状态 ── -->
+      <div id="view-error" class="hidden">
+        <div class="flex flex-col items-center py-24">
+          <div class="w-12 h-12 rounded-full bg-danger/10 grid place-items-center"><i data-lucide="triangle-alert" class="w-5 h-5 text-danger"></i></div>
+          <div class="text-[15px] font-semibold text-ink mt-4">加载失败</div>
+          <div class="text-[13px] text-ink-3 mt-1.5">服务暂时不可用(500),请稍后重试</div>
+          <button class="btn-secondary mt-5"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重试</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 新建 Key 模态框(两步) -->
+<div id="newKeyModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('newKeyModal')"></div>
+  <div class="relative card w-[480px] p-6 max-h-[86vh] overflow-y-auto">
+    <!-- 步骤 1:表单 -->
+    <div id="keyStep1">
+      <div class="text-base font-semibold text-ink">新建 API Key</div>
+      <div class="mt-5 space-y-4">
+        <div>
+          <label class="block text-[13px] text-ink-2 mb-1.5">名称 <span class="text-danger">*</span></label>
+          <input class="input" placeholder="例如:ci-pipeline">
+        </div>
+        <div>
+          <label class="block text-[13px] text-ink-2 mb-1.5">能力</label>
+          <div class="space-y-2">
+            <label class="flex items-start gap-2.5 rounded-lg border border-line px-3 py-2.5 cursor-pointer hover:bg-surface">
+              <input type="checkbox" checked class="accent-primary w-3.5 h-3.5 mt-0.5">
+              <span><span class="text-[13px] text-ink">对话检索</span><span class="block text-xs text-ink-4 mt-0.5">调用 /chat 流式问答与 /search 检索接口</span></span>
+            </label>
+            <label class="flex items-start gap-2.5 rounded-lg border border-line px-3 py-2.5 cursor-pointer hover:bg-surface">
+              <input type="checkbox" class="accent-primary w-3.5 h-3.5 mt-0.5">
+              <span><span class="text-[13px] text-ink">文档管理</span><span class="block text-xs text-ink-4 mt-0.5">上传、删除文档与触发重新解析</span></span>
+            </label>
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-[13px] text-ink-2">允许的知识库</label>
+            <label class="flex items-center gap-1.5 text-xs text-ink-3 cursor-pointer"><input type="checkbox" id="kbAll" class="accent-primary w-3.5 h-3.5" checked onchange="toggleAllKeyKb(this)">全部</label>
+          </div>
+          <div class="grid grid-cols-2 gap-1.5">
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">产品手册库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">技术文档库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">合同模板库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">规章制度库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">会议纪要库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">竞品分析库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">客服话术库</label>
+            <label class="key-kb flex items-center gap-2 h-8 px-2.5 rounded-md border border-line text-[13px] text-ink-2 cursor-pointer hover:bg-surface"><input type="checkbox" checked class="accent-primary w-3.5 h-3.5" onchange="syncKbAll()">培训资料库</label>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-6">
+        <button class="btn-secondary" onclick="closeModal('newKeyModal')">取消</button>
+        <button class="btn-primary" onclick="createKey()">创建 Key</button>
+      </div>
+    </div>
+    <!-- 步骤 2:一次性展示页 -->
+    <div id="keyStep2" class="hidden">
+      <div class="text-base font-semibold text-ink">Key 已创建</div>
+      <div class="text-[13px] text-ink-3 mt-1">请立即复制保存,这是唯一一次完整展示。</div>
+      <div class="relative mt-4">
+        <div class="rounded-lg bg-[#111827] px-4 py-3.5">
+          <div class="text-[11px] text-[#9CA3AF] mb-1.5 mono">WENQU_API_KEY</div>
+          <div class="mono text-[13px] text-[#E5E7EB] break-all leading-relaxed">sk-live-3f9a2c81e7b64d05a2f8c9d1e4b7a6f2</div>
+        </div>
+        <button class="absolute top-9 right-2.5 h-7 px-2 rounded-md bg-[#1F2937] hover:bg-[#374151] text-[#E5E7EB] text-xs inline-flex items-center gap-1" onclick="copyKey(this)"><i data-lucide="copy" class="w-3 h-3"></i>复制</button>
+      </div>
+      <div class="flex items-start gap-2 rounded-lg bg-danger/5 border border-danger/30 px-3 py-2.5 text-[13px] text-danger leading-relaxed mt-4">
+        <i data-lucide="triangle-alert" class="w-4 h-4 mt-0.5 shrink-0"></i>关闭后无法再次查看完整 Key,请立即复制并妥善保存。
+      </div>
+      <div class="flex justify-end gap-2 mt-6">
+        <button class="btn-primary" onclick="finishKey()">我已保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 吊销二次确认 -->
+<div id="revokeModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('revokeModal')"></div>
+  <div class="relative card w-[420px] p-6">
+    <div class="flex items-start gap-3">
+      <div class="w-9 h-9 rounded-full bg-danger/10 grid place-items-center shrink-0"><i data-lucide="key-round" class="w-4 h-4 text-danger"></i></div>
+      <div>
+        <div class="text-base font-semibold text-ink">吊销 Key「<span id="revokeName">ci-pipeline</span>」?</div>
+        <p class="text-[13px] text-ink-3 mt-1.5 leading-relaxed">吊销后,使用该 Key 的所有程序将立即收到 403 并失去访问权限,此操作<span class="text-danger font-medium">不可恢复</span>。如需继续使用,请创建新 Key。</p>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('revokeModal')">取消</button>
+      <button class="btn-danger" onclick="closeModal('revokeModal');toast('Key 已吊销')">确认吊销</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型状态</span>
+  <button class="st-btn st-on" onclick="setState('normal', this)">正常</button>
+  <button class="st-btn" onclick="setState('loading', this)">加载中</button>
+  <button class="st-btn" onclick="setState('empty', this)">空</button>
+  <button class="st-btn" onclick="setState('error', this)">错误</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  function togglePop(id) {
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  function openModal(id) { $(id).classList.remove('hidden'); }
+  function closeModal(id) { $(id).classList.add('hidden'); }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  function setState(s, btn) {
+    ['normal', 'loading', 'empty', 'error'].forEach(k => $('view-' + k).classList.toggle('hidden', k !== s));
+    document.querySelectorAll('.st-btn').forEach(b => b.classList.remove('st-on'));
+    btn.classList.add('st-on');
+  }
+  /* 新建 Key 两步 */
+  function openNewKey() {
+    $('keyStep1').classList.remove('hidden');
+    $('keyStep2').classList.add('hidden');
+    openModal('newKeyModal');
+  }
+  function createKey() { $('keyStep1').classList.add('hidden'); $('keyStep2').classList.remove('hidden'); }
+  function copyKey() { toast('已复制到剪贴板'); }
+  function finishKey() {
+    closeModal('newKeyModal');
+    toast('Key 已创建');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><span class="text-ink text-[13px] font-medium">new-key</span><div class="text-[11px] text-ink-4 mt-0.5">刚刚创建</div></td>
+      <td><span class="mono text-[13px] text-ink-2 bg-surface border border-line rounded px-2 py-0.5">sk-****a6f2</span></td>
+      <td><span class="cap-badge">对话检索</span></td><td class="text-[13px]">全部知识库</td>
+      <td class="text-ink-4 text-[13px]">刚刚</td><td class="text-ink-4 text-[13px]">从未使用</td>
+      <td class="text-right"><button class="text-[13px] text-danger hover:underline" onclick="revokeKey('new-key')">吊销</button></td>`;
+    $('keyRows').prepend(tr);
+    setState('normal', document.querySelector('.fixed.bottom-4 .st-btn'));
+  }
+  function revokeKey(name) { $('revokeName').textContent = name; openModal('revokeModal'); }
+  function toggleAllKeyKb(main) { document.querySelectorAll('.key-kb input').forEach(c => c.checked = main.checked); }
+  function syncKbAll() {
+    const all = [...document.querySelectorAll('.key-kb input')];
+    $('kbAll').checked = all.every(c => c.checked);
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>

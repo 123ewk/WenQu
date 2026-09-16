@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -20,11 +21,22 @@ logger = logging.getLogger(__name__)
 class ErrorCode:
     """(内部数值码, 稳定字符串码)注册表。"""
 
+    # 1000-1999 通用
     INTERNAL = (1000, "INTERNAL_ERROR")
     VALIDATION = (1001, "VALIDATION_ERROR")
     NOT_FOUND = (1002, "NOT_FOUND")
+    # 2xxx 认证与账号
     AUTH_REQUIRED = (2000, "AUTH_REQUIRED")
     FORBIDDEN = (2001, "FORBIDDEN")
+    INVALID_CREDENTIALS = (2002, "INVALID_CREDENTIALS")
+    TOKEN_EXPIRED = (2003, "TOKEN_EXPIRED")
+    REFRESH_TOKEN_INVALID = (2004, "REFRESH_TOKEN_INVALID")
+    USERNAME_TAKEN = (2005, "USERNAME_TAKEN")
+    USER_NOT_FOUND = (2006, "USER_NOT_FOUND")
+    MEMBER_ALREADY = (2007, "MEMBER_ALREADY")
+    # 3xxx 知识库与空间
+    SPACE_NOT_FOUND = (3000, "SPACE_NOT_FOUND")
+    MEMBER_NOT_FOUND = (3001, "MEMBER_NOT_FOUND")
 
 
 class AppError(Exception):
@@ -52,6 +64,22 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
         content={
             "success": False,
             "error": {"code": exc.code_str, "message": exc.message, "details": exc.details},
+        },
+    )
+
+
+async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """请求参数校验失败 → 422 统一壳(错误契约对所有响应一致,基准 02)。"""
+    assert isinstance(exc, RequestValidationError)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "请求参数不合法",
+                "details": list(exc.errors()),
+            },
         },
     )
 

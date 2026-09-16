@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<!--
+  WenQu 高保真原型 · 06/09 空间管理(成员 / 空间设置)
+  布局栅格:侧边栏 240 + 顶栏 56 + 内容区:页头(空间名)+ Tab 导航 + Tab 面板(成员表格 / 设置表单 max-w 560)
+  设计令牌:主色 #4F6EF2 · 分区 #F7F8FA · 边框 #E5E7EB · 正文 14px/1.6 · 辅助 12px #9CA3AF · 圆角 8px/卡片 12px · 表格行高 44px
+  状态/交互:邀请成员模态框(邮箱+角色) · 角色行内下拉(每个选项带权限说明) · 移除成员二次确认
+            · 底部权限对照说明 · 空间设置含默认检索参数(仅 Admin+) · 右下角可切 Admin/Editor 预览权限显隐
+-->
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>空间管理 · 问渠 WenQu</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      primary: { DEFAULT: '#4F6EF2', hover: '#3E5BE0', soft: '#EEF1FE' },
+      surface: '#F7F8FA', line: '#E5E7EB',
+      ink: { DEFAULT: '#111827', 2: '#374151', 3: '#6B7280', 4: '#9CA3AF' },
+      success: '#10B981', warning: '#F59E0B', danger: '#EF4444',
+    },
+  } },
+};
+</script>
+<style type="text/tailwindcss">
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Inter, Roboto, sans-serif; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #D8DCE3; border-radius: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  .btn-primary { @apply h-9 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-secondary { @apply h-9 px-4 rounded-lg border border-line bg-white hover:bg-surface text-ink-2 text-sm inline-flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50; }
+  .btn-danger { @apply h-9 px-4 rounded-lg bg-danger hover:bg-[#DC2626] text-white text-sm font-medium inline-flex items-center justify-center transition-colors; }
+  .btn-ghost { @apply h-8 px-2.5 rounded-lg hover:bg-surface text-ink-3 hover:text-ink text-[13px] inline-flex items-center gap-1.5 transition-colors; }
+  .icon-btn { @apply w-8 h-8 rounded-lg grid place-items-center text-ink-3 hover:text-ink hover:bg-surface transition-colors shrink-0; }
+  .input { @apply h-9 w-full rounded-lg border border-line px-3 text-sm text-ink placeholder:text-ink-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/15 transition bg-white; }
+  .card { @apply bg-white border border-line rounded-xl; }
+  .pop { @apply bg-white border border-line rounded-xl p-1.5 z-40; }
+  .nav-item { @apply flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm text-ink-2 hover:bg-surface transition-colors; }
+  .nav-active { @apply bg-primary-soft text-primary font-medium; }
+  .sb-collapsed { width: 64px; }
+  .sb-collapsed .sb-hide { display: none; }
+  .sb-collapsed .sb-center { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sb-collapsed .sb-show { display: block !important; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace; }
+  .st-btn { @apply px-2 h-6 rounded-md text-xs text-ink-3 hover:bg-surface; }
+  .st-on { @apply bg-primary-soft text-primary font-medium; }
+  .tbl { @apply w-full text-left text-sm; }
+  .tbl th { @apply h-10 px-4 text-xs font-normal text-ink-4 bg-surface border-b border-line whitespace-nowrap; }
+  .tbl td { @apply h-11 px-4 border-b border-line text-ink-2 align-middle; }
+  .tbl tbody tr:hover td { background: #FAFBFC; }
+  .tab-btn { @apply h-11 px-1 -mb-px text-sm text-ink-3 hover:text-ink border-b-2 border-transparent transition-colors inline-flex items-center gap-1.5; }
+  .tab-on { @apply text-primary font-medium border-primary; }
+</style>
+</head>
+<body class="h-screen overflow-hidden flex text-ink-2 bg-white">
+
+<!-- ═══════════ 侧边栏 240px ═══════════ -->
+<aside id="sidebar" class="w-60 shrink-0 h-full bg-white border-r border-line flex flex-col transition-[width] duration-200 relative z-30">
+  <div class="h-14 px-4 flex items-center gap-2 shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-primary grid place-items-center text-white text-[13px] font-semibold shrink-0">问</div>
+    <div class="sb-hide leading-none min-w-0">
+      <div class="text-[15px] font-semibold text-ink">问渠</div>
+      <div class="text-[10px] text-ink-4 mt-0.5">WenQu</div>
+    </div>
+    <button class="icon-btn ml-auto shrink-0" title="折叠侧边栏" onclick="toggleSidebar()">
+      <i data-lucide="panel-left-close" class="w-4 h-4 sb-hide"></i>
+      <i data-lucide="panel-left-open" class="w-4 h-4 hidden sb-show"></i>
+    </button>
+  </div>
+  <div class="px-3 mt-1 shrink-0">
+    <button onclick="togglePop('spacePop')" class="sb-center w-full h-11 px-2.5 rounded-lg border border-line flex items-center gap-2 hover:bg-surface">
+      <i data-lucide="building-2" class="w-4 h-4 text-ink-3 shrink-0"></i>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] font-medium text-ink truncate">产品研发部</span>
+        <span class="block text-[11px] text-ink-4">Admin</span>
+      </span>
+      <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-ink-4 shrink-0 sb-hide"></i>
+    </button>
+    <div id="spacePop" data-pop class="hidden absolute left-3 top-[110px] w-56 pop">
+      <div class="px-2 py-1.5 text-[11px] text-ink-4">我的空间</div>
+      <a class="pop-item"><i data-lucide="check" class="w-3.5 h-3.5 text-primary shrink-0"></i><span class="flex-1 truncate">产品研发部</span><span class="text-[11px] text-ink-4">Admin</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">市场部知识空间</span><span class="text-[11px] text-ink-4">Viewer</span></a>
+      <a class="pop-item"><span class="w-3.5 shrink-0"></span><span class="flex-1 truncate">个人空间</span><span class="text-[11px] text-ink-4">Owner</span></a>
+      <div class="my-1.5 border-t border-line"></div>
+      <a class="pop-item text-primary"><i data-lucide="plus" class="w-3.5 h-3.5 shrink-0"></i>新建空间</a>
+    </div>
+  </div>
+  <nav class="px-3 mt-4 space-y-1 flex-1 overflow-y-auto">
+    <a href="02-chat.html" class="nav-item"><i data-lucide="message-square" class="w-4 h-4 shrink-0"></i><span class="sb-hide">对话</span></a>
+    <a href="03-kb-list.html" class="nav-item"><i data-lucide="library-big" class="w-4 h-4 shrink-0"></i><span class="sb-hide">知识库</span></a>
+    <a href="07-api-keys.html" class="nav-item"><i data-lucide="key-round" class="w-4 h-4 shrink-0"></i><span class="sb-hide">API Key</span></a>
+    <a class="nav-item text-ink-4 cursor-default hover:bg-transparent" title="仅系统管理员可见">
+      <i data-lucide="scroll-text" class="w-4 h-4 shrink-0"></i><span class="sb-hide flex-1">审计日志</span>
+      <i data-lucide="lock" class="w-3 h-3 shrink-0 text-ink-4 sb-hide"></i>
+    </a>
+  </nav>
+  <div class="p-3 border-t border-line shrink-0 relative">
+    <button onclick="togglePop('userPop')" class="sb-center w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-surface">
+      <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+      <span class="sb-hide flex-1 text-left min-w-0 leading-tight">
+        <span class="block text-[13px] text-ink font-medium truncate">王砚</span>
+        <span class="block text-[11px] text-ink-4">产品研发部 · Admin</span>
+      </span>
+    </button>
+    <div id="userPop" data-pop class="hidden absolute left-3 bottom-14 w-44 pop">
+      <a href="09-profile.html" class="pop-item"><i data-lucide="user" class="w-3.5 h-3.5 text-ink-4 shrink-0"></i>个人中心</a>
+      <a class="pop-item text-danger hover:bg-danger/5"><i data-lucide="log-out" class="w-3.5 h-3.5 shrink-0"></i>退出登录</a>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 右侧区域 ═══════════ -->
+<div class="flex-1 min-w-0 flex flex-col">
+  <header class="h-14 shrink-0 border-b border-line bg-white flex items-center px-6 gap-3">
+    <h1 class="text-base font-semibold text-ink">空间管理</h1>
+    <span class="text-xs text-ink-4">空间内成员与默认参数由 Admin 及以上管理</span>
+    <div class="ml-auto"></div>
+  </header>
+
+  <main class="flex-1 overflow-y-auto">
+    <div class="max-w-[1000px] px-8 py-6">
+      <!-- 页头 -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-primary-soft grid place-items-center"><i data-lucide="building-2" class="w-4 h-4 text-primary"></i></div>
+        <span class="text-lg font-semibold text-ink">产品研发部</span>
+        <span class="badge bg-surface border border-line text-ink-3 text-[11px] h-5 px-1.5 rounded-md inline-flex items-center">我的角色:Admin</span>
+      </div>
+      <div class="flex items-center gap-6 border-b border-line mt-5">
+        <button id="tab-a" class="tab-btn tab-on" onclick="setTab('a')">成员</button>
+        <button id="tab-b" class="tab-btn" onclick="setTab('b')">空间设置</button>
+      </div>
+
+      <!-- ═══ Tab A 成员 ═══ -->
+      <div id="view-a" class="pt-4">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs text-ink-4">共 5 名成员</div>
+          <button class="btn-primary admin-hide" onclick="openModal('inviteModal')"><i data-lucide="user-plus" class="w-4 h-4"></i>邀请成员</button>
+        </div>
+        <div class="card overflow-hidden">
+          <table class="tbl">
+            <thead>
+              <tr><th>成员</th><th class="w-[220px]">角色</th><th class="w-[140px]">加入时间</th><th class="w-[100px] text-right">操作</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <span class="w-7 h-7 rounded-full bg-primary-soft text-primary text-xs font-medium grid place-items-center shrink-0">王</span>
+                    <div class="leading-tight"><div class="text-ink text-[13px]">王砚<span class="text-[11px] text-ink-4 ml-1.5">(我)</span></div><div class="text-xs text-ink-4 mt-0.5">wang.yan@corp.com</div></div>
+                  </div>
+                </td>
+                <td>
+                  <span class="inline-flex items-center gap-1 text-[13px] text-ink-2" title="Owner:空间全部权限,含删除空间与转让所有权"><i data-lucide="crown" class="w-3.5 h-3.5 text-warning"></i>Owner<i data-lucide="info" class="w-3 h-3 text-ink-4"></i></span>
+                </td>
+                <td class="text-ink-4 text-[13px]">2024-03-12</td>
+                <td class="text-right"><button class="text-[13px] text-ink-4 cursor-not-allowed" title="Owner 不能移除自己">移除</button></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <span class="w-7 h-7 rounded-full bg-[#E8F0FE] text-[#3B6FE0] text-xs font-medium grid place-items-center shrink-0">赵</span>
+                    <div class="leading-tight"><div class="text-ink text-[13px]">赵子昂</div><div class="text-xs text-ink-4 mt-0.5">zhao.ziang@corp.com</div></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="relative inline-block role-cell">
+                    <button onclick="togglePop('rolePop1', this)" class="h-7 px-2 rounded-md border border-line bg-white text-[13px] text-ink-2 inline-flex items-center gap-1.5 hover:bg-surface">Admin<i data-lucide="chevron-down" class="w-3 h-3 text-ink-4"></i></button>
+                    <i data-lucide="info" class="w-3 h-3 text-ink-4 ml-1 align-middle" title="Admin:成员管理与空间设置,可管理知识库与 API Key"></i>
+                    <div id="rolePop1" data-pop class="hidden absolute left-0 top-8 w-52 pop">
+                      <div class="px-2 py-1.5 text-[11px] text-ink-4">变更角色</div>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Owner')"><span class="text-[13px] text-ink-2">Owner</span><span class="text-[11px] text-ink-4">全部权限,含删除与转让空间</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5 bg-primary-soft" onclick="pickRole(this,'Admin')"><span class="text-[13px] text-primary font-medium">Admin</span><span class="text-[11px] text-ink-4">成员管理、空间设置、知识库管理</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Editor')"><span class="text-[13px] text-ink-2">Editor</span><span class="text-[11px] text-ink-4">上传与管理文档、对话</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Viewer')"><span class="text-[13px] text-ink-2">Viewer</span><span class="text-[11px] text-ink-4">仅对话与阅读,只读</span></a>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">2024-05-08</td>
+                <td class="text-right"><button class="text-[13px] text-danger hover:underline admin-hide" onclick="removeMember('赵子昂')">移除</button></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <span class="w-7 h-7 rounded-full bg-[#E6F7F1] text-[#0E9F6E] text-xs font-medium grid place-items-center shrink-0">林</span>
+                    <div class="leading-tight"><div class="text-ink text-[13px]">林晚晴</div><div class="text-xs text-ink-4 mt-0.5">lin.wanqing@corp.com</div></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="relative inline-block role-cell">
+                    <button onclick="togglePop('rolePop2', this)" class="h-7 px-2 rounded-md border border-line bg-white text-[13px] text-ink-2 inline-flex items-center gap-1.5 hover:bg-surface">Editor<i data-lucide="chevron-down" class="w-3 h-3 text-ink-4"></i></button>
+                    <i data-lucide="info" class="w-3 h-3 text-ink-4 ml-1 align-middle" title="Editor:可上传文档、管理自己上传的文档,可对话"></i>
+                    <div id="rolePop2" data-pop class="hidden absolute left-0 top-8 w-52 pop">
+                      <div class="px-2 py-1.5 text-[11px] text-ink-4">变更角色</div>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Owner')"><span class="text-[13px] text-ink-2">Owner</span><span class="text-[11px] text-ink-4">全部权限,含删除与转让空间</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Admin')"><span class="text-[13px] text-ink-2">Admin</span><span class="text-[11px] text-ink-4">成员管理、空间设置、知识库管理</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5 bg-primary-soft" onclick="pickRole(this,'Editor')"><span class="text-[13px] text-primary font-medium">Editor</span><span class="text-[11px] text-ink-4">上传与管理文档、对话</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Viewer')"><span class="text-[13px] text-ink-2">Viewer</span><span class="text-[11px] text-ink-4">仅对话与阅读,只读</span></a>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">2024-08-21</td>
+                <td class="text-right"><button class="text-[13px] text-danger hover:underline admin-hide" onclick="removeMember('林晚晴')">移除</button></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <span class="w-7 h-7 rounded-full bg-[#F3F0FF] text-[#7C5CE0] text-xs font-medium grid place-items-center shrink-0">陈</span>
+                    <div class="leading-tight"><div class="text-ink text-[13px]">陈默</div><div class="text-xs text-ink-4 mt-0.5">chen.mo@corp.com</div></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="relative inline-block role-cell">
+                    <button onclick="togglePop('rolePop3', this)" class="h-7 px-2 rounded-md border border-line bg-white text-[13px] text-ink-2 inline-flex items-center gap-1.5 hover:bg-surface">Viewer<i data-lucide="chevron-down" class="w-3 h-3 text-ink-4"></i></button>
+                    <i data-lucide="info" class="w-3 h-3 text-ink-4 ml-1 align-middle" title="Viewer:只读对话,不能上传或修改文档,不可见空间设置"></i>
+                    <div id="rolePop3" data-pop class="hidden absolute left-0 top-8 w-52 pop">
+                      <div class="px-2 py-1.5 text-[11px] text-ink-4">变更角色</div>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Owner')"><span class="text-[13px] text-ink-2">Owner</span><span class="text-[11px] text-ink-4">全部权限,含删除与转让空间</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Admin')"><span class="text-[13px] text-ink-2">Admin</span><span class="text-[11px] text-ink-4">成员管理、空间设置、知识库管理</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Editor')"><span class="text-[13px] text-ink-2">Editor</span><span class="text-[11px] text-ink-4">上传与管理文档、对话</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5 bg-primary-soft" onclick="pickRole(this,'Viewer')"><span class="text-[13px] text-primary font-medium">Viewer</span><span class="text-[11px] text-ink-4">仅对话与阅读,只读</span></a>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">2025-01-15</td>
+                <td class="text-right"><button class="text-[13px] text-danger hover:underline admin-hide" onclick="removeMember('陈默')">移除</button></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="flex items-center gap-2.5">
+                    <span class="w-7 h-7 rounded-full bg-[#FFF4E5] text-[#B45309] text-xs font-medium grid place-items-center shrink-0">周</span>
+                    <div class="leading-tight"><div class="text-ink text-[13px]">周舟</div><div class="text-xs text-ink-4 mt-0.5">zhou.zhou@corp.com</div></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="relative inline-block role-cell">
+                    <button onclick="togglePop('rolePop4', this)" class="h-7 px-2 rounded-md border border-line bg-white text-[13px] text-ink-2 inline-flex items-center gap-1.5 hover:bg-surface">Editor<i data-lucide="chevron-down" class="w-3 h-3 text-ink-4"></i></button>
+                    <i data-lucide="info" class="w-3 h-3 text-ink-4 ml-1 align-middle" title="Editor:可上传文档、管理自己上传的文档,可对话"></i>
+                    <div id="rolePop4" data-pop class="hidden absolute left-0 top-8 w-52 pop">
+                      <div class="px-2 py-1.5 text-[11px] text-ink-4">变更角色</div>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Owner')"><span class="text-[13px] text-ink-2">Owner</span><span class="text-[11px] text-ink-4">全部权限,含删除与转让空间</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Admin')"><span class="text-[13px] text-ink-2">Admin</span><span class="text-[11px] text-ink-4">成员管理、空间设置、知识库管理</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5 bg-primary-soft" onclick="pickRole(this,'Editor')"><span class="text-[13px] text-primary font-medium">Editor</span><span class="text-[11px] text-ink-4">上传与管理文档、对话</span></a>
+                      <a class="pop-item !h-auto py-1.5 flex-col !items-start gap-0.5" onclick="pickRole(this,'Viewer')"><span class="text-[13px] text-ink-2">Viewer</span><span class="text-[11px] text-ink-4">仅对话与阅读,只读</span></a>
+                    </div>
+                  </div>
+                </td>
+                <td class="text-ink-4 text-[13px]">2025-06-02</td>
+                <td class="text-right"><button class="text-[13px] text-danger hover:underline admin-hide" onclick="removeMember('周舟')">移除</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- 底部权限对照 -->
+        <div class="grid grid-cols-4 gap-4 mt-4 text-xs">
+          <div class="rounded-lg bg-surface px-3 py-2.5"><span class="text-ink-2 font-medium">Owner</span><span class="text-ink-4 block mt-1 leading-relaxed">空间全部权限,含删除空间与转让所有权</span></div>
+          <div class="rounded-lg bg-surface px-3 py-2.5"><span class="text-ink-2 font-medium">Admin</span><span class="text-ink-4 block mt-1 leading-relaxed">成员管理、空间设置与知识库管理</span></div>
+          <div class="rounded-lg bg-surface px-3 py-2.5"><span class="text-ink-2 font-medium">Editor</span><span class="text-ink-4 block mt-1 leading-relaxed">上传与管理文档,可对话</span></div>
+          <div class="rounded-lg bg-surface px-3 py-2.5"><span class="text-ink-2 font-medium">Viewer</span><span class="text-ink-4 block mt-1 leading-relaxed">只读对话,不可见设置页</span></div>
+        </div>
+      </div>
+
+      <!-- ═══ Tab B 空间设置(仅 Admin+) ═══ -->
+      <div id="view-b" class="pt-4 hidden">
+        <div class="max-w-[560px] space-y-5">
+          <div class="card p-6">
+            <div class="text-sm font-semibold text-ink">基本信息</div>
+            <div class="mt-4">
+              <label class="block text-[13px] text-ink-2 mb-1.5">空间名称</label>
+              <input class="input" value="产品研发部">
+            </div>
+            <button class="btn-primary mt-4" onclick="toast('空间信息已保存')">保存</button>
+          </div>
+          <div class="card p-6">
+            <div class="text-sm font-semibold text-ink">默认检索参数</div>
+            <div class="text-xs text-ink-4 mt-1">此为空间内新建知识库的默认值,已有知识库不受影响。</div>
+            <div class="mt-5 space-y-5">
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-[13px] text-ink-2">向量权重</span>
+                  <span class="text-[13px] mono text-ink" id="vecWLabel">0.7</span>
+                </div>
+                <input type="range" min="0" max="1" step="0.05" value="0.7" class="w-full accent-primary" oninput="document.getElementById('vecWLabel').textContent=parseFloat(this.value).toFixed(2)">
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-[13px] text-ink-2">topK(返回条数)</span>
+                <input type="number" value="8" min="1" max="50" class="input !w-24 !h-8 text-center">
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-[13px] text-ink-2">相似度阈值</span>
+                <input type="number" value="0" min="0" max="1" step="0.05" class="input !w-24 !h-8 text-center">
+              </div>
+            </div>
+            <button class="btn-primary mt-5" onclick="toast('默认检索参数已保存')">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 邀请成员模态框 -->
+<div id="inviteModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('inviteModal')"></div>
+  <div class="relative card w-[420px] p-6">
+    <div class="text-base font-semibold text-ink">邀请成员</div>
+    <div class="mt-5 space-y-4">
+      <div>
+        <label class="block text-[13px] text-ink-2 mb-1.5">邮箱</label>
+        <input class="input" placeholder="colleague@corp.com,多个邮箱用逗号分隔">
+      </div>
+      <div>
+        <label class="block text-[13px] text-ink-2 mb-1.5">角色</label>
+        <div class="relative">
+          <select class="input appearance-none pr-8">
+            <option selected>Viewer · 只读对话</option>
+            <option>Editor · 可上传文档、可对话</option>
+            <option>Admin · 成员管理与空间设置</option>
+          </select>
+          <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-ink-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+        </div>
+        <div class="text-xs text-ink-4 mt-2">被邀请人将收到邮件链接,7 天内有效;加入后可在「成员」页变更角色。</div>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('inviteModal')">取消</button>
+      <button class="btn-primary" onclick="closeModal('inviteModal');toast('邀请已发送')">发送邀请</button>
+    </div>
+  </div>
+</div>
+
+<!-- 移除成员二次确认 -->
+<div id="removeModal" class="hidden fixed inset-0 z-50 grid place-items-center">
+  <div class="absolute inset-0 bg-ink/30" onclick="closeModal('removeModal')"></div>
+  <div class="relative card w-[420px] p-6">
+    <div class="flex items-start gap-3">
+      <div class="w-9 h-9 rounded-full bg-danger/10 grid place-items-center shrink-0"><i data-lucide="user-minus" class="w-4 h-4 text-danger"></i></div>
+      <div>
+        <div class="text-base font-semibold text-ink">移除成员「<span id="removeName">林晚晴</span>」?</div>
+        <p class="text-[13px] text-ink-3 mt-1.5 leading-relaxed">移除后其将立即失去对本空间所有知识库与对话的访问权限;其上传的文档将保留在知识库中。</p>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button class="btn-secondary" onclick="closeModal('removeModal')">取消</button>
+      <button class="btn-danger" onclick="closeModal('removeModal');toast('成员已移除')">移除</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" class="fixed top-4 right-4 z-[70] flex flex-col gap-2 items-end"></div>
+
+<!-- 原型状态切换(非设计的一部分) -->
+<div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-1 rounded-lg border border-line bg-white/95 px-2 py-1.5 shadow-sm" style="backdrop-filter:blur(4px)">
+  <span class="px-1.5 text-xs text-ink-4">原型演示</span>
+  <button class="st-btn st-on" onclick="setTab('a', this)">成员</button>
+  <button class="st-btn" onclick="setTab('b', this)">空间设置</button>
+  <span class="w-px h-4 bg-line mx-1"></span>
+  <button class="st-btn st-on" id="roleAdmin" onclick="setRole('admin', this)">身份:Admin</button>
+  <button class="st-btn" id="roleEditor" onclick="setRole('editor', this)">身份:Editor(整页不可见)</button>
+</div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  function togglePop(id, btn) {
+    if (btn) event.stopPropagation();
+    const el = $(id);
+    document.querySelectorAll('[data-pop]').forEach(p => { if (p !== el) p.classList.add('hidden'); });
+    el.classList.toggle('hidden');
+  }
+  document.addEventListener('click', e => {
+    document.querySelectorAll('[data-pop]').forEach(p => { if (!p.contains(e.target)) p.classList.add('hidden'); });
+  });
+  function toggleSidebar() { $('sidebar').classList.toggle('sb-collapsed'); }
+  function openModal(id) { $(id).classList.remove('hidden'); }
+  function closeModal(id) { $(id).classList.add('hidden'); }
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.className = 'flex items-center gap-2 rounded-lg border border-line bg-white px-3.5 py-2.5 text-[13px] text-ink shadow-sm';
+    t.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-success shrink-0"></span>' + msg;
+    $('toasts').appendChild(t);
+    setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2000);
+  }
+  function setTab(t, btn) {
+    ['a', 'b'].forEach(k => $('view-' + k).classList.toggle('hidden', k !== t));
+    ['a', 'b'].forEach(k => $('tab-' + k).className = k === t ? 'tab-btn tab-on' : 'tab-btn');
+  }
+  function pickRole(el, role) {
+    const cell = el.closest('.role-cell');
+    cell.querySelector('button').firstChild.textContent = role;
+    cell.querySelectorAll('.pop-item').forEach(p => p.classList.remove('bg-primary-soft'));
+    el.classList.add('bg-primary-soft');
+    togglePop(el.closest('.pop').id);
+    toast('角色已变更为 ' + role);
+  }
+  function removeMember(name) { $('removeName').textContent = name; openModal('removeModal'); }
+  /* Editor 权限演示:隐藏管理入口 */
+  function setRole(r, btn) {
+    const editor = r === 'editor';
+    document.querySelectorAll('.admin-hide').forEach(el => el.classList.toggle('hidden', editor));
+    $('roleAdmin').classList.toggle('st-on', !editor);
+    $('roleEditor').classList.toggle('st-on', editor);
+    if (editor) toast('Editor 及以下成员不可见空间管理页(此处仅演示显隐)');
+  }
+</script>
+<script>lucide.createIcons();</script>
+</body>
+</html>
