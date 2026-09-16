@@ -203,6 +203,8 @@ class Document(Base):
         String(16), default=DocumentStatus.PENDING, index=True
     )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 任务侧真实失败原因(定位用);error_code 仍是稳定机器码
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

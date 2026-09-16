@@ -52,6 +52,9 @@ class SwitchSpaceRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
 
+AVATAR_PATH = "/users/me/avatar"
+
+
 class UserOut(BaseModel):
     id: str
     username: str
@@ -60,7 +63,9 @@ class UserOut(BaseModel):
     current_space_id: str | None = None  # 令牌绑定的活动空间(缺口 #7)
     last_login_at: datetime | None = None  # 最近一次成功登录(缺口 #9)
     last_login_ip: str | None = None
-    avatar_url: str | None = None  # 已设置头像时的读取路径(缺口 #6)
+    # 已设置头像时的读取路径;**不带 /api/v1 前缀**(相对 API 基地址),
+    # 前端可直接交给 baseURL=/api/v1 的客户端使用
+    avatar_url: str | None = None
 
     @classmethod
     def of(cls, user: User, current_space_id: str | None = None) -> UserOut:
@@ -72,7 +77,7 @@ class UserOut(BaseModel):
             current_space_id=current_space_id,
             last_login_at=user.last_login_at,
             last_login_ip=user.last_login_ip,
-            avatar_url="/api/v1/users/me/avatar" if user.avatar_key else None,
+            avatar_url=AVATAR_PATH if user.avatar_key else None,
         )
 
 

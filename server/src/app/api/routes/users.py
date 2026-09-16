@@ -75,7 +75,17 @@ async def upload_avatar(
     return UserOut.of(user, str(space_id) if space_id else None)
 
 
-@router.get("/me/avatar")
+@router.get(
+    "/me/avatar",
+    responses={
+        200: {
+            "content": {"image/png": {}, "image/jpeg": {}, "image/webp": {}},
+            "description": "头像图片字节(格式取决于上传时的原始类型)",
+        },
+        404: {"description": "尚未设置头像"},
+    },
+    response_class=Response,
+)
 def get_avatar(
     user: User = Depends(get_current_user),
     service: ProfileService = Depends(get_profile_service),

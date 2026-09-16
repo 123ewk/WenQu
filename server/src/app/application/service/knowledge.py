@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from pathlib import PurePosixPath
 
+from app.application.repository.knowledge import KbStats
 from app.application.service.ingestion import enqueue_document_ingest
 from app.core.errors import AppError, ErrorCode
 from app.core.storage import ObjectStorage
@@ -19,11 +20,22 @@ from app.domain.interfaces import (
     AuditRepository,
     ChunkQueryRepository,
     DocumentRepository,
+    KbStatsRepository,
     KnowledgeBaseRepository,
     SpaceRepository,
     TaskRepository,
 )
 from app.domain.models import AuditLog, Chunk, Document, KnowledgeBase, User
+
+# 处于这些状态的文档不可重复入队(避免并发重复处理)
+_IN_FLIGHT_STATUSES = frozenset(
+    {
+        DocumentStatus.PENDING,
+        DocumentStatus.PARSING,
+        DocumentStatus.CHUNKING,
+        DocumentStatus.EMBEDDING,
+    }
+)
 
 SUPPORTED_FORMATS: dict[str, str] = {
     ".pdf": "pdf",
@@ -46,6 +58,7 @@ class KnowledgeService:
         storage: ObjectStorage,
         tasks: TaskRepository,
         chunks: ChunkQueryRepository,
+        stats: KbStatsRepository,
         upload_max_mb: int = 50,
     ) -> None:
         self._kbs = kbs
@@ -55,6 +68,7 @@ class KnowledgeService:
         self._storage = storage
         self._tasks = tasks
         self._chunks = chunks
+        self._stats = stats
         self._upload_max_bytes = upload_max_mb * 1024 * 1024
 
     # ---------------------------- 知识库 CRUD ----------------------------
@@ -74,6 +88,19 @@ class KnowledgeService:
     def list_kbs(self, user: User, space_id: uuid.UUID) -> list[KnowledgeBase]:
         self._require_role(space_id, user.id, Role.VIEWER)
         return self._kbs.list_for_space(space_id)
+
+    def kb_stats(self, space_id: uuid.UUID, kb_ids: list[uuid.UUID]) -> dict[uuid.UUID, KbStats]:
+        """一次算齐本页 KB 的统计(列表/详情共用),避免逐库查询。"""
+        return self._stats.stats_for_kbs(kb_ids)
+
+    def ingestion_progress(
+        self, user: User, space_id: uuid.UUID, limit: int = 50
+    ) -> tuple[list[Document], dict[str, int]]:
+        """空间级入库进度:在途 + 近期失败文档,以及各状态计数(顶栏进度数据源)。"""
+        self._require_role(space_id, user.id, Role.VIEWER)
+        return self._stats.list_active_in_space(space_id, limit), self._stats.counts_by_status(
+            space_id
+        )
 
     def get_kb(self, user: User, space_id: uuid.UUID, kb_id: uuid.UUID) -> KnowledgeBase:
         self._require_role(space_id, user.id, Role.VIEWER)
@@ -189,6 +216,54 @@ class KnowledgeService:
         )
         self._storage.delete(document.source)
         self._documents.delete(document)  # chunks 由 FK CASCADE 清理
+
+    def reparse_document(
+        self,
+        user: User,
+        space_id: uuid.UUID,
+        kb_id: uuid.UUID,
+        document_id: uuid.UUID,
+        ip: str = "",
+    ) -> Document:
+        """重置为 pending 并重新入队(原文件不变);处理中重复调用 → 409。"""
+        self._require_role(space_id, user.id, Role.EDITOR)
+        self._get_kb_in_space(space_id, kb_id)
+        document = self._documents.get(document_id)
+        if document is None or document.kb_id != kb_id:
+            raise AppError(ErrorCode.DOCUMENT_NOT_FOUND, "文档不存在", http_status=404)
+        if document.status in _IN_FLIGHT_STATUSES:
+            raise AppError(
+                ErrorCode.DOCUMENT_BUSY, "文档正在处理中,请等待完成后再重试", http_status=409
+            )
+        document.status = DocumentStatus.PENDING
+        document.error_code = None
+        document.error_message = None
+        self._documents.save(document)
+        enqueue_document_ingest(self._tasks, document.id)
+        self._log(
+            user.id, space_id, AuditAction.DOCUMENT_REPARSED, document.filename, ip,
+            kb_id=str(kb_id), document_id=str(document_id),
+        )
+        return document
+
+    def get_chunk(
+        self,
+        user: User,
+        space_id: uuid.UUID,
+        kb_id: uuid.UUID,
+        document_id: uuid.UUID,
+        chunk_id: uuid.UUID,
+    ) -> Chunk:
+        """单块全文:引用抽屉"查看完整原文块"的数据源。"""
+        self._require_role(space_id, user.id, Role.VIEWER)
+        self._get_kb_in_space(space_id, kb_id)
+        document = self._documents.get(document_id)
+        if document is None or document.kb_id != kb_id:
+            raise AppError(ErrorCode.DOCUMENT_NOT_FOUND, "文档不存在", http_status=404)
+        chunk = self._chunks.get(chunk_id)
+        if chunk is None or chunk.document_id != document_id:
+            raise AppError(ErrorCode.CHUNK_NOT_FOUND, "分块不存在", http_status=404)
+        return chunk
 
     def list_chunks(
         self,

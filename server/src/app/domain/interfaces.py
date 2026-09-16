@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.domain.models import (
     AuditLog,
@@ -24,6 +24,9 @@ from app.domain.models import (
     Task,
     User,
 )
+
+if TYPE_CHECKING:
+    from app.application.repository.knowledge import KbStats  # 仅类型标注用
 
 
 class UserRepository(Protocol):
@@ -169,8 +172,18 @@ class EmbeddingGateway(Protocol):
     ) -> list[list[float]]: ...
 
 
+class KbStatsRepository(Protocol):
+    """知识库聚合统计与空间级入库进度(KbStats 定义在 application/repository)。"""
+
+    def stats_for_kbs(self, kb_ids: list[uuid.UUID]) -> dict[uuid.UUID, KbStats]: ...
+    def list_active_in_space(self, space_id: uuid.UUID, limit: int) -> list[Document]: ...
+    def counts_by_status(self, space_id: uuid.UUID) -> dict[str, int]: ...
+
+
 class ChunkQueryRepository(Protocol):
-    """分块读取(前端分块查看页):按文档分页列块,含溯源元数据。"""
+    """分块读取(前端分块查看页 + 引用抽屉):按文档分页列块 / 取单块全文。"""
+
+    def get(self, chunk_id: uuid.UUID) -> Chunk | None: ...
 
     def list_for_document(
         self, document_id: uuid.UUID, limit: int, offset: int

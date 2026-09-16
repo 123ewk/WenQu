@@ -16,6 +16,7 @@ from app.api.routes import chunking as chunking_routes
 from app.api.routes import conversations as conversation_routes
 from app.api.routes import health as health_routes
 from app.api.routes import knowledge as knowledge_routes
+from app.api.routes import models as model_routes
 from app.api.routes import retrieval as retrieval_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import users as users_routes
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(chunking_routes.router)
     app.include_router(retrieval_routes.router)
     app.include_router(conversation_routes.router)
+    app.include_router(model_routes.router)
     return app
 
 

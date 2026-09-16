@@ -47,6 +47,7 @@ class AuditAction(StrEnum):
     KB_DELETED = "kb.deleted"
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DELETED = "document.deleted"
+    DOCUMENT_REPARSED = "document.reparsed"
     ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
 
 

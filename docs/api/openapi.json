@@ -382,12 +382,15 @@
         "operationId": "get_avatar_api_v1_users_me_avatar_get",
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "头像图片字节(格式取决于上传时的原始类型)",
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "image/png": {},
+              "image/jpeg": {},
+              "image/webp": {}
             }
+          },
+          "404": {
+            "description": "尚未设置头像"
           }
         },
         "security": [
@@ -1088,6 +1091,67 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/ingestion-progress": {
+      "get": {
+        "tags": [
+          "spaces"
+        ],
+        "summary": "Ingestion Progress",
+        "description": "空间级入库进度:顶栏全局进度浮层的数据源(缺口 #8)。",
+        "operationId": "ingestion_progress_api_v1_spaces__space_id__ingestion_progress_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestionProgressOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/knowledge-bases": {
       "get": {
         "tags": [
@@ -1734,6 +1798,154 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/reparse": {
+      "post": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Reparse Document",
+        "description": "重新解析/重建索引:重置为 pending 再入队,原文件不变;处理中调用 → 409。",
+        "operationId": "reparse_document_api_v1_spaces__space_id__knowledge_bases__kb_id__documents__document_id__reparse_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks/{chunk_id}": {
+      "get": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Get Chunk",
+        "description": "单块全文(引用抽屉\"查看完整原文块\";不走 excerpt 截断)。",
+        "operationId": "get_chunk_api_v1_spaces__space_id__knowledge_bases__kb_id__documents__document_id__chunks__chunk_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "kb_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Kb Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          },
+          {
+            "name": "chunk_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Chunk Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chunks/preview": {
       "post": {
         "tags": [
@@ -2065,6 +2277,72 @@
             }
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Rename Conversation",
+        "operationId": "rename_conversation_api_v1_spaces__space_id__conversations__conversation_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameConversationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/spaces/{space_id}/ask": {
@@ -2122,6 +2400,33 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "summary": "List Models",
+        "description": "登录即可读;列出已启用模型与各类默认值。",
+        "operationId": "list_models_api_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCatalogOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     }
   },
@@ -2227,6 +2532,7 @@
           "kb.deleted",
           "document.uploaded",
           "document.deleted",
+          "document.reparsed",
           "access.denied"
         ],
         "title": "AuditAction",
@@ -2270,6 +2576,10 @@
           },
           "result": {
             "type": "string",
+            "enum": [
+              "success",
+              "denied"
+            ],
             "title": "Result"
           },
           "detail": {
@@ -2458,6 +2768,17 @@
           "content": {
             "type": "string",
             "title": "Content"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
           },
           "meta": {
             "additionalProperties": true,
@@ -2762,6 +3083,17 @@
             ],
             "title": "Error Code"
           },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -2820,6 +3152,102 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "IngestionProgressItem": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "title": "Document Id"
+          },
+          "kb_id": {
+            "type": "string",
+            "title": "Kb Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "kb_id",
+          "filename",
+          "status"
+        ],
+        "title": "IngestionProgressItem"
+      },
+      "IngestionProgressOut": {
+        "properties": {
+          "active": {
+            "items": {
+              "$ref": "#/components/schemas/IngestionProgressItem"
+            },
+            "type": "array",
+            "title": "Active"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "total_active": {
+            "type": "integer",
+            "title": "Total Active"
+          },
+          "has_failure": {
+            "type": "boolean",
+            "title": "Has Failure"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active",
+          "counts",
+          "total_active",
+          "has_failure"
+        ],
+        "title": "IngestionProgressOut"
+      },
       "KnowledgeBaseOut": {
         "properties": {
           "id": {
@@ -2845,6 +3273,26 @@
           "embedding_dim": {
             "type": "integer",
             "title": "Embedding Dim"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count",
+            "default": 0
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count",
+            "default": 0
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes",
+            "default": 0
+          },
+          "index_status": {
+            "type": "string",
+            "title": "Index Status",
+            "default": "empty"
           },
           "created_at": {
             "anyOf": [
@@ -2921,6 +3369,17 @@
               }
             ],
             "title": "Joined At"
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
           }
         },
         "type": "object",
@@ -2991,6 +3450,96 @@
         ],
         "title": "MessageOut"
       },
+      "ModelCatalogOut": {
+        "properties": {
+          "chat": {
+            "items": {
+              "$ref": "#/components/schemas/ModelItem"
+            },
+            "type": "array",
+            "title": "Chat"
+          },
+          "embedding": {
+            "items": {
+              "$ref": "#/components/schemas/ModelItem"
+            },
+            "type": "array",
+            "title": "Embedding"
+          },
+          "rerank": {
+            "items": {
+              "$ref": "#/components/schemas/ModelItem"
+            },
+            "type": "array",
+            "title": "Rerank"
+          },
+          "defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Defaults"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chat",
+          "embedding",
+          "rerank",
+          "defaults"
+        ],
+        "title": "ModelCatalogOut"
+      },
+      "ModelItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "provider_key": {
+            "type": "string",
+            "title": "Provider Key"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "dims": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dims"
+          },
+          "context_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "provider_key",
+          "model"
+        ],
+        "title": "ModelItem"
+      },
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
@@ -3035,6 +3584,21 @@
           "password"
         ],
         "title": "RegisterRequest"
+      },
+      "RenameConversationRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Title"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "RenameConversationRequest"
       },
       "RetrievalParams": {
         "properties": {
@@ -3155,11 +3719,18 @@
             "title": "Query"
           },
           "top_k": {
-            "type": "integer",
-            "maximum": 50.0,
-            "minimum": 1.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 50.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Top K",
-            "default": 8
+            "description": "缺省用空间配置值"
           },
           "kb_ids": {
             "anyOf": [
@@ -3187,13 +3758,66 @@
             ],
             "title": "Model Id",
             "description": "覆盖默认 embedding 模型(调优用)"
+          },
+          "rrf_k": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rrf K"
+          },
+          "vector_weight": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Weight"
+          },
+          "fulltext_weight": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fulltext Weight"
+          },
+          "min_score": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Score"
           }
         },
         "type": "object",
         "required": [
           "query"
         ],
-        "title": "SearchRequest"
+        "title": "SearchRequest",
+        "description": "检索测试请求。overrides_* 只作用于本次调用(原型 Tab B:不改默认配置)。"
       },
       "SpaceBriefOut": {
         "properties": {

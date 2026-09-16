@@ -1,75 +1,15 @@
 """PG 集成测试(testcontainers,基准 03):真实 Postgres + 真迁移 + 全链路 API。
 
-外部依赖(Docker)不可用时 skip 而非失败;注册/登录/空间/成员/RBAC/审计一条龙。
+夹具(容器、迁移、共享内存存储)见 tests/conftest.py;本文件只放用例。
 """
 
 from __future__ import annotations
 
-import os
-import shutil
-
 import pytest
 
+from tests.conftest import register as _register
+
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def client():
-    if shutil.which("docker") is None:
-        pytest.skip("docker 不可用,跳过 PG 集成测试")
-    try:
-        try:  # testcontainers 4.9+ 将社区模块迁移到 community 命名空间
-            from testcontainers.community.postgres import PostgresContainer
-        except ImportError:
-            from testcontainers.postgres import PostgresContainer
-
-        container = PostgresContainer("pgvector/pgvector:pg16", driver="psycopg")
-        container.start()
-    except Exception as exc:  # noqa: BLE001 — 环境不可用即跳过
-        pytest.skip(f"无法启动 postgres 测试容器: {exc}")
-
-    try:
-        os.environ["APP_DATABASE_URL"] = container.get_connection_url()
-        from alembic import command
-        from alembic.config import Config
-
-        from app.core.config import get_settings
-        from app.core.db import get_engine, get_session_factory
-
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-
-        alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
-
-        from fastapi.testclient import TestClient
-
-        from app.main import create_app
-
-        app = create_app()
-        # CI/本地集成环境无 MinIO:存储依赖换内存替身,语义已由 test_storage 钉住
-        from app.api.deps import get_memory_storage, get_storage
-
-        app.dependency_overrides[get_storage] = get_memory_storage
-
-        with TestClient(app, raise_server_exceptions=False) as test_client:
-            yield test_client
-    finally:
-        from app.core.db import get_engine, get_session_factory
-
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-        container.stop()
-
-
-def _register(client, username: str) -> dict:
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={"username": username, "nickname": username, "password": "secret-pass-1"},
-    )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
 
 
 def test_full_auth_and_space_flow(client) -> None:
@@ -1177,3 +1117,335 @@ def test_avatar_upload_validate_and_fetch(client) -> None:
         # 删除头像
         assert ac.delete("/api/v1/users/me/avatar", headers=auth).status_code == 204
         assert ac.get("/api/v1/users/me", headers=auth).json()["avatar_url"] is None
+
+
+def test_models_endpoint_lists_only_enabled(client) -> None:
+    """模型清单:只列已启用模型(含 provider 显示名),带各类默认值。"""
+    user = _register(client, "modeluser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    assert client.get("/api/v1/models").status_code == 401  # 需登录
+
+    resp = client.get("/api/v1/models", headers=auth)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    chat_ids = {m["id"] for m in data["chat"]}
+    assert "deepseek/deepseek-chat" in chat_ids
+    assert all(m["id"] for m in data["chat"])
+    # 未启用条目不得出现(ollama/minimax 等在 models.yaml 里 enabled: false)
+    assert not any(m["id"].startswith("ollama/") for m in data["chat"])
+    # 供应商是显示名,不是 key
+    deepseek = next(m for m in data["chat"] if m["id"] == "deepseek/deepseek-chat")
+    assert deepseek["provider"] == "DeepSeek" and deepseek["provider_key"] == "deepseek"
+    # embedding 带维度
+    assert all(m["dims"] for m in data["embedding"])
+    assert data["defaults"]["chat"] == "deepseek/deepseek-chat"
+    # 不泄漏密钥信息
+    assert "api_key" not in resp.text.lower() or "api_key_env" not in resp.text
+
+
+def test_retrieval_search_request_level_overrides(client) -> None:
+    """检索测试请求级调参:只影响本次,不写回空间配置(原型 Tab B 语义)。"""
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+    from app.api.deps import get_embedding_gateway
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            v = [0.0] * 1024
+            v[0] = 1.0
+            return [v for _ in texts]
+
+    app_override = main_module.create_app()
+    app_override.dependency_overrides[get_embedding_gateway] = StubEmbedder
+
+    owner = _register(client, "overrideowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "调参空间"}, headers=auth).json()["id"]
+
+    with TestClient(app_override, raise_server_exceptions=False) as ac:
+        # 非法组合:权重不成对
+        bad = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "x", "vector_weight": 0.5},
+            headers=auth,
+        )
+        assert bad.status_code == 422
+        # 权重和 >1
+        bad2 = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "x", "vector_weight": 0.9, "fulltext_weight": 0.9},
+            headers=auth,
+        )
+        assert bad2.status_code == 422
+        # 合法覆盖:调用成功且空间配置未被修改
+        ok = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={
+                "query": "x",
+                "vector_weight": 0.5,
+                "fulltext_weight": 0.5,
+                "min_score": 0.9,
+                "rrf_k": 20,
+                "top_k": 3,
+            },
+            headers=auth,
+        )
+        assert ok.status_code == 200, ok.text
+
+    space = client.get(f"/api/v1/spaces/{space_id}", headers=auth).json()
+    assert space["retrieval_params"] == {
+        "rrf_k": 60,
+        "vector_weight": 0.7,
+        "fulltext_weight": 0.3,
+        "min_score": 0.3,
+        "default_top_k": 6,
+    }, "请求级覆盖不应写回空间配置"
+
+
+def test_document_reparse_and_chunk_detail(client) -> None:
+    """重新解析(含处理中 409)与单块全文读取。"""
+    import uuid as uuid_mod
+
+    from sqlalchemy import func
+
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document
+
+    owner = _register(client, "reparseowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "重解析空间"}, headers=auth
+    ).json()["id"]
+    kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "重解析库"},
+        headers=auth,
+    ).json()
+
+    with get_session_factory()() as db:
+        doc = Document(
+            kb_id=uuid_mod.UUID(kb["id"]),
+            space_id=uuid_mod.UUID(space_id),
+            filename="f.md",
+            format="md",
+            source="s",
+            status=DocumentStatus.FAILED,
+            error_code="INGEST_FAILED",
+            error_message="DASHSCOPE_API_KEY 未配置",
+        )
+        db.add(doc)
+        db.flush()
+        chunk = Chunk(
+            document_id=doc.id,
+            space_id=doc.space_id,
+            seq=0,
+            content="完整原文块内容" * 5,
+            tsv=func.to_tsvector("simple", "完整 原文块 内容"),
+            meta={"kind": "text", "tokens": 42, "breadcrumb": ["一"]},
+        )
+        db.add(chunk)
+        db.commit()
+        doc_id, chunk_id = doc.id, chunk.id
+
+    # 失败原因与状态可见
+    detail = client.get(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}",
+        headers=auth,
+    ).json()
+    assert detail["status"] == "failed"
+    assert detail["error_code"] == "INGEST_FAILED"
+    assert "DASHSCOPE" in detail["error_message"]  # 真实原因给到了
+
+    # 单块全文(不截断)+ tokens
+    base = f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/chunks"
+    chunk_resp = client.get(f"{base}/{chunk_id}", headers=auth)
+    assert chunk_resp.status_code == 200
+    got = chunk_resp.json()
+    assert got["content"] == "完整原文块内容" * 5
+    assert got["tokens"] == 42
+    assert got["meta"]["breadcrumb"] == ["一"]
+    # 不存在的块 → 404
+    assert client.get(f"{base}/{uuid_mod.uuid4()}", headers=auth).status_code == 404
+
+    # 重新解析:重置 pending 并入队
+    reparse = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/reparse",
+        headers=auth,
+    )
+    assert reparse.status_code == 200
+    body = reparse.json()
+    assert body["status"] == "pending"
+    assert body["error_code"] is None and body["error_message"] is None
+
+    with get_session_factory()() as db:
+        pending = db.scalars(
+            __import__("sqlalchemy").select(__import__("app.domain.models", fromlist=["Task"]).Task)
+        ).all()
+        assert any(
+            t.type == "ingest_document" and t.payload.get("document_id") == str(doc_id)
+            for t in pending
+        ), "应重新入队 ingest_document 任务"
+
+    # 处理中重复调用 → 409 DOCUMENT_BUSY
+    again = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/reparse",
+        headers=auth,
+    )
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "DOCUMENT_BUSY"
+
+
+def test_ingestion_progress_and_kb_stats(client) -> None:
+    """空间级入库进度(缺口 #8)+ 知识库聚合统计。"""
+    import uuid as uuid_mod
+
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Document
+
+    owner = _register(client, "progressowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "进度空间"}, headers=auth
+    ).json()["id"]
+
+    # 空库:统计为 0 / empty
+    empty_kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "空库"},
+        headers=auth,
+    ).json()
+    assert empty_kb["document_count"] == 0
+    assert empty_kb["chunk_count"] == 0
+    assert empty_kb["index_status"] == "empty"
+
+    kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "有货库"},
+        headers=auth,
+    ).json()
+
+    with get_session_factory()() as db:
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="done.md",
+                format="md",
+                source="s1",
+                size_bytes=1000,
+                status=DocumentStatus.COMPLETED,
+            )
+        )
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="busy.md",
+                format="md",
+                source="s2",
+                size_bytes=500,
+                status=DocumentStatus.EMBEDDING,
+            )
+        )
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="bad.md",
+                format="md",
+                source="s3",
+                status=DocumentStatus.FAILED,
+                error_code="INGEST_FAILED",
+                error_message="boom",
+            )
+        )
+        db.commit()
+
+    listed = client.get(f"/api/v1/spaces/{space_id}/knowledge-bases", headers=auth).json()
+    stats = next(item for item in listed if item["id"] == kb["id"])
+    assert stats["document_count"] == 3
+    assert stats["size_bytes"] == 1500
+    assert stats["index_status"] == "processing"  # 有在途文档
+
+    resp = client.get(f"/api/v1/spaces/{space_id}/ingestion-progress", headers=auth)
+    assert resp.status_code == 200
+    prog = resp.json()
+    assert prog["total_active"] == 1  # 只有 embedding 那篇在途
+    assert prog["has_failure"] is True
+    assert prog["counts"]["completed"] == 1
+    assert prog["counts"]["failed"] == 1
+    statuses = {item["status"] for item in prog["active"]}
+    assert "embedding" in statuses and "failed" in statuses
+    failed_item = next(i for i in prog["active"] if i["status"] == "failed")
+    assert failed_item["error_message"] == "boom"  # 失败原因随进度一起给到
+
+    # 非成员 → 404(防枚举)
+    other = _register(client, "progressother")
+    oh = {"Authorization": f"Bearer {other['access_token']}"}
+    assert (
+        client.get(f"/api/v1/spaces/{space_id}/ingestion-progress", headers=oh).status_code
+        == 404
+    )
+
+
+def test_conversation_rename_and_member_avatar_field(client) -> None:
+    """会话重命名 + MemberOut 带 avatar_url。"""
+    owner = _register(client, "memavatarowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "头像空间"}, headers=auth
+    ).json()["id"]
+
+    # MemberOut.avatar_url 存在,无头像时为 null
+    members = client.get(f"/api/v1/spaces/{space_id}/members", headers=auth).json()
+    assert "avatar_url" in members[0]
+    assert members[0]["avatar_url"] is None
+
+    # 会话重命名(列表里同步)
+    conv = client.post(
+        f"/api/v1/spaces/{space_id}/conversations", json={"title": "旧标题"}, headers=auth
+    ).json()
+    renamed = client.patch(
+        f"/api/v1/spaces/{space_id}/conversations/{conv['id']}",
+        json={"title": "新标题"},
+        headers=auth,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "新标题"
+    listed = client.get(f"/api/v1/spaces/{space_id}/conversations", headers=auth).json()
+    assert next(c for c in listed if c["id"] == conv["id"])["title"] == "新标题"
+
+
+def test_avatar_url_usable_with_api_base(client) -> None:
+    """avatar_url 必须不带 /api/v1 前缀,否则前端拼 baseURL 会双重前缀 404。
+
+    这是前端实测反馈的缺陷(缺口清单 §4.1),故用真实响应钉住,而非只看 schema 文案。
+    """
+    import io as io_mod
+    import uuid as uuid_mod
+
+    from PIL import Image
+
+    owner = _register(client, f"avurl{uuid_mod.uuid4().hex[:6]}")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+
+    buf = io_mod.BytesIO()
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(buf, format="PNG")
+    up = client.post(
+        "/api/v1/users/me/avatar",
+        files={"file": ("a.png", buf.getvalue(), "image/png")},
+        headers=auth,
+    )
+    assert up.status_code == 200, up.text
+
+    avatar_url = up.json()["avatar_url"]
+    assert avatar_url == "/users/me/avatar", f"不该带前缀或绝对路径: {avatar_url}"
+    # 前端 baseURL=/api/v1,直接拼接必须可用
+    assert client.get(f"/api/v1{avatar_url}", headers=auth).status_code == 200
+    # /users/me 也返回同一形态
+    assert client.get("/api/v1/users/me", headers=auth).json()["avatar_url"] == avatar_url

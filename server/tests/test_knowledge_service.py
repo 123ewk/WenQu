@@ -20,6 +20,7 @@ from tests.fakes import (
     FakeAuditRepository,
     FakeChunkRepository,
     FakeDocumentRepository,
+    FakeKbStatsRepository,
     FakeKnowledgeBaseRepository,
     FakeSpaceRepository,
     FakeTaskRepository,
@@ -37,8 +38,9 @@ def make_env(upload_max_mb: int = 50) -> SimpleNamespace:
     storage = MemoryStorage()
     tasks = FakeTaskRepository()
     chunks = FakeChunkRepository()
+    stats = FakeKbStatsRepository(documents.documents, chunks.chunks)
     svc = KnowledgeService(
-        kbs, documents, spaces, audit, storage, tasks, chunks, upload_max_mb
+        kbs, documents, spaces, audit, storage, tasks, chunks, stats, upload_max_mb
     )
     owner = users.create(make_user("owner"))
     editor = users.create(make_user("editor"))
@@ -58,6 +60,7 @@ def make_env(upload_max_mb: int = 50) -> SimpleNamespace:
         documents=documents,
         tasks=tasks,
         chunks=chunks,
+        stats=stats,
         spaces=spaces,
         users=users,
         owner=owner,
@@ -148,7 +151,7 @@ def test_upload_document_rules() -> None:
     # 超限 → 413
     tiny = KnowledgeService(
         env.kbs, env.documents, env.spaces, FakeAuditRepository(), env.storage,
-        env.tasks, env.chunks, 0,
+        env.tasks, env.chunks, env.stats, 0,
     )
     with pytest.raises(AppError) as too_big:
         tiny.upload_document(env.editor, env.space_id, kb.id, "a.txt", b"x")

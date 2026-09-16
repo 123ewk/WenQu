@@ -39,6 +39,10 @@ def _default_config_path() -> Path:
 
 class ModelCatalog:
     def __init__(self, data: dict[str, Any]) -> None:
+        self._provider_names: dict[str, str] = {
+            key: str(entry.get("name") or key)
+            for key, entry in (data.get("providers") or {}).items()
+        }
         self._providers: dict[str, ProviderEntry] = {}
         for key, entry in data.get("providers", {}).items():
             self._providers[key] = ProviderEntry(
@@ -63,6 +67,28 @@ class ModelCatalog:
         self._defaults: dict[str, str] = {
             kind: defaults[kind] for kind in ("chat", "embedding", "rerank") if kind in defaults
         }
+
+    def enabled_models_by_kind(self) -> dict[str, list[ModelEntry]]:
+        """按用途列出**可用**模型(模型启用且其 provider 启用)—— 供前端选择器。"""
+        result: dict[str, list[ModelEntry]] = {"chat": [], "embedding": [], "rerank": []}
+        for model in self._models.values():
+            if not model.enabled:
+                continue
+            provider = self._providers.get(model.provider_key)
+            if provider is None or not provider.enabled:
+                continue
+            result.setdefault(model.kind, []).append(model)
+        for entries in result.values():
+            entries.sort(key=lambda item: item.id)
+        return result
+
+    def provider_display_name(self, provider_key: str) -> str:
+        """供应商显示名(用于前端下拉分组);缺失时回退 key。"""
+        provider = self._provider_names.get(provider_key)
+        return provider or provider_key
+
+    def defaults(self) -> dict[str, str]:
+        return dict(self._defaults)
 
     @classmethod
     def load(cls, path: Path | None = None) -> ModelCatalog:

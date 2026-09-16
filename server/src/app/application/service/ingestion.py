@@ -125,13 +125,14 @@ class IngestionService:
         return self._documents.get(uuid.UUID(str(raw)))
 
     def _fail_document(self, task: Task) -> None:
-        """死信同步:文档翻 failed,用户可见错误码。"""
+        """死信同步:文档翻 failed,机器码 + 任务侧真实原因都给到用户。"""
         try:
             document = self._load_document(task)
             if document is None:
                 return
             document.status = DocumentStatus.FAILED
             document.error_code = "INGEST_FAILED"
+            document.error_message = (task.last_error or "")[:2000] or None
             self._documents.save(document)
         except Exception:  # noqa: BLE001 — 死信同步失败只记日志,不影响任务闭环
             logger.exception("mark document failed for task %s", task.id)

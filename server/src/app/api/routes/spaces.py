@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field, model_validator
@@ -15,9 +16,11 @@ from pydantic import BaseModel, Field, model_validator
 from app.api.deps import (
     get_client_ip,
     get_current_user,
+    get_knowledge_service,
     get_space_service,
     get_user_repository,
 )
+from app.application.service.knowledge import KnowledgeService
 from app.application.service.spaces import SpaceService
 from app.domain.enums import AuditAction
 from app.domain.interfaces import UserRepository
@@ -97,6 +100,8 @@ class MemberOut(BaseModel):
     nickname: str
     role: int
     joined_at: datetime | None = None
+    # 已设置头像时的读取路径(与 UserOut.avatar_url 同语义:不带 /api/v1 前缀)
+    avatar_url: str | None = None
 
     @classmethod
     def of(cls, membership: Membership, user: User) -> MemberOut:
@@ -106,6 +111,7 @@ class MemberOut(BaseModel):
             nickname=user.nickname,
             role=membership.role,
             joined_at=membership.created_at,
+            avatar_url="/users/me/avatar" if user.avatar_key else None,
         )
 
 
@@ -115,7 +121,7 @@ class AuditLogOut(BaseModel):
     actor_name: str | None  # 操作人昵称冗余:操作人退空间后仍可读,前端不必再映射
     action: str
     target: str
-    result: str  # success | denied(缺口 #3:前端结果列)
+    result: Literal["success", "denied"]  # 枚举化,前端可直接生成类型(缺口 #3)
     detail: dict
     ip: str
     created_at: datetime | None = None
@@ -291,3 +297,54 @@ def _actor_names(users: UserRepository, logs: list[AuditLog]) -> dict[uuid.UUID 
         if actor is not None:
             names[actor_id] = actor.nickname
     return names
+
+
+class IngestionProgressItem(BaseModel):
+    document_id: str
+    kb_id: str
+    filename: str
+    status: str
+    error_code: str | None = None
+    error_message: str | None = None
+    updated_at: datetime | None = None
+
+
+class IngestionProgressOut(BaseModel):
+    active: list[IngestionProgressItem]  # 在途 + 近期失败(已完成的不返回)
+    counts: dict[str, int]  # 各状态计数(含 completed)
+    total_active: int  # 未终结数量,为 0 即"都处理完了"
+    has_failure: bool
+
+
+@router.get("/{space_id}/ingestion-progress", response_model=IngestionProgressOut)
+def ingestion_progress(
+    space_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    service: KnowledgeService = Depends(get_knowledge_service),
+) -> IngestionProgressOut:
+    """空间级入库进度:顶栏全局进度浮层的数据源(缺口 #8)。"""
+    documents, counts = service.ingestion_progress(user, space_id, limit)
+    in_flight = (
+        counts.get("pending", 0)
+        + counts.get("parsing", 0)
+        + counts.get("chunking", 0)
+        + counts.get("embedding", 0)
+    )
+    return IngestionProgressOut(
+        active=[
+            IngestionProgressItem(
+                document_id=str(doc.id),
+                kb_id=str(doc.kb_id),
+                filename=doc.filename,
+                status=doc.status,
+                error_code=doc.error_code,
+                error_message=doc.error_message,
+                updated_at=doc.updated_at,
+            )
+            for doc in documents
+        ],
+        counts=counts,
+        total_active=in_flight,
+        has_failure=counts.get("failed", 0) > 0,
+    )

@@ -235,3 +235,36 @@ class _EmptySpaces:
         from app.domain.models import Membership
 
         return Membership(space_id=space_id, user_id=user_id, role=Role.VIEWER)
+
+
+def test_request_level_overrides_do_not_touch_space_config() -> None:
+    """检索测试的请求级调参:只影响本次调用,不写回空间配置(原型 Tab B 的语义)。"""
+    env = build_env(vector_specs=["高相关", "低相关"])
+    env.space.retrieval_min_score = 0.3  # 空间默认宽松
+    env.space.retrieval_default_top_k = 2
+
+    strict = env.service.search(
+        env.user.id, env.space.id, "查询", overrides={"min_score": 0.95, "top_k": 1}
+    )
+
+    assert [r.content for r in strict] == ["高相关"]  # 请求级阈值生效
+    # 空间配置未被修改
+    assert env.space.retrieval_min_score == 0.3
+    assert env.space.retrieval_default_top_k == 2
+    # 不带覆盖时仍用空间默认(两条都返回)
+    assert len(env.service.search(env.user.id, env.space.id, "查询")) == 2
+
+
+def test_request_level_rrf_weights_change_fusion() -> None:
+    """请求级权重参与融合:仅全文命中的候选在权重倾斜后反超。"""
+    env = build_env(vector_specs=["向量命中"], fulltext_specs=["全文命中"])
+    default = env.service.search(env.user.id, env.space.id, "查询")
+    assert default[0].content == "向量命中"  # 默认向量权重高
+
+    tilted = env.service.search(
+        env.user.id,
+        env.space.id,
+        "查询",
+        overrides={"vector_weight": 0.1, "fulltext_weight": 0.9},
+    )
+    assert tilted[0].content == "全文命中"

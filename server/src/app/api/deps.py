@@ -17,6 +17,7 @@ from app.application.repository.knowledge import (
     ChunkQueryRepositoryImpl,
     ChunkRepositoryImpl,
     DocumentRepositoryImpl,
+    KbStatsRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
 from app.application.repository.retrieval import RetrievalRepositoryImpl
@@ -45,6 +46,7 @@ from app.domain.interfaces import (
     ConversationRepository,
     DocumentRepository,
     EmbeddingGateway,
+    KbStatsRepository,
     KnowledgeBaseRepository,
     MessageRepository,
     RefreshTokenRepository,
@@ -150,6 +152,10 @@ def get_chunk_query_repository(db: Session = Depends(get_db)) -> ChunkQueryRepos
     return ChunkQueryRepositoryImpl(db)
 
 
+def get_kb_stats_repository(db: Session = Depends(get_db)) -> KbStatsRepository:
+    return KbStatsRepositoryImpl(db)
+
+
 def get_knowledge_service(
     kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
     documents: DocumentRepository = Depends(get_document_repository),
@@ -158,9 +164,11 @@ def get_knowledge_service(
     storage: ObjectStorage = Depends(get_storage),
     tasks: TaskRepository = Depends(get_task_repository),
     chunks: ChunkQueryRepository = Depends(get_chunk_query_repository),
+    stats: KbStatsRepository = Depends(get_kb_stats_repository),
 ) -> KnowledgeService:
     return KnowledgeService(
-        kbs, documents, spaces, audit, storage, tasks, chunks, get_settings().upload_max_mb
+        kbs, documents, spaces, audit, storage, tasks, chunks, stats,
+        get_settings().upload_max_mb,
     )
 
 

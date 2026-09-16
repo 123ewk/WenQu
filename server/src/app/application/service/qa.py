@@ -72,6 +72,17 @@ class QAService:
         conversation = self._get_conversation(user_id, space_id, conversation_id)
         return self._messages.list_for_conversation(conversation.id)
 
+    def rename_conversation(
+        self,
+        user_id: uuid.UUID,
+        space_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        title: str,
+    ) -> Conversation:
+        conversation = self._get_conversation(user_id, space_id, conversation_id)
+        conversation.title = title.strip() or conversation.title
+        return self._conversations.save(conversation)
+
     def delete_conversation(
         self, user_id: uuid.UUID, space_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> None:

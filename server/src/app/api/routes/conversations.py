@@ -37,6 +37,10 @@ class AskRequest(BaseModel):
     model_id: str | None = None
 
 
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=128)
+
+
 class ConversationOut(BaseModel):
     id: str
     space_id: str
@@ -151,4 +155,17 @@ def ask(
         events,
         media_type="text/event-stream",
         headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationOut)
+def rename_conversation(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    body: RenameConversationRequest,
+    user: User = Depends(get_current_user),
+    service: QAService = Depends(get_qa_service),
+) -> ConversationOut:
+    return _conversation_out(
+        service.rename_conversation(user.id, space_id, conversation_id, body.title)
     )

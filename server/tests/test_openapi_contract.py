@@ -23,6 +23,10 @@ REQUIRED_PATHS = {
     "/api/v1/users/me",
     "/api/v1/users/me/password",
     "/api/v1/users/me/avatar",
+    "/api/v1/models",
+    "/api/v1/spaces/{space_id}/ingestion-progress",
+    "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/reparse",
+    "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks/{chunk_id}",
     "/api/v1/spaces",
     "/api/v1/spaces/{space_id}",
     "/api/v1/spaces/{space_id}/members",
@@ -64,6 +68,8 @@ REQUIRED_ERROR_CODES = {
     "MESSAGE_NOT_FOUND",
     "MODEL_CALL_FAILED",
     "MODEL_NOT_CONFIGURED",
+    "DOCUMENT_BUSY",
+    "CHUNK_NOT_FOUND",
     "VALIDATION_ERROR",
     "INTERNAL_ERROR",
     "NOT_FOUND",
@@ -101,3 +107,20 @@ def test_committed_openapi_in_sync() -> None:
     assert set(committed["paths"]) == generated_paths(), (
         "openapi.json 与代码不一致(drift),请运行 make server-openapi 重新导出"
     )
+
+
+def test_avatar_get_declares_image_content_type() -> None:
+    """读头像的响应必须声明图片类型:声明成 application/json 会让前端类型生成失效。"""
+    spec = create_app().openapi()
+    responses = spec["paths"]["/api/v1/users/me/avatar"]["get"]["responses"]
+    content = responses["200"].get("content", {})
+    assert "application/json" not in content, f"读头像不该声明 JSON: {list(content)}"
+    assert any(ct.startswith("image/") for ct in content), f"应声明图片类型: {list(content)}"
+
+
+def test_audit_result_is_enum_in_contract() -> None:
+    """result 必须是机器可读枚举,前端才能生成类型而不手写字面量。"""
+    spec = create_app().openapi()
+    result = spec["components"]["schemas"]["AuditLogOut"]["properties"]["result"]
+    enum_values = result.get("enum") or []
+    assert set(enum_values) == {"success", "denied"}, f"result 枚举缺失: {result}"
