@@ -181,3 +181,88 @@ def test_full_auth_and_space_flow(client) -> None:
         "/api/v1/auth/login", json={"username": "alice", "password": "secret-pass-1"}
     )
     assert resp.status_code == 401
+
+
+def test_rag_data_layer_roundtrip(client) -> None:
+    """M2 数据层:KB/文档/分块/任务四表在真实 PG 落库读回(含 vector/tsv/JSONB 列)。"""
+    import uuid as uuid_mod
+
+    from sqlalchemy import func, select, text
+
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus, TaskStatus, TaskType
+    from app.domain.models import Chunk, Document, KnowledgeBase, Task
+
+    owner = _register(client, "ragdataowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "数据层空间"}, headers=auth
+    ).json()["id"]
+
+    session_factory = get_session_factory()
+    with session_factory() as db:
+        kb = KnowledgeBase(
+            id=uuid_mod.uuid4(), space_id=uuid_mod.UUID(space_id), name="数据层验证库"
+        )
+        doc = Document(
+            id=uuid_mod.uuid4(),
+            kb_id=kb.id,
+            space_id=kb.space_id,
+            filename="sample.pdf",
+            format="pdf",
+            source=f"{kb.space_id}/{kb.id}/{uuid_mod.uuid4()}/sample.pdf",
+            status=DocumentStatus.PENDING,
+        )
+        db.add(kb)
+        db.flush()  # 无 relationship 声明,先落 KB 再插 document 以满足 FK
+        db.add(doc)
+        db.flush()
+
+        chunk = Chunk(
+            id=uuid_mod.uuid4(),
+            document_id=doc.id,
+            space_id=doc.space_id,
+            seq=0,
+            content="知识库全文检索测试段落",
+            embedding=[0.125] * 1024,
+            tsv=func.to_tsvector("simple", "知识库全文检索测试段落"),
+            meta={"page": 1, "breadcrumb": ["第一章"]},
+        )
+        task = Task(
+            id=uuid_mod.uuid4(),
+            type=TaskType.INGEST_DOCUMENT,
+            payload={"document_id": str(doc.id), "trace_id": "t-123"},
+            status=TaskStatus.PENDING,
+        )
+        db.add(chunk)
+        db.add(task)
+        db.commit()
+
+        row = db.scalar(select(Chunk).where(Chunk.id == chunk.id))
+        assert row is not None and len(row.embedding) == 1024
+        assert row.embedding[0] == 0.125
+        assert row.tsv is not None
+        assert row.meta["breadcrumb"] == ["第一章"]
+
+        hit = db.scalar(
+            text(
+                "SELECT id FROM chunks WHERE tsv @@ plainto_tsquery('simple', :q) "
+                "AND space_id = :sid"
+            ),
+            {"q": "知识库全文检索测试段落", "sid": str(doc.space_id)},
+        )
+        assert hit is not None
+
+        indexes = {
+            r[0]
+            for r in db.execute(
+                text("SELECT indexname FROM pg_indexes WHERE tablename = 'chunks'")
+            )
+        }
+        assert "ix_chunks_embedding_hnsw" in indexes
+        assert "ix_chunks_tsv_gin" in indexes
+
+        loaded_task = db.scalar(select(Task).where(Task.id == task.id))
+        assert loaded_task is not None
+        assert loaded_task.payload["trace_id"] == "t-123"
+        assert loaded_task.status == TaskStatus.PENDING

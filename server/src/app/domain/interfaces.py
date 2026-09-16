@@ -9,7 +9,15 @@ from __future__ import annotations
 import uuid
 from typing import Protocol
 
-from app.domain.models import AuditLog, Membership, RefreshToken, Space, User
+from app.domain.models import (
+    AuditLog,
+    Document,
+    KnowledgeBase,
+    Membership,
+    RefreshToken,
+    Space,
+    User,
+)
 
 
 class UserRepository(Protocol):
@@ -45,3 +53,22 @@ class AuditRepository(Protocol):
     def list_for_space(
         self, space_id: uuid.UUID, limit: int, offset: int
     ) -> tuple[list[AuditLog], int]: ...
+
+
+class KnowledgeBaseRepository(Protocol):
+    def get(self, kb_id: uuid.UUID) -> KnowledgeBase | None: ...
+    def get_by_name(self, space_id: uuid.UUID, name: str) -> KnowledgeBase | None: ...
+    def create(self, kb: KnowledgeBase) -> KnowledgeBase: ...
+    def save(self, kb: KnowledgeBase) -> KnowledgeBase: ...
+    def delete(self, kb: KnowledgeBase) -> None: ...
+    def list_for_space(self, space_id: uuid.UUID) -> list[KnowledgeBase]: ...
+
+
+class DocumentRepository(Protocol):
+    def get(self, document_id: uuid.UUID) -> Document | None: ...
+    def create(self, document: Document) -> Document: ...
+    def save(self, document: Document) -> Document: ...
+    def delete(self, document: Document) -> None: ...
+    def list_for_kb(
+        self, kb_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Document], int]: ...

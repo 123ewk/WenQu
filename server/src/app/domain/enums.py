@@ -35,3 +35,38 @@ class AuditAction(StrEnum):
     MEMBER_ADDED = "space.member_added"
     MEMBER_REMOVED = "space.member_removed"
     MEMBER_ROLE_CHANGED = "space.member_role_changed"
+    KB_CREATED = "kb.created"
+    KB_UPDATED = "kb.updated"
+    KB_DELETED = "kb.deleted"
+    DOCUMENT_UPLOADED = "document.uploaded"
+    DOCUMENT_DELETED = "document.deleted"
+
+
+class DocumentStatus(StrEnum):
+    """文档生命周期状态机:pending → parsing → chunking → embedding → completed / failed(基准 01)。
+
+    流转只允许顺位推进;任何一步失败跳 failed(终态,重解析走新任务)。
+    """
+
+    PENDING = "pending"
+    PARSING = "parsing"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TaskStatus(StrEnum):
+    """DB 队列任务状态;dead=死信(超过重试上限,人工介入)。"""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DEAD = "dead"
+
+
+class TaskType(StrEnum):
+    """后台任务类型注册表;新任务类型必须在此登记。"""
+
+    INGEST_DOCUMENT = "ingest_document"  # 解析 → 分块 → 向量化 → 索引
