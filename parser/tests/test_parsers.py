@@ -140,23 +140,27 @@ def _pdf(lines: list[tuple[float, float, float, str]]) -> bytes:
     return data
 
 
-def test_pdf_same_size_lines_are_not_merged_across_lines() -> None:
-    """同一字号的相邻行必须各自成块 —— 跨行合并会把多个小节粘成一个标题。"""
+def test_pdf_same_size_lines_form_one_paragraph_not_a_title() -> None:
+    """同字号的连续多行属于同一段落:合并成一个**正文块**,绝不能当标题。
+
+    旧逻辑把它们粘成一个"标题",导致 chunking 把它当分节边界、正文全部丢失,
+    面包屑里也出现一串同级标题。
+    """
     content = _pdf(
         [
-            (72, 60, 14, "教育经历"),
-            (72, 80, 14, "南华大学(一本) 数据科学与大数据技术"),
-            (72, 100, 14, "项目经验"),
+            (72, 60, 14, "第一行内容"),
+            (72, 80, 14, "第二行内容"),
+            (72, 100, 14, "第三行内容"),
         ]
     )
     blocks, _meta = _blocks(content, "pdf")
-    texts = [b.text for b in blocks]
-    assert len(blocks) == 3, texts
-    assert texts[0] == "教育经历"
-    assert "南华大学" in texts[1]
-    assert texts[2] == "项目经验"
-    # 有意取舍:连续同字号的行按正文保守处理(宁可少认标题,也不能把内容当标题丢掉)
-    assert all(b.type == "paragraph" for b in blocks), [b.type for b in blocks]
+    assert len(blocks) == 1, [(b.type, b.text) for b in blocks]
+    assert blocks[0].type == "paragraph", blocks[0].type
+    # 三行都在,顺序不乱,没有凭空多出的分隔符
+    for text in ("第一行内容", "第二行内容", "第三行内容"):
+        assert text in blocks[0].text, blocks[0].text
+    order = [blocks[0].text.index(t) for t in ("第一行", "第二行", "第三行")]
+    assert order == sorted(order), blocks[0].text
 
 
 def test_pdf_heading_levels_follow_distinct_sizes() -> None:
@@ -210,7 +214,7 @@ def test_pdf_table_between_paragraphs_keeps_reading_order() -> None:
 
 
 def test_pdf_multi_line_large_font_paragraph_is_kept_as_text() -> None:
-    """大字号**连续多行**是正文段落(摘要/引文/图注),必须全部保留为文本块。
+    """大字号**连续多行**是正文段落(摘要/引文/图注),必须整体保留为文本块。
 
     chunking 把标题当分节边界且不产出块,所以"被判成标题又没有后续正文"的文字会
     整段消失。逐行判定会犯这个错;按行组判定(标题是孤行)才安全。
@@ -230,10 +234,12 @@ def test_pdf_multi_line_large_font_paragraph_is_kept_as_text() -> None:
         y += 20
 
     blocks, _meta = _blocks(_pdf(lines), "pdf")
+    kept = [b for b in blocks if para_lines[0] in b.text]
+    assert kept, [b.text for b in blocks]
+    assert kept[0].type == "paragraph", kept[0].type
+    # 三行都在同一个段落块里,顺序不乱(不因字号大而被拆成标题或丢失)
     for text in para_lines:
-        kept = [b for b in blocks if b.text == text]
-        assert kept, [b.text for b in blocks]
-        assert kept[0].type == "paragraph", (kept[0].type, text)
+        assert text in kept[0].text, kept[0].text
 
 
 def test_pdf_heading_levels_survive_heading_dense_document() -> None:

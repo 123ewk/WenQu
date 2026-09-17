@@ -120,3 +120,40 @@ def test_chunks_respect_breadcrumb_token_budget() -> None:
     assert all(d.tokens <= 128 for d in drafts)
     with pytest.raises(ValueError):
         chunk_blocks([_block(text="x" * 10)], max_tokens=-1)  # 非法参数直接暴露
+
+
+# ---------------------------- 修复回归:段落合并与面包屑不重复 ----------------------------
+
+
+def test_merge_tiny_does_not_repeat_breadcrumb_header() -> None:
+    """碎块合并后,面包屑头只能出现一次。
+
+    _merge_tiny 用字符串拼接两个块的内容,而每个块的 content 都已带面包屑头
+    (如 "标题路径\n正文"),直接拼接会把头重复 N 次污染正文。
+    """
+    from app.application.chunking import ChunkDraft, _merge_tiny
+
+    drafts = [
+        ChunkDraft(content="A > B\n第一小句。", breadcrumb=["A", "B"], page=1,
+                   kind="text", tokens=5),
+        ChunkDraft(content="A > B\n第二小句。", breadcrumb=["A", "B"], page=1,
+                   kind="text", tokens=5),
+    ]
+    merged = _merge_tiny(drafts, max_tokens=512)
+    assert len(merged) == 1, [d.content for d in merged]
+    content = merged[0].content
+    assert content.count("A > B") == 1, content
+    assert "第一小句。" in content and "第二小句。" in content, content
+
+
+def test_merge_tiny_keeps_header_without_breadcrumb() -> None:
+    """无面包屑时合并不得凭空造出头,内容原样相接。"""
+    from app.application.chunking import ChunkDraft, _merge_tiny
+
+    drafts = [
+        ChunkDraft(content="第一小句。", breadcrumb=[], page=None, kind="text", tokens=5),
+        ChunkDraft(content="第二小句。", breadcrumb=[], page=None, kind="text", tokens=5),
+    ]
+    merged = _merge_tiny(drafts, max_tokens=512)
+    assert len(merged) == 1
+    assert merged[0].content == "第一小句。\n第二小句。", merged[0].content

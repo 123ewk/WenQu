@@ -31,6 +31,24 @@ class ChunkDraft:
     page: int | None
     kind: str  # text | table
     tokens: int
+    # 正文(不含面包屑头)。单独保留是为了合并碎块时能重算内容,避免把头重复拼进去。
+    body: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.body:
+            self.body = self.rendered_body()
+
+
+    def rendered_body(self) -> str:
+        """去掉面包屑头后的正文(头 = 第一行,且与 breadcrumb 渲染结果一致时才算)。"""
+        header = " > ".join(self.breadcrumb)
+        if header and self.content.startswith(f"{header}\n"):
+            return self.content[len(header) + 1 :]
+        return self.content
+
+    def render(self) -> str:
+        header = " > ".join(self.breadcrumb)
+        return f"{header}\n{self.body}" if header else self.body
 
 
 def estimate_tokens(text: str) -> int:
@@ -251,6 +269,7 @@ def _emit(
         page=page,
         kind=kind,
         tokens=estimate_tokens(content),
+        body=body,
     )
 
 
@@ -265,7 +284,9 @@ def _merge_tiny(drafts: list[ChunkDraft], max_tokens: int) -> list[ChunkDraft]:
             and prev.tokens < _MIN_CHUNK_TOKENS
             and prev.tokens + draft.tokens <= max_tokens
         ):
-            prev.content = f"{prev.content}\n{draft.content}"
+            # 合并正文后重算内容:直接拼 content 会把面包屑头重复 N 次
+            prev.body = f"{prev.body}\n{draft.body}"
+            prev.content = prev.render()
             prev.tokens = estimate_tokens(prev.content)
             continue
         merged.append(draft)

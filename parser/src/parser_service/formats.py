@@ -27,8 +27,14 @@ _HEADING_RATIO = 1.15
 # 标题长度上限:中文标题通常不超过 ~20 字,40 已相当宽松。超过它按正文处理 ——
 # 简历里的经历行、法条定义、图注这类"大字号的数据行"往往更长,被判成标题会丢内容。
 _MAX_HEADING_CHARS = 40
-# 句末标点:标题极少以此结尾,用它区分"标题"与"大字号正文句子"。
-_SENTENCE_ENDINGS = ("。", ".", "!", "?", "!", "?", ";", ";")
+# 句末标点:标题极少以此结尾,用它区分"标题"与"大字号正文句子"。逗号也算 ——
+# 多行段落被折行后,中间行几乎总是以逗号收尾。
+_SENTENCE_ENDINGS = (
+    "。", ".",
+    "!", "!", "?", "?",
+    ";", ";",
+    ",", ",",
+)
 # 字号归桶精度:0.25pt 足以吸收字体替换/字距带来的亚像素抖动,又不误并相邻层级。
 _SIZE_BUCKET = 0.25
 # 标题层级上限,与 proto 注释及其它格式解析器(docx/md 的 1~6)保持一致。
@@ -114,46 +120,65 @@ def parse_pdf(content: bytes) -> tuple[list[parser_pb2.Block], dict[str, str]]:
                 (y, markdown, None) for y, markdown in page_tables[pno - 1]
             )
             merged.sort(key=lambda item: item[0])
-
-            # 连续同字号的文本行先归成"行组"再判定:标题是**孤行**,大字号正文
-            # 会连续占多行(摘要/引文/图注/折行的长标题)。逐行判定会把这类段落
-            # 的每一行都当标题,而 chunking 不为标题产出块 → 整段内容静默丢失。
-            index = 0
-            while index < len(merged):
-                _y, text, size = merged[index]
-                if size is None:  # 表格:自成一块,并切断行组
-                    blocks.append(
-                        parser_pb2.Block(type="table", text=text, markdown=text, page=pno)
-                    )
-                    index += 1
-                    continue
-                bucket = _bucket(size)
-                run_end = index
-                while run_end + 1 < len(merged):
-                    next_size = merged[run_end + 1][2]
-                    if next_size is None or _bucket(next_size) != bucket:
-                        break  # 表格或不同字号都切断行组
-                    run_end += 1
-                lone_line = run_end == index
-                as_heading = lone_line and _is_heading(
-                    text, bucket, level_of_size, body_size
-                )
-                for _yy, run_text, _s in merged[index : run_end + 1]:
-                    if as_heading:
-                        blocks.append(
-                            parser_pb2.Block(
-                                type="title",
-                                text=run_text,
-                                page=pno,
-                                level=level_of_size[bucket],
-                            )
-                        )
-                    else:
-                        blocks.append(
-                            parser_pb2.Block(type="paragraph", text=run_text, page=pno)
-                        )
-                index = run_end + 1
+            blocks.extend(
+                _blocks_for_page(merged, pno, level_of_size, body_size)
+            )
     return blocks, meta
+
+
+def _blocks_for_page(
+    merged: list[tuple[float, str, float | None]],
+    pno: int,
+    level_of_size: dict[float, int],
+    body_size: float,
+) -> list[parser_pb2.Block]:
+    """把一页的(已按 y 排序的)行/表格转成 Block 序列。
+
+    逐行判定标题,再把连续的正文行合并成段落。两个"为什么不能更简单":
+
+    - 为什么不先按字号归行组再判标题:真实文档里标题与其后紧跟的内容行常常
+      **同字号同字重**(实测简历:"教育经历" 与 "南华大学…" 都是 11pt 加粗),
+      按行组判定会把标题一起吞进段落;逐行判定 + 长度上限才能把 4 字的标题与
+      42 字的内容行区分开;
+    - 为什么不是每行一个块:单行不是段落,逐行成块会产生大量碎块并触发下游的
+      小块合并(合并又会污染面包屑),所以正文行按连续同字号合并。
+    """
+    blocks: list[parser_pb2.Block] = []
+    pending: list[str] = []
+    pending_size: float | None = None
+
+    for _y, text, size in merged:
+        if size is None:  # 表格:自成一块
+            _flush_paragraph(blocks, pending, pno)
+            pending_size = None
+            blocks.append(
+                parser_pb2.Block(type="table", text=text, markdown=text, page=pno)
+            )
+            continue
+        bucket = _bucket(size)
+        if _is_heading(text, bucket, level_of_size, body_size):
+            _flush_paragraph(blocks, pending, pno)
+            pending_size = None
+            blocks.append(
+                parser_pb2.Block(
+                    type="title", text=text, page=pno, level=level_of_size[bucket]
+                )
+            )
+            continue
+        if pending and bucket != pending_size:
+            _flush_paragraph(blocks, pending, pno)  # 字号变了 → 新段落
+        pending.append(text)
+        pending_size = bucket
+    _flush_paragraph(blocks, pending, pno)
+    return blocks
+
+
+def _flush_paragraph(
+    blocks: list[parser_pb2.Block], pending: list[str], pno: int
+) -> None:
+    if pending:
+        blocks.append(parser_pb2.Block(type="paragraph", text="\n".join(pending), page=pno))
+        pending.clear()
 
 
 def _body_font_size(page_rows: list[list[tuple[float, float, float, str]]]) -> float:
