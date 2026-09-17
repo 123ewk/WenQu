@@ -1,75 +1,15 @@
 """PG 集成测试(testcontainers,基准 03):真实 Postgres + 真迁移 + 全链路 API。
 
-外部依赖(Docker)不可用时 skip 而非失败;注册/登录/空间/成员/RBAC/审计一条龙。
+夹具(容器、迁移、共享内存存储)见 tests/conftest.py;本文件只放用例。
 """
 
 from __future__ import annotations
 
-import os
-import shutil
-
 import pytest
 
+from tests.conftest import register as _register
+
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(scope="module")
-def client():
-    if shutil.which("docker") is None:
-        pytest.skip("docker 不可用,跳过 PG 集成测试")
-    try:
-        try:  # testcontainers 4.9+ 将社区模块迁移到 community 命名空间
-            from testcontainers.community.postgres import PostgresContainer
-        except ImportError:
-            from testcontainers.postgres import PostgresContainer
-
-        container = PostgresContainer("pgvector/pgvector:pg16", driver="psycopg")
-        container.start()
-    except Exception as exc:  # noqa: BLE001 — 环境不可用即跳过
-        pytest.skip(f"无法启动 postgres 测试容器: {exc}")
-
-    try:
-        os.environ["APP_DATABASE_URL"] = container.get_connection_url()
-        from alembic import command
-        from alembic.config import Config
-
-        from app.core.config import get_settings
-        from app.core.db import get_engine, get_session_factory
-
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-
-        alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
-
-        from fastapi.testclient import TestClient
-
-        from app.main import create_app
-
-        app = create_app()
-        # CI/本地集成环境无 MinIO:存储依赖换内存替身,语义已由 test_storage 钉住
-        from app.api.deps import get_memory_storage, get_storage
-
-        app.dependency_overrides[get_storage] = get_memory_storage
-
-        with TestClient(app, raise_server_exceptions=False) as test_client:
-            yield test_client
-    finally:
-        from app.core.db import get_engine, get_session_factory
-
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-        container.stop()
-
-
-def _register(client, username: str) -> dict:
-    resp = client.post(
-        "/api/v1/auth/register",
-        json={"username": username, "nickname": username, "password": "secret-pass-1"},
-    )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
 
 
 def test_full_auth_and_space_flow(client) -> None:
@@ -867,3 +807,720 @@ def test_maintenance_purges_expired_tokens_and_old_audit(client) -> None:
         ).all()
         targets = {row[0] for row in remaining_audit}
         assert "recent" in targets and "old" not in targets
+
+
+
+def test_audit_filters_and_enriched_fields(client) -> None:
+    """审计增强契约(缺口 #1/#3/#4):筛选参数、结果字段、操作人昵称冗余。"""
+    owner = _register(client, "auditowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "审计空间"}, headers=auth
+    ).json()["id"]
+
+    # 制造多种动作 + 一次被拒操作(Editor 越权改名 → 403)
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": "auditowner", "role": 10},
+        headers=auth,
+    )
+    editor = _register(client, "auditeditor")
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": "auditeditor", "role": 20},
+        headers=auth,
+    )
+    forbidden = client.patch(
+        f"/api/v1/spaces/{space_id}", json={"name": "越权改名"}, headers=editor_auth
+    )
+    assert forbidden.status_code == 403
+
+    base = f"/api/v1/spaces/{space_id}/audit-logs"
+    all_logs = client.get(base, headers=auth).json()
+
+    # 每行都有结果字段与操作人昵称(前端不再用 members 映射兜底)
+    for item in all_logs["items"]:
+        assert item["result"] in ("success", "denied")
+        assert item["actor_id"] is None or item["actor_name"]
+    assert any(item["result"] == "denied" for item in all_logs["items"])
+
+    # 按动作筛选
+    filtered = client.get(base, params={"action": "space.updated"}, headers=auth).json()
+    assert filtered["total"] == 0  # 那次改名被拒,没有成功记录
+
+    # 按操作人筛选:只返回该操作人的记录,且被拒记录归属发起者 editor
+    editor_id = next(
+        item["actor_id"]
+        for item in all_logs["items"]
+        if item["result"] == "denied"
+    )
+    by_actor = client.get(base, params={"actor_id": editor_id}, headers=auth).json()
+    assert by_actor["total"] >= 1
+    assert {item["actor_id"] for item in by_actor["items"]} == {editor_id}
+    assert any(item["result"] == "denied" for item in by_actor["items"])
+    assert all(item["actor_name"] == "auditeditor" for item in by_actor["items"])
+
+    # 时间范围(闭区间):用现有最新一条的时间戳,必须能取到
+    newest = all_logs["items"][0]["created_at"]
+    in_range = client.get(base, params={"since": newest}, headers=auth).json()
+    assert in_range["total"] >= 1
+    assert all(item["created_at"] >= newest for item in in_range["items"])
+
+
+
+def test_denied_audit_noise_control(client) -> None:
+    """401 噪声控制:常规 token 缺失(如 /users/me)不落被拒审计;
+
+    否则 token 过期会把审计表刷满(缺口 #3 的结果列价值被稀释)。
+    """
+    owner = _register(client, "noiseowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "噪声空间"}, headers=auth
+    ).json()["id"]
+
+    before = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+
+    # 无 token 访问受保护接口 → 401,但不应产生审计记录
+    assert client.get("/api/v1/users/me").status_code == 401
+    assert client.get(f"/api/v1/spaces/{space_id}/audit-logs").status_code == 401
+
+    after = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+    assert after == before
+
+    # 登录失败(401)属于安全事件:应留下记录,但不属于任何空间
+    resp = client.post(
+        "/api/v1/auth/login", json={"username": "noiseowner", "password": "wrong-pass"}
+    )
+    assert resp.status_code == 401
+    # 登录失败审计已由 auth 服务写入(action=auth.login_failed),此处验证其不污染空间审计
+    assert (
+        client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["total"]
+        == before
+    )
+
+
+
+def test_current_space_id_exposed_in_contract(client) -> None:
+    """缺口 #7:当前活动空间回契约,前端不再自维护 localStorage。
+
+    语义:current_space_id = 当前 access token 绑定的空间(登录时未选空间为 null,
+    切空间后与 token 一起更新),GET /users/me 据此恢复 F5 后的活动空间。
+    """
+    owner = _register(client, "spaceidowner")
+    # 注册即登录:还没选空间 → null
+    assert owner["current_space_id"] is None
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    assert client.get("/api/v1/users/me", headers=auth).json()["current_space_id"] is None
+
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "活动空间"}, headers=auth
+    ).json()["id"]
+
+    switched = client.post(
+        "/api/v1/auth/switch-space",
+        json={"space_id": space_id, "refresh_token": owner["refresh_token"]},
+        headers=auth,
+    ).json()
+    assert switched["current_space_id"] == space_id
+
+    # 用切换后的新 token 查 me:活动空间一致(F5 恢复的依据)
+    new_auth = {"Authorization": f"Bearer {switched['access_token']}"}
+    assert client.get("/api/v1/users/me", headers=new_auth).json()["current_space_id"] == space_id
+
+    # 刷新令牌延续活动空间(refresh 返回的也是同一空间)
+    refreshed = client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": switched["refresh_token"]}
+    ).json()
+    assert refreshed["current_space_id"] == space_id
+
+    # 登录(不指定空间)是全新会话 → 回到 null
+    relogin = client.post(
+        "/api/v1/auth/login",
+        json={"username": "spaceidowner", "password": "secret-pass-1"},
+    ).json()
+    assert relogin["current_space_id"] is None
+
+
+
+def test_last_login_recorded_on_login_only(client) -> None:
+    """缺口 #9:记录上次登录时间/IP。语义要点:
+
+    - 注册后的第一次登录,last_login_at 是注册时记录的那次(即"上次"),而不是 NULL;
+    - 每次成功登录都刷新,失败登录不动(安全审计上失败次数另有 login_failed 审计);
+    - 时间与 IP 都来自上一次成功登录,供个人中心展示。
+    """
+    _register(client, "loginer")
+    first = client.post(
+        "/api/v1/auth/login", json={"username": "loginer", "password": "secret-pass-1"}
+    ).json()
+    auth = {"Authorization": f"Bearer {first['access_token']}"}
+
+    me_after_first = client.get("/api/v1/users/me", headers=auth).json()
+    assert me_after_first["last_login_at"] is not None  # 注册那次
+    assert me_after_first["last_login_ip"]
+
+    second = client.post(
+        "/api/v1/auth/login",
+        json={"username": "loginer", "password": "wrong-password"},
+    )
+    assert second.status_code == 401
+    me_after_failed = client.get("/api/v1/users/me", headers=auth).json()
+    # 失败登录不改写"上次成功登录"
+    assert me_after_failed["last_login_at"] == me_after_first["last_login_at"]
+
+    third = client.post(
+        "/api/v1/auth/login", json={"username": "loginer", "password": "secret-pass-1"}
+    ).json()
+    assert third["user"]["last_login_at"] is not None
+    assert third["user"]["last_login_at"] >= me_after_first["last_login_at"]
+
+
+
+def test_space_retrieval_params_persist_and_validate(client) -> None:
+    """缺口 #5:空间级检索参数。要点:
+
+    - 默认值来自设计文档(k=60,w_v=0.7,w_k=0.3,阈值 0.3),建空间即有;
+    - Admin+ 可改并持久化;非 Admin 403;
+    - 非法值拒绝(权重 >1、k 越界),不能让脏配置进库导致检索行为异常。
+    """
+    owner = _register(client, "retrievalcfgowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space = client.post("/api/v1/spaces", json={"name": "调参空间"}, headers=auth).json()
+
+    assert space["retrieval_params"] == {
+        "rrf_k": 60,
+        "vector_weight": 0.7,
+        "fulltext_weight": 0.3,
+        "min_score": 0.3,
+        "default_top_k": 6,
+    }
+
+    updated = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={
+            "name": "调参空间",
+            "description": "",
+            "retrieval_params": {
+                "rrf_k": 30,
+                "vector_weight": 0.5,
+                "fulltext_weight": 0.5,
+                "min_score": 0.4,
+                "default_top_k": 10,
+            },
+        },
+        headers=auth,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["retrieval_params"]["rrf_k"] == 30
+    # 重新读取确认持久化
+    fetched = client.get(f"/api/v1/spaces/{space['id']}", headers=auth).json()
+    assert fetched["retrieval_params"]["default_top_k"] == 10
+
+    # 非法值:权重和 > 1、k 超出范围
+    bad = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={
+            "name": "调参空间",
+            "description": "",
+            "retrieval_params": {"vector_weight": 0.9, "fulltext_weight": 0.9},
+        },
+        headers=auth,
+    )
+    assert bad.status_code == 422
+
+    # 非 Admin 改不动(先注册再拉入:顺序反了会因用户不存在而拉人失败)
+    editor = _register(client, "retrievalcfgeditor")
+    client.post(
+        f"/api/v1/spaces/{space['id']}/members",
+        json={"username": "retrievalcfgeditor", "role": 20},
+        headers=auth,
+    )
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    forbidden = client.patch(
+        f"/api/v1/spaces/{space['id']}",
+        json={"name": "越权改名", "description": ""},
+        headers=editor_auth,
+    )
+    assert forbidden.status_code == 403
+
+
+
+def test_avatar_upload_validate_and_fetch(client) -> None:
+    """缺口 #6:头像上传/读取。要点:
+
+    - 只收图片(png/jpeg/webp)且限制大小,非图片与超大文件被拒;
+    - UserOut.avatar_url 在有头像后返回可访问路径;
+    - 读取接口带鉴权(头像不是公开静态资源),非本人仍可读?—— 否,按用户维度鉴权:
+      只有本人能读自己的头像(内部系统,不做公开分发)。
+    """
+    import io as io_mod
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    import app.main as main_module
+    from app.api.deps import get_storage
+    from app.core.storage import MemoryStorage
+
+    owner = _register(client, "avatarowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    assert owner["user"]["avatar_url"] is None  # 初始无头像
+
+    # 造一张真实 PNG
+    buf = io_mod.BytesIO()
+    Image.new("RGB", (64, 64), (80, 110, 242)).save(buf, format="PNG")
+    png = buf.getvalue()
+
+    app_override = main_module.create_app()
+    # 用共享实例覆盖:MemoryStorage 有状态,按类覆盖会让每次请求拿到空存储
+    shared_storage = MemoryStorage()
+    app_override.dependency_overrides[get_storage] = lambda: shared_storage
+
+    with TestClient(app_override, raise_server_exceptions=False) as ac:
+        # 非图片被拒
+        bad = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("a.txt", b"not an image", "text/plain")},
+            headers=auth,
+        )
+        assert bad.status_code == 415
+
+        # 伪装扩展名但内容不是图片 → 也要拒(不能只信文件名)
+        fake = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("fake.png", b"still not an image", "image/png")},
+            headers=auth,
+        )
+        assert fake.status_code == 415
+
+        ok = ac.post(
+            "/api/v1/users/me/avatar",
+            files={"file": ("me.png", png, "image/png")},
+            headers=auth,
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["avatar_url"]
+
+        # 自己的 me 带出 avatar_url
+        assert ac.get("/api/v1/users/me", headers=auth).json()["avatar_url"]
+
+        # 读回首字节能拿到 PNG 魔数
+        fetched = ac.get("/api/v1/users/me/avatar", headers=auth)
+        assert fetched.status_code == 200
+        assert fetched.content[:8] == png[:8]
+
+        # 未登录不能读
+        assert ac.get("/api/v1/users/me/avatar").status_code == 401
+
+        # 删除头像
+        assert ac.delete("/api/v1/users/me/avatar", headers=auth).status_code == 204
+        assert ac.get("/api/v1/users/me", headers=auth).json()["avatar_url"] is None
+
+
+def test_models_endpoint_lists_only_enabled(client) -> None:
+    """模型清单:只列已启用模型(含 provider 显示名),带各类默认值。"""
+    user = _register(client, "modeluser")
+    auth = {"Authorization": f"Bearer {user['access_token']}"}
+    assert client.get("/api/v1/models").status_code == 401  # 需登录
+
+    resp = client.get("/api/v1/models", headers=auth)
+    assert resp.status_code == 200
+    data = resp.json()
+
+    chat_ids = {m["id"] for m in data["chat"]}
+    assert "deepseek/deepseek-chat" in chat_ids
+    assert all(m["id"] for m in data["chat"])
+    # 未启用条目不得出现(ollama/minimax 等在 models.yaml 里 enabled: false)
+    assert not any(m["id"].startswith("ollama/") for m in data["chat"])
+    # 供应商是显示名,不是 key
+    deepseek = next(m for m in data["chat"] if m["id"] == "deepseek/deepseek-chat")
+    assert deepseek["provider"] == "DeepSeek" and deepseek["provider_key"] == "deepseek"
+    # embedding 带维度
+    assert all(m["dims"] for m in data["embedding"])
+    assert data["defaults"]["chat"] == "deepseek/deepseek-chat"
+    # 不泄漏密钥信息
+    assert "api_key" not in resp.text.lower() or "api_key_env" not in resp.text
+
+
+def test_retrieval_search_request_level_overrides(client) -> None:
+    """检索测试请求级调参:只影响本次,不写回空间配置(原型 Tab B 语义)。"""
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+    from app.api.deps import get_embedding_gateway
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            v = [0.0] * 1024
+            v[0] = 1.0
+            return [v for _ in texts]
+
+    app_override = main_module.create_app()
+    app_override.dependency_overrides[get_embedding_gateway] = StubEmbedder
+
+    owner = _register(client, "overrideowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post("/api/v1/spaces", json={"name": "调参空间"}, headers=auth).json()["id"]
+
+    with TestClient(app_override, raise_server_exceptions=False) as ac:
+        # 非法组合:权重不成对
+        bad = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "x", "vector_weight": 0.5},
+            headers=auth,
+        )
+        assert bad.status_code == 422
+        # 权重和 >1
+        bad2 = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "x", "vector_weight": 0.9, "fulltext_weight": 0.9},
+            headers=auth,
+        )
+        assert bad2.status_code == 422
+        # 合法覆盖:调用成功且空间配置未被修改
+        ok = ac.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={
+                "query": "x",
+                "vector_weight": 0.5,
+                "fulltext_weight": 0.5,
+                "min_score": 0.9,
+                "rrf_k": 20,
+                "top_k": 3,
+            },
+            headers=auth,
+        )
+        assert ok.status_code == 200, ok.text
+
+    space = client.get(f"/api/v1/spaces/{space_id}", headers=auth).json()
+    assert space["retrieval_params"] == {
+        "rrf_k": 60,
+        "vector_weight": 0.7,
+        "fulltext_weight": 0.3,
+        "min_score": 0.3,
+        "default_top_k": 6,
+    }, "请求级覆盖不应写回空间配置"
+
+
+def test_document_reparse_and_chunk_detail(client) -> None:
+    """重新解析(含处理中 409)与单块全文读取。"""
+    import uuid as uuid_mod
+
+    from sqlalchemy import func
+
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Chunk, Document
+
+    owner = _register(client, "reparseowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "重解析空间"}, headers=auth
+    ).json()["id"]
+    kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "重解析库"},
+        headers=auth,
+    ).json()
+
+    with get_session_factory()() as db:
+        doc = Document(
+            kb_id=uuid_mod.UUID(kb["id"]),
+            space_id=uuid_mod.UUID(space_id),
+            filename="f.md",
+            format="md",
+            source="s",
+            status=DocumentStatus.FAILED,
+            error_code="INGEST_FAILED",
+            error_message="DASHSCOPE_API_KEY 未配置",
+        )
+        db.add(doc)
+        db.flush()
+        chunk = Chunk(
+            document_id=doc.id,
+            space_id=doc.space_id,
+            seq=0,
+            content="完整原文块内容" * 5,
+            tsv=func.to_tsvector("simple", "完整 原文块 内容"),
+            meta={"kind": "text", "tokens": 42, "breadcrumb": ["一"]},
+        )
+        db.add(chunk)
+        db.commit()
+        doc_id, chunk_id = doc.id, chunk.id
+
+    # 失败原因与状态可见
+    detail = client.get(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}",
+        headers=auth,
+    ).json()
+    assert detail["status"] == "failed"
+    assert detail["error_code"] == "INGEST_FAILED"
+    assert "DASHSCOPE" in detail["error_message"]  # 真实原因给到了
+
+    # 单块全文(不截断)+ tokens
+    base = f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/chunks"
+    chunk_resp = client.get(f"{base}/{chunk_id}", headers=auth)
+    assert chunk_resp.status_code == 200
+    got = chunk_resp.json()
+    assert got["content"] == "完整原文块内容" * 5
+    assert got["tokens"] == 42
+    assert got["meta"]["breadcrumb"] == ["一"]
+    # 不存在的块 → 404
+    assert client.get(f"{base}/{uuid_mod.uuid4()}", headers=auth).status_code == 404
+
+    # 重新解析:重置 pending 并入队
+    reparse = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/reparse",
+        headers=auth,
+    )
+    assert reparse.status_code == 200
+    body = reparse.json()
+    assert body["status"] == "pending"
+    assert body["error_code"] is None and body["error_message"] is None
+
+    with get_session_factory()() as db:
+        pending = db.scalars(
+            __import__("sqlalchemy").select(__import__("app.domain.models", fromlist=["Task"]).Task)
+        ).all()
+        assert any(
+            t.type == "ingest_document" and t.payload.get("document_id") == str(doc_id)
+            for t in pending
+        ), "应重新入队 ingest_document 任务"
+
+    # 处理中重复调用 → 409 DOCUMENT_BUSY
+    again = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb['id']}/documents/{doc_id}/reparse",
+        headers=auth,
+    )
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "DOCUMENT_BUSY"
+
+
+def test_ingestion_progress_and_kb_stats(client) -> None:
+    """空间级入库进度(缺口 #8)+ 知识库聚合统计。"""
+    import uuid as uuid_mod
+
+    from app.core.db import get_session_factory
+    from app.domain.enums import DocumentStatus
+    from app.domain.models import Document
+
+    owner = _register(client, "progressowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "进度空间"}, headers=auth
+    ).json()["id"]
+
+    # 空库:统计为 0 / empty
+    empty_kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "空库"},
+        headers=auth,
+    ).json()
+    assert empty_kb["document_count"] == 0
+    assert empty_kb["chunk_count"] == 0
+    assert empty_kb["index_status"] == "empty"
+
+    kb = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases",
+        json={"name": "有货库"},
+        headers=auth,
+    ).json()
+
+    with get_session_factory()() as db:
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="done.md",
+                format="md",
+                source="s1",
+                size_bytes=1000,
+                status=DocumentStatus.COMPLETED,
+            )
+        )
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="busy.md",
+                format="md",
+                source="s2",
+                size_bytes=500,
+                status=DocumentStatus.EMBEDDING,
+            )
+        )
+        db.add(
+            Document(
+                kb_id=uuid_mod.UUID(kb["id"]),
+                space_id=uuid_mod.UUID(space_id),
+                filename="bad.md",
+                format="md",
+                source="s3",
+                status=DocumentStatus.FAILED,
+                error_code="INGEST_FAILED",
+                error_message="boom",
+            )
+        )
+        db.commit()
+
+    listed = client.get(f"/api/v1/spaces/{space_id}/knowledge-bases", headers=auth).json()
+    stats = next(item for item in listed if item["id"] == kb["id"])
+    assert stats["document_count"] == 3
+    assert stats["size_bytes"] == 1500
+    assert stats["index_status"] == "processing"  # 有在途文档
+
+    resp = client.get(f"/api/v1/spaces/{space_id}/ingestion-progress", headers=auth)
+    assert resp.status_code == 200
+    prog = resp.json()
+    assert prog["total_active"] == 1  # 只有 embedding 那篇在途
+    assert prog["has_failure"] is True
+    assert prog["counts"]["completed"] == 1
+    assert prog["counts"]["failed"] == 1
+    statuses = {item["status"] for item in prog["active"]}
+    assert "embedding" in statuses and "failed" in statuses
+    failed_item = next(i for i in prog["active"] if i["status"] == "failed")
+    assert failed_item["error_message"] == "boom"  # 失败原因随进度一起给到
+
+    # 非成员 → 404(防枚举)
+    other = _register(client, "progressother")
+    oh = {"Authorization": f"Bearer {other['access_token']}"}
+    assert (
+        client.get(f"/api/v1/spaces/{space_id}/ingestion-progress", headers=oh).status_code
+        == 404
+    )
+
+
+def test_conversation_rename_and_member_avatar_field(client) -> None:
+    """会话重命名 + MemberOut 带 avatar_url。"""
+    owner = _register(client, "memavatarowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "头像空间"}, headers=auth
+    ).json()["id"]
+
+    # MemberOut.avatar_url 存在,无头像时为 null
+    members = client.get(f"/api/v1/spaces/{space_id}/members", headers=auth).json()
+    assert "avatar_url" in members[0]
+    assert members[0]["avatar_url"] is None
+
+    # 会话重命名(列表里同步)
+    conv = client.post(
+        f"/api/v1/spaces/{space_id}/conversations", json={"title": "旧标题"}, headers=auth
+    ).json()
+    renamed = client.patch(
+        f"/api/v1/spaces/{space_id}/conversations/{conv['id']}",
+        json={"title": "新标题"},
+        headers=auth,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "新标题"
+    listed = client.get(f"/api/v1/spaces/{space_id}/conversations", headers=auth).json()
+    assert next(c for c in listed if c["id"] == conv["id"])["title"] == "新标题"
+
+
+def test_avatar_url_usable_with_api_base(client) -> None:
+    """avatar_url 必须不带 /api/v1 前缀,否则前端拼 baseURL 会双重前缀 404。
+
+    这是前端实测反馈的缺陷(缺口清单 §4.1),故用真实响应钉住,而非只看 schema 文案。
+    """
+    import io as io_mod
+    import uuid as uuid_mod
+
+    from PIL import Image
+
+    owner = _register(client, f"avurl{uuid_mod.uuid4().hex[:6]}")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+
+    buf = io_mod.BytesIO()
+    Image.new("RGB", (32, 32), (1, 2, 3)).save(buf, format="PNG")
+    up = client.post(
+        "/api/v1/users/me/avatar",
+        files={"file": ("a.png", buf.getvalue(), "image/png")},
+        headers=auth,
+    )
+    assert up.status_code == 200, up.text
+
+    avatar_url = up.json()["avatar_url"]
+    assert avatar_url == "/users/me/avatar", f"不该带前缀或绝对路径: {avatar_url}"
+    # 前端 baseURL=/api/v1,直接拼接必须可用
+    assert client.get(f"/api/v1{avatar_url}", headers=auth).status_code == 200
+    # /users/me 也返回同一形态
+    assert client.get("/api/v1/users/me", headers=auth).json()["avatar_url"] == avatar_url
+
+
+def test_model_errors_return_branchable_codes(client) -> None:
+    """模型侧异常必须走统一错误壳并给稳定 code(标准 §5.4),不能是 500 INTERNAL_ERROR。
+
+    实测背景:此前「未配 Key」返回 500 INTERNAL_ERROR,前端无法分支;
+    文档却写 502 MODEL_NOT_CONFIGURED。两边都不对 —— 现按语义修正:
+    未配置(服务端缺配置,用户无法自救)→ 503;上游调用失败 → 502。
+    """
+    owner = _register(client, "modelerr")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "模型错误空间"}, headers=auth
+    ).json()["id"]
+
+    # 确保密钥不存在(集成容器的环境变量 + 本地 .env 都清掉)
+    import os
+
+    saved = {k: os.environ.pop(k, None) for k in ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY")}
+    try:
+        resp = client.post(
+            f"/api/v1/spaces/{space_id}/retrieval/search",
+            json={"query": "任意查询"},
+            headers=auth,
+        )
+        assert resp.status_code == 503, f"应为 503 而非 {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body["success"] is False
+        assert body["error"]["code"] == "MODEL_NOT_CONFIGURED"
+        # 可读信息里要指出缺哪个变量名(便于运维定位),但不得包含密钥值
+        assert "DASHSCOPE_API_KEY" in body["error"]["message"]
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value
+
+
+def test_ask_emits_error_event_when_model_unconfigured(client) -> None:
+    """SSE 流内失败必须发 error 事件 —— 不能静默截断。
+
+    实测背景:未配 Key 时流只发 meta 就结束(HTTP 200),前端既拿不到 citations
+    也拿不到 done/error,表现为"转圈后无解释"。HTTP 状态此时已提交,唯一可用的
+    通道就是 error 事件(m2 契约定的事件类型之一)。
+    """
+    import json as json_mod
+    import os
+
+    owner = _register(client, "sseerr")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "SSE 错误空间"}, headers=auth
+    ).json()["id"]
+
+    saved = {k: os.environ.pop(k, None) for k in ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY")}
+    try:
+        resp = client.post(
+            f"/api/v1/spaces/{space_id}/ask", json={"question": "任意问题"}, headers=auth
+        )
+        assert resp.status_code == 200
+        events = [
+            json_mod.loads(line[len("data: ") :])
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        types = [e["type"] for e in events]
+        assert "error" in types, f"流内失败必须发 error 事件,实际事件序列: {types}"
+        error_event = next(e for e in events if e["type"] == "error")
+        # 人话可读,且能指出缺什么(运维可定位)
+        assert "DASHSCOPE_API_KEY" in error_event["message"] or "模型" in error_event["message"]
+        # 不该再发 done(本次没有成功答案)
+        assert "done" not in types
+    finally:
+        for key, value in saved.items():
+            if value is not None:
+                os.environ[key] = value

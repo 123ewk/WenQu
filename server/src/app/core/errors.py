@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request
@@ -25,7 +26,7 @@ class ErrorCode:
     INTERNAL = (1000, "INTERNAL_ERROR")
     VALIDATION = (1001, "VALIDATION_ERROR")
     NOT_FOUND = (1002, "NOT_FOUND")
-    # 2xxx 认证与账号
+    # 2xxx 认证、账号与凭据
     AUTH_REQUIRED = (2000, "AUTH_REQUIRED")
     FORBIDDEN = (2001, "FORBIDDEN")
     INVALID_CREDENTIALS = (2002, "INVALID_CREDENTIALS")
@@ -34,6 +35,13 @@ class ErrorCode:
     USERNAME_TAKEN = (2005, "USERNAME_TAKEN")
     USER_NOT_FOUND = (2006, "USER_NOT_FOUND")
     MEMBER_ALREADY = (2007, "MEMBER_ALREADY")
+    # 凭据加密(OPT-7):缺失=服务端没配好(503,重试无用);解密失败=数据损坏或换过密钥(500)
+    CREDENTIAL_KEY_MISSING = (2008, "CREDENTIAL_KEY_MISSING")
+    CREDENTIAL_DECRYPT_FAILED = (2009, "CREDENTIAL_DECRYPT_FAILED")
+    # API Key(OPT-6):无效/已吊销 401(凭据问题);能力或范围不足 403(授权问题)
+    API_KEY_INVALID = (2010, "API_KEY_INVALID")
+    API_KEY_CAPABILITY_DENIED = (2011, "API_KEY_CAPABILITY_DENIED")
+    API_KEY_SCOPE_DENIED = (2012, "API_KEY_SCOPE_DENIED")
     # 3xxx 知识库与空间
     SPACE_NOT_FOUND = (3000, "SPACE_NOT_FOUND")
     MEMBER_NOT_FOUND = (3001, "MEMBER_NOT_FOUND")
@@ -42,6 +50,8 @@ class ErrorCode:
     DOCUMENT_NOT_FOUND = (3020, "DOCUMENT_NOT_FOUND")
     UNSUPPORTED_FORMAT = (3021, "UNSUPPORTED_FORMAT")
     FILE_TOO_LARGE = (3022, "FILE_TOO_LARGE")
+    DOCUMENT_BUSY = (3023, "DOCUMENT_BUSY")
+    CHUNK_NOT_FOUND = (3024, "CHUNK_NOT_FOUND")
     # 4xxx 会话问答
     CONVERSATION_NOT_FOUND = (4000, "CONVERSATION_NOT_FOUND")
     MESSAGE_NOT_FOUND = (4001, "MESSAGE_NOT_FOUND")
@@ -67,9 +77,29 @@ class AppError(Exception):
         self.details = details
 
 
+# 被拒操作审计钩子:由组合根(main)注入,core 不反向依赖数据层(基准 01)
+_on_denied_hook: Callable[[Request, AppError], None] | None = None
+
+
+def set_denied_audit_hook(hook: Callable[[Request, AppError], None]) -> None:
+    global _on_denied_hook
+    _on_denied_hook = hook
+
+
+def _notify_denied(request: Request, exc: AppError) -> None:
+    """只在 401/403 触发;钩子自身异常绝不影响原错误响应。"""
+    if _on_denied_hook is None or exc.http_status not in (401, 403):
+        return
+    try:
+        _on_denied_hook(request, exc)
+    except Exception:  # noqa: BLE001 — 审计失败不能让原错误响应变 500
+        logger.exception("record denied audit failed path=%s", request.url.path)
+
+
 async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     # Starlette 的 handler 类型签名为 Exception;实际只对 AppError 注册本 handler
     assert isinstance(exc, AppError)
+    _notify_denied(request, exc)
     return JSONResponse(
         status_code=exc.http_status,
         content={
@@ -77,6 +107,24 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
             "error": {"code": exc.code_str, "message": exc.message, "details": exc.details},
         },
     )
+
+
+def _safe_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """把 pydantic 错误转成可 JSON 序列化的形态。
+
+    pydantic v2 在自定义 validator 抛错时,errors() 的 ctx 里会放原始异常对象
+    (如 ValueError 实例),直接进 JSONResponse 会 TypeError,让本该 422 的响应
+    变成 500 —— 校验失败反而报"内部错误"。这里把 ctx 值统一转成字符串:既保住
+    可读信息,又对任何后续新增的 validator 都安全。
+    """
+    safe: list[dict[str, Any]] = []
+    for error in exc.errors():
+        item = dict(error)
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {key: str(value) for key, value in ctx.items()}
+        safe.append(item)
+    return safe
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -89,7 +137,7 @@ async def validation_error_handler(request: Request, exc: Exception) -> JSONResp
             "error": {
                 "code": "VALIDATION_ERROR",
                 "message": "请求参数不合法",
-                "details": list(exc.errors()),
+                "details": _safe_validation_errors(exc),
             },
         },
     )

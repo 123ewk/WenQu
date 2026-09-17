@@ -164,3 +164,72 @@ def test_audit_requires_admin() -> None:
     with pytest.raises(AppError) as forbidden:
         scene.env.space_svc.list_audit(scene.space_id, scene.editor, 50, 0)
     assert forbidden.value.code_str == "FORBIDDEN"
+
+
+def test_list_audit_filters_by_action() -> None:
+    """按动作类型筛选:只返回该动作,且 total 是筛选后的数量(前端筛选条,缺口 #1)。"""
+    scene = setup_two_users()
+    env = scene.env
+    env.space_svc.update(scene.space_id, scene.owner, "改名", "")
+
+    logs, total = env.space_svc.list_audit(
+        scene.space_id, scene.owner, 50, 0, action=AuditAction.MEMBER_ADDED
+    )
+
+    assert total == 1
+    assert [log.action for log in logs] == [AuditAction.MEMBER_ADDED]
+
+
+def test_list_audit_filters_by_time_range_inclusive() -> None:
+    """时间范围筛选两端都是闭区间:传某条日志自己的时间戳,该条必须被包含。
+
+    边界是筛选类需求最易错处(>= 与 > 之差会让"当天"漏记录),故用真实存储的
+    时间戳作为期望值来源,而不是照着重算一遍。
+    """
+    scene = setup_two_users()
+    env = scene.env
+    env.space_svc.update(scene.space_id, scene.owner, "改名", "")
+
+    all_logs, total = env.space_svc.list_audit(scene.space_id, scene.owner, 50, 0)
+    assert total == 3
+    ordered = sorted(all_logs, key=lambda log: log.created_at)
+
+    since_only, since_total = env.space_svc.list_audit(
+        scene.space_id, scene.owner, 50, 0, since=ordered[1].created_at
+    )
+    assert since_total == 2  # 起点那条也包含
+    assert ordered[1] in since_only
+
+    until_only, until_total = env.space_svc.list_audit(
+        scene.space_id, scene.owner, 50, 0, until=ordered[1].created_at
+    )
+    assert until_total == 2  # 终点那条也包含
+    assert ordered[1] in until_only
+
+    both, both_total = env.space_svc.list_audit(
+        scene.space_id,
+        scene.owner,
+        50,
+        0,
+        since=ordered[0].created_at,
+        until=ordered[1].created_at,
+    )
+    assert both_total == 2
+
+
+def test_list_audit_filters_by_actor() -> None:
+    """按操作人筛选:editor 被拉入后自己改不了空间,故用 owner 拉人+editor 退出来区分。"""
+    scene = setup_two_users()
+    env = scene.env
+    env.space_svc.update(scene.space_id, scene.owner, "改名", "")  # actor=owner
+    env.space_svc.leave(scene.space_id, scene.editor)  # actor=editor
+
+    logs, total = env.space_svc.list_audit(
+        scene.space_id, scene.owner, 50, 0, actor_id=scene.editor.id
+    )
+
+    assert total == 1
+    assert logs[0].actor_id == scene.editor.id
+    assert logs[0].action == AuditAction.MEMBER_REMOVED
+
+

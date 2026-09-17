@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.domain.enums import DocumentStatus
 from app.domain.models import Chunk, Document, KnowledgeBase
 
 
@@ -49,6 +51,127 @@ class KnowledgeBaseRepositoryImpl:
                 .order_by(KnowledgeBase.created_at)
             )
         )
+
+
+@dataclass(frozen=True)
+class KbStats:
+    """知识库聚合统计(index_status: empty/processing/degraded/ready)。"""
+
+    document_count: int
+    chunk_count: int
+    size_bytes: int
+    index_status: str
+
+
+class KbStatsRepositoryImpl:
+    """知识库聚合统计:一次查询算齐,避免逐库查询(N+1)。"""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+
+    def stats_for_kbs(self, kb_ids: list[uuid.UUID]) -> dict[uuid.UUID, KbStats]:
+        from app.domain.models import Chunk
+
+        if not kb_ids:
+            return {}
+        from sqlalchemy import func as sa_func
+
+        doc_rows = self._db.execute(
+            select(
+                Document.kb_id,
+                sa_func.count(Document.id),
+                sa_func.coalesce(sa_func.sum(Document.size_bytes), 0),
+                sa_func.count(Document.id).filter(Document.status == DocumentStatus.FAILED),
+                sa_func.count(Document.id).filter(
+                    Document.status.in_(
+                        [
+                            DocumentStatus.PENDING,
+                            DocumentStatus.PARSING,
+                            DocumentStatus.CHUNKING,
+                            DocumentStatus.EMBEDDING,
+                        ]
+                    )
+                ),
+            )
+            .where(Document.kb_id.in_(kb_ids))
+            .group_by(Document.kb_id)
+        ).all()
+        # 分块按"本 KB 的文档"聚合:先取本批 KB 的文档 id,再统计其分块
+        doc_rows_all: list[tuple[uuid.UUID, uuid.UUID]] = [
+            (doc_id, kb_id)
+            for doc_id, kb_id in self._db.execute(
+                select(Document.id, Document.kb_id).where(Document.kb_id.in_(kb_ids))
+            ).all()
+        ]
+        doc_kb: dict[uuid.UUID, uuid.UUID] = {doc_id: kb_id for doc_id, kb_id in doc_rows_all}
+        kb_chunks: dict[uuid.UUID, int] = {}
+        if doc_kb:
+            chunk_rows: list[tuple[uuid.UUID, int]] = [
+                (doc_id, int(count))
+                for doc_id, count in self._db.execute(
+                    select(Chunk.document_id, sa_func.count(Chunk.id))
+                    .where(Chunk.document_id.in_(list(doc_kb)))
+                    .group_by(Chunk.document_id)
+                ).all()
+            ]
+            for doc_id, count in chunk_rows:
+                kb_id = doc_kb.get(doc_id)
+                if kb_id is not None:
+                    kb_chunks[kb_id] = kb_chunks.get(kb_id, 0) + count
+
+        stats: dict[uuid.UUID, KbStats] = {}
+        for kb_id, docs, size, failed, in_flight in doc_rows:
+            chunks = kb_chunks.get(kb_id, 0)
+            if docs == 0:
+                status = "empty"
+            elif in_flight:
+                status = "processing"
+            elif failed:
+                status = "degraded"
+            else:
+                status = "ready"
+            stats[kb_id] = KbStats(
+                document_count=int(docs),
+                chunk_count=chunks,
+                size_bytes=int(size),
+                index_status=status,
+            )
+        return stats
+
+    def list_active_in_space(self, space_id: uuid.UUID, limit: int) -> list[Document]:
+        """在途 + 近期失败:入库进度看板的数据源。"""
+        return list(
+            self._db.scalars(
+                select(Document)
+                .where(
+                    Document.space_id == space_id,
+                    Document.status.in_(
+                        [
+                            DocumentStatus.PENDING,
+                            DocumentStatus.PARSING,
+                            DocumentStatus.CHUNKING,
+                            DocumentStatus.EMBEDDING,
+                            DocumentStatus.FAILED,
+                        ]
+                    ),
+                )
+                .order_by(Document.updated_at.desc())
+                .limit(limit)
+            )
+        )
+
+    def counts_by_status(self, space_id: uuid.UUID) -> dict[str, int]:
+        from sqlalchemy import func as sa_func
+
+        rows = self._db.execute(
+            select(Document.status, sa_func.count(Document.id))
+            .where(Document.space_id == space_id)
+            .group_by(Document.status)
+        ).all()
+        counts = {status.value: 0 for status in DocumentStatus}
+        for status, count in rows:
+            counts[str(status)] = int(count)
+        return counts
 
 
 class DocumentRepositoryImpl:
@@ -128,6 +251,11 @@ class ChunkQueryRepositoryImpl:
 
     def __init__(self, db: Session) -> None:
         self._db = db
+
+    def get(self, chunk_id: uuid.UUID) -> Chunk | None:
+        from app.domain.models import Chunk
+
+        return self._db.get(Chunk, chunk_id)
 
     def list_for_document(
         self, document_id: uuid.UUID, limit: int, offset: int

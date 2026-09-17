@@ -16,17 +16,26 @@ from pathlib import Path
 import httpx
 
 from app.core.config import Settings
+from app.core.errors import AppError, ErrorCode
 from app.core.model_catalog import ModelCatalog, ModelEntry, ModelNotConfigured, ProviderEntry
 
 _EMBED_BATCH_SIZE = 10
 _TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 
 
-class ModelCallError(Exception):
-    """上游模型调用失败(6xxx 域)。message 不含密钥与完整请求体。"""
+class ModelCallError(AppError):
+    """上游模型调用失败(超时/限流/错误响应)。message 不含密钥与完整请求体。
+
+    502 语义:我们作为调用方,从上游拿到了失败响应。与 ModelNotConfigured(503,
+    压根没配好)区分开,前端据此可分别提示"稍后重试"与"联系管理员"。
+    """
 
     def __init__(self, provider: str, status: int | None, detail: str) -> None:
-        super().__init__(f"模型调用失败({provider}{f' HTTP {status}' if status else ''}): {detail}")
+        super().__init__(
+            ErrorCode.MODEL_CALL_FAILED,
+            f"模型调用失败({provider}{f' HTTP {status}' if status else ''}): {detail}",
+            http_status=502,
+        )
         self.provider = provider
         self.status = status
 

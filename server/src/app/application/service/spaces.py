@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import AuditAction, Role
@@ -58,11 +59,23 @@ class SpaceService:
         return space, membership.role
 
     def update(
-        self, space_id: uuid.UUID, user: User, name: str, description: str, ip: str = ""
+        self,
+        space_id: uuid.UUID,
+        user: User,
+        name: str,
+        description: str,
+        ip: str = "",
+        retrieval_params: dict[str, float | int] | None = None,
     ) -> Space:
         space, _role = self._require_role(space_id, user.id, Role.ADMIN)
         space.name = name
         space.description = description
+        if retrieval_params:
+            space.retrieval_rrf_k = int(retrieval_params["rrf_k"])
+            space.retrieval_vector_weight = float(retrieval_params["vector_weight"])
+            space.retrieval_fulltext_weight = float(retrieval_params["fulltext_weight"])
+            space.retrieval_min_score = float(retrieval_params["min_score"])
+            space.retrieval_default_top_k = int(retrieval_params["default_top_k"])
         self._spaces.save(space)
         self._log(
             actor_id=user.id,
@@ -211,10 +224,26 @@ class SpaceService:
         )
 
     def list_audit(
-        self, space_id: uuid.UUID, user: User, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        user: User,
+        limit: int,
+        offset: int,
+        action: AuditAction | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]:
         self._require_role(space_id, user.id, Role.ADMIN)
-        return self._audit.list_for_space(space_id, limit, offset)
+        return self._audit.list_for_space(
+            space_id,
+            limit,
+            offset,
+            action=str(action) if action else None,
+            actor_id=actor_id,
+            since=since,
+            until=until,
+        )
 
     # ---------------------------- 守卫 ----------------------------
 

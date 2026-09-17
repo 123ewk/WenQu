@@ -31,6 +31,8 @@ class TokenPair:
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int = 0
+    # 令牌绑定的活动空间(登录/注册时为 None,切空间后为该空间 id)
+    space_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,8 @@ class AuthService:
             password_hash=security.hash_password(password),
         )
         self._users.create(user)
+        # 注册即登录:此时已建立会话,记为一次成功认证
+        self._touch_login(user, ip)
         self._log(actor_id=user.id, action=AuditAction.AUTH_REGISTER, target=username, ip=ip)
         return AuthSession(user=user, spaces=[], tokens=self._issue_pair(user, None))
 
@@ -84,6 +88,7 @@ class AuthService:
             )
             raise AppError(ErrorCode.INVALID_CREDENTIALS, "账号或密码错误", http_status=401)
         spaces = self._spaces.list_for_user(user.id)
+        self._touch_login(user, ip)
         self._log(actor_id=user.id, action=AuditAction.AUTH_LOGIN_SUCCESS, target=username, ip=ip)
         return AuthSession(user=user, spaces=spaces, tokens=self._issue_pair(user, None))
 
@@ -163,7 +168,14 @@ class AuthService:
             access_token=access,
             refresh_token=raw_refresh,
             expires_in=self._settings.access_token_minutes * 60,
+            space_id=space_id,
         )
+
+    def _touch_login(self, user: User, ip: str) -> None:
+        """记录最近成功认证:失败登录不调用(失败次数由 auth.login_failed 审计承载)。"""
+        user.last_login_at = datetime.now(UTC)
+        user.last_login_ip = ip
+        self._users.save(user)
 
     def _log(
         self,

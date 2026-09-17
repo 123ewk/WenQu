@@ -153,9 +153,24 @@ class FakeAuditRepository:
         return log
 
     def list_for_space(
-        self, space_id: uuid.UUID, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        limit: int,
+        offset: int,
+        action: str | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]:
         scoped = [log for log in self.logs if log.space_id == space_id]
+        if action is not None:
+            scoped = [log for log in scoped if log.action == action]
+        if actor_id is not None:
+            scoped = [log for log in scoped if log.actor_id == actor_id]
+        if since is not None:
+            scoped = [log for log in scoped if log.created_at >= since]
+        if until is not None:
+            scoped = [log for log in scoped if log.created_at <= until]
         return list(reversed(scoped))[offset : offset + limit], len(scoped)
 
 
@@ -301,6 +316,20 @@ class FakeChunkRepository:
     ) -> None:
         self.chunks[document.id] = list(drafts)
 
+    def get(self, chunk_id):
+        for document_id, rows in self.chunks.items():
+            for seq, content, _emb, meta in rows:
+                if getattr(meta, "get", lambda *_: None)("id") == chunk_id:
+                    return Chunk(
+                        id=chunk_id,
+                        document_id=document_id,
+                        space_id=uuid.uuid4(),
+                        seq=seq,
+                        content=content,
+                        meta=meta,
+                    )
+        return None
+
     def list_for_document(self, document_id, limit: int, offset: int):
         """查询语义与 DB 实现一致:按 seq 升序分页,返回 (items, total)。"""
         rows = self.chunks.get(document_id, [])
@@ -316,3 +345,73 @@ class FakeChunkRepository:
         ]
         items.sort(key=lambda c: c.seq)
         return items[offset : offset + limit], len(rows)
+
+
+class FakeKbStatsRepository:
+    """统计替身:按 fake 仓储里的真实数据算,语义与 SQL 版一致。"""
+
+    def __init__(self, documents_ref=None, chunks_ref=None) -> None:
+        self.documents_ref = documents_ref if documents_ref is not None else {}
+        self.chunks_ref = chunks_ref if chunks_ref is not None else {}
+
+    def stats_for_kbs(self, kb_ids):
+        from app.application.repository.knowledge import KbStats
+        from app.domain.enums import DocumentStatus
+
+        stats = {}
+        for kb_id in kb_ids:
+            docs = [d for d in self.documents_ref.values() if d.kb_id == kb_id]
+            chunks = sum(len(self.chunks_ref.get(d.id, [])) for d in docs)
+            in_flight = any(
+                d.status
+                in (
+                    DocumentStatus.PENDING,
+                    DocumentStatus.PARSING,
+                    DocumentStatus.CHUNKING,
+                    DocumentStatus.EMBEDDING,
+                )
+                for d in docs
+            )
+            failed = any(d.status == DocumentStatus.FAILED for d in docs)
+            if not docs:
+                status = "empty"
+            elif in_flight:
+                status = "processing"
+            elif failed:
+                status = "degraded"
+            else:
+                status = "ready"
+            stats[kb_id] = KbStats(
+                document_count=len(docs),
+                chunk_count=chunks,
+                size_bytes=sum(d.size_bytes or 0 for d in docs),
+                index_status=status,
+            )
+        return stats
+
+    def list_active_in_space(self, space_id, limit: int):
+        from app.domain.enums import DocumentStatus
+
+        active = [
+            d
+            for d in self.documents_ref.values()
+            if d.space_id == space_id
+            and d.status
+            in (
+                DocumentStatus.PENDING,
+                DocumentStatus.PARSING,
+                DocumentStatus.CHUNKING,
+                DocumentStatus.EMBEDDING,
+                DocumentStatus.FAILED,
+            )
+        ]
+        return active[:limit]
+
+    def counts_by_status(self, space_id) -> dict[str, int]:
+        from app.domain.enums import DocumentStatus
+
+        counts = {status.value: 0 for status in DocumentStatus}
+        for d in self.documents_ref.values():
+            if d.space_id == space_id and d.status:
+                counts[str(d.status)] = counts.get(str(d.status), 0) + 1
+        return counts

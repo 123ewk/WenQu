@@ -21,6 +21,13 @@ class Role(IntEnum):
             raise ValueError(f"非法角色值: {value}") from exc
 
 
+class AuditResult(StrEnum):
+    """审计结果:denied = 有操作意图但被权限/认证拦下(安全审计的关键一半)。"""
+
+    SUCCESS = "success"
+    DENIED = "denied"
+
+
 class AuditAction(StrEnum):
     """审计动作全分类;新增动作必须在此注册(40+ 分类为长期目标,见基准 04)。"""
 
@@ -29,6 +36,9 @@ class AuditAction(StrEnum):
     AUTH_LOGIN_FAILED = "auth.login_failed"
     AUTH_LOGOUT = "auth.logout"
     PASSWORD_CHANGED = "user.password_changed"
+    USER_UPDATED = "user.updated"
+    AVATAR_UPLOADED = "user.avatar_uploaded"
+    AVATAR_DELETED = "user.avatar_deleted"
     SPACE_CREATED = "space.created"
     SPACE_UPDATED = "space.updated"
     SPACE_DELETED = "space.deleted"
@@ -40,6 +50,22 @@ class AuditAction(StrEnum):
     KB_DELETED = "kb.deleted"
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DELETED = "document.deleted"
+    DOCUMENT_REPARSED = "document.reparsed"
+    API_KEY_CREATED = "api_key.created"
+    API_KEY_REVOKED = "api_key.revoked"
+    ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
+
+
+class ApiCapability(StrEnum):
+    """API Key 能力(能力级授权的最小单位;字符串值进契约,不可随意改)。
+
+    取值与原型页 07 的勾选项一一对应(两项,不是三个:"对话检索"同时覆盖 /ask 与
+    /search)。路由授权表(见 `app/api/api_key_auth.py`)把"能力 → 允许的路由"写死;
+    表里没有的路由,用 Key 访问一律拒绝(fail-closed)。
+    """
+
+    CHAT = "chat"  # 对话检索:/ask 流式问答 + /search 检索
+    DOCUMENTS = "documents"  # 文档管理:上传、删除文档、触发重新解析
 
 
 class DocumentStatus(StrEnum):

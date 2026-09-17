@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from typing import Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol
 
 from app.domain.models import (
+    ApiKey,
     AuditLog,
     Chunk,
     Conversation,
@@ -23,6 +25,9 @@ from app.domain.models import (
     Task,
     User,
 )
+
+if TYPE_CHECKING:
+    from app.application.repository.knowledge import KbStats  # 仅类型标注用
 
 
 class UserRepository(Protocol):
@@ -56,7 +61,14 @@ class SpaceRepository(Protocol):
 class AuditRepository(Protocol):
     def add(self, log: AuditLog) -> AuditLog: ...
     def list_for_space(
-        self, space_id: uuid.UUID, limit: int, offset: int
+        self,
+        space_id: uuid.UUID,
+        limit: int,
+        offset: int,
+        action: str | None = None,
+        actor_id: uuid.UUID | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> tuple[list[AuditLog], int]: ...
 
 
@@ -137,6 +149,16 @@ class MessageRepository(Protocol):
     def next_seq(self, conversation_id: uuid.UUID) -> int: ...
 
 
+class ApiKeyRepository(Protocol):
+    """API Key 持久化:按哈希查找(认证热路径),按空间列出/改名/吊销。"""
+
+    def get_by_hash(self, key_hash: str) -> ApiKey | None: ...
+    def get(self, key_id: uuid.UUID) -> ApiKey | None: ...
+    def create(self, api_key: ApiKey) -> ApiKey: ...
+    def save(self, api_key: ApiKey) -> ApiKey: ...
+    def list_for_space(self, space_id: uuid.UUID) -> list[ApiKey]: ...
+
+
 class ChatGateway(Protocol):
     """对话网关(真实实现走模型层 SSE;测试用假实现)。"""
 
@@ -161,8 +183,18 @@ class EmbeddingGateway(Protocol):
     ) -> list[list[float]]: ...
 
 
+class KbStatsRepository(Protocol):
+    """知识库聚合统计与空间级入库进度(KbStats 定义在 application/repository)。"""
+
+    def stats_for_kbs(self, kb_ids: list[uuid.UUID]) -> dict[uuid.UUID, KbStats]: ...
+    def list_active_in_space(self, space_id: uuid.UUID, limit: int) -> list[Document]: ...
+    def counts_by_status(self, space_id: uuid.UUID) -> dict[str, int]: ...
+
+
 class ChunkQueryRepository(Protocol):
-    """分块读取(前端分块查看页):按文档分页列块,含溯源元数据。"""
+    """分块读取(前端分块查看页 + 引用抽屉):按文档分页列块 / 取单块全文。"""
+
+    def get(self, chunk_id: uuid.UUID) -> Chunk | None: ...
 
     def list_for_document(
         self, document_id: uuid.UUID, limit: int, offset: int

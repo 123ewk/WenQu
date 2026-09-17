@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from types import SimpleNamespace
 
@@ -103,13 +104,16 @@ def _hit(index_text: str):
     )
 
 
-def build_env(hits=None, chat=None, role=Role.VIEWER):
+def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0):
     users = FakeUserRepository()
     spaces = FakeSpaceRepository(users_ref=users.users)
     user = users.create(make_user("u"))
     space = spaces.create(Space(name="s", description=""))
     spaces.add_member(Membership(space_id=space.id, user_id=user.id, role=role))
-    svc = QAService(FakeConvRepo(), FakeMsgRepo(), spaces, FakeRetrieval(hits), chat or FakeChat())
+    svc = QAService(
+        FakeConvRepo(), FakeMsgRepo(), spaces, FakeRetrieval(hits), chat or FakeChat(),
+        heartbeat_seconds=heartbeat_seconds,
+    )
     return SimpleNamespace(service=svc, user=user, space=space, chat=chat or FakeChat())
 
 
@@ -209,3 +213,97 @@ def test_ask_empty_question_rejected() -> None:
     with pytest.raises(AppError) as exc_info:
         env.service.ask_stream(env.user.id, env.space.id, "   ")
     assert exc_info.value.code_str == "VALIDATION_ERROR"
+
+
+# ---------------------------- OPT-1/OPT-2:断线保存与心跳 ----------------------------
+
+
+class SlowFakeChat(FakeChat):
+    """带间隔的假网关:模拟模型逐字生成的等待间隙,触发心跳路径。"""
+
+    def __init__(self, pieces: list[str], gap_seconds: float) -> None:
+        super().__init__(pieces)
+        self._gap = gap_seconds
+
+    def chat_stream(self, messages, model_id=None):
+        self.messages.append(messages)
+        for piece in self.pieces:
+            time.sleep(self._gap)
+            yield piece
+
+
+def _parse_frames(stream: list[str]) -> tuple[list[dict], int]:
+    """返回 (data 事件列表, 心跳注释帧数)。"""
+    events = [
+        json.loads(line[len("data: ") :]) for line in stream if line.startswith("data: ")
+    ]
+    pings = sum(1 for line in stream if line.startswith(": ping"))
+    return events, pings
+
+
+def test_disconnect_saves_partial_answer_with_citations() -> None:
+    """客户端断流(生成器被 close)时,已生成的部分答案必须落库,不能只留 user 消息。"""
+    hits = [_hit("资料")]
+    env = build_env(hits=hits, chat=FakeChat(["部分一", "部分二", "部分三"]))
+    gen = env.service.ask_stream(env.user.id, env.space.id, "断线问题")
+
+    first = json.loads(next(gen)[len("data: ") :])  # meta
+    conv_id = uuid.UUID(first["conversation_id"])
+    next(gen)  # citations
+    next(gen)  # delta 部分一
+    gen.close()  # 模拟客户端断开
+
+    stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
+    roles = [m.role for m in stored]
+    assert roles == ["user", "assistant"]  # 不再是"问题孤零零挂着"
+    partial = stored[-1]
+    assert "部分一" in partial.content
+    assert partial.citations and partial.citations[0]["chunk_id"] == hits[0].chunk_id
+
+
+def test_disconnect_before_any_piece_saves_nothing() -> None:
+    hits = [_hit("资料")]
+    env = build_env(hits=hits, chat=FakeChat(["答案"]))
+    gen = env.service.ask_stream(env.user.id, env.space.id, "问题")
+    next(gen)  # meta
+    next(gen)  # citations
+    gen.close()  # 一个 delta 都没出现
+
+    conversations = list(env.service._conversations.items.values())
+    stored = env.service.get_conversation_messages(
+        env.user.id, env.space.id, conversations[-1].id
+    )
+    assert [m.role for m in stored] == ["user"]  # 只有提问,没有半截空答案
+
+
+def test_normal_completion_persists_full_answer_once() -> None:
+    """正常完成不得因清理逻辑产生重复/半截消息。"""
+    hits = [_hit("资料")]
+    env = build_env(hits=hits, chat=FakeChat(["完整", "答案"]))
+    events = _events(env.service.ask_stream(env.user.id, env.space.id, "问题"))
+    conv_id = uuid.UUID(events[0]["conversation_id"])
+
+    stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
+    assert [m.role for m in stored] == ["user", "assistant"]
+    assert stored[-1].content == "完整答案"
+
+
+def test_heartbeat_ping_emitted_during_slow_generation() -> None:
+    """生成间隙超过心跳间隔时发 `: ping` 注释帧(前置代理不会掐断静默流)。"""
+    hits = [_hit("资料")]
+    chat = SlowFakeChat(["一", "二", "三"], gap_seconds=0.3)
+    env = build_env(hits=hits, chat=chat, heartbeat_seconds=0.05)
+
+    stream = list(env.service.ask_stream(env.user.id, env.space.id, "慢问题"))
+    events, pings = _parse_frames(stream)
+    assert pings >= 2
+    assert [e["type"] for e in events] == ["meta", "citations", "delta", "delta", "delta", "done"]
+
+
+def test_no_heartbeat_when_generation_is_fast() -> None:
+    hits = [_hit("资料")]
+    env = build_env(hits=hits, chat=FakeChat(["快", "速"]), heartbeat_seconds=30.0)
+
+    stream = list(env.service.ask_stream(env.user.id, env.space.id, "快问题"))
+    _events_out, pings = _parse_frames(stream)
+    assert pings == 0

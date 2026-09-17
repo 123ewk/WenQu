@@ -52,19 +52,32 @@ class SwitchSpaceRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
 
+AVATAR_PATH = "/users/me/avatar"
+
+
 class UserOut(BaseModel):
     id: str
     username: str
     nickname: str
     created_at: datetime | None = None
+    current_space_id: str | None = None  # 令牌绑定的活动空间(缺口 #7)
+    last_login_at: datetime | None = None  # 最近一次成功登录(缺口 #9)
+    last_login_ip: str | None = None
+    # 已设置头像时的读取路径;**不带 /api/v1 前缀**(相对 API 基地址),
+    # 前端可直接交给 baseURL=/api/v1 的客户端使用
+    avatar_url: str | None = None
 
     @classmethod
-    def of(cls, user: User) -> UserOut:
+    def of(cls, user: User, current_space_id: str | None = None) -> UserOut:
         return cls(
             id=str(user.id),
             username=user.username,
             nickname=user.nickname,
             created_at=user.created_at,
+            current_space_id=current_space_id,
+            last_login_at=user.last_login_at,
+            last_login_ip=user.last_login_ip,
+            avatar_url=AVATAR_PATH if user.avatar_key else None,
         )
 
 
@@ -86,19 +99,25 @@ class AuthResponse(BaseModel):
     refresh_token: str
     token_type: str
     expires_in: int
+    current_space_id: str | None = None  # 令牌绑定的活动空间(缺口 #7)
 
 
 # ---------------------------- 路由 ----------------------------
 
 
+def _sid(space_id: uuid.UUID | None) -> str | None:
+    return str(space_id) if space_id else None
+
+
 def _auth_response(session: AuthSession) -> AuthResponse:
     return AuthResponse(
-        user=UserOut.of(session.user),
+        user=UserOut.of(session.user, _sid(session.tokens.space_id)),
         spaces=[SpaceBriefOut.of(s, r) for s, r in session.spaces],
         access_token=session.tokens.access_token,
         refresh_token=session.tokens.refresh_token,
         token_type=session.tokens.token_type,
         expires_in=session.tokens.expires_in,
+        current_space_id=_sid(session.tokens.space_id),
     )
 
 
@@ -151,10 +170,11 @@ def switch_space(
     pair: TokenPair = service.switch_space(user, body.space_id, body.refresh_token, ip=ip)
     spaces = service.list_spaces(user)
     return AuthResponse(
-        user=UserOut.of(user),
+        user=UserOut.of(user, _sid(pair.space_id)),
         spaces=[SpaceBriefOut.of(s, r) for s, r in spaces],
         access_token=pair.access_token,
         refresh_token=pair.refresh_token,
         token_type=pair.token_type,
         expires_in=pair.expires_in,
+        current_space_id=_sid(pair.space_id),
     )

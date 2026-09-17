@@ -16,6 +16,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -29,7 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain.enums import DocumentStatus, TaskStatus
+from app.domain.enums import AuditResult, DocumentStatus, TaskStatus
 
 
 class Base(DeclarativeBase):
@@ -44,6 +45,12 @@ class User(Base):
     nickname: Mapped[str] = mapped_column(String(32))
     password_hash: Mapped[str] = mapped_column(String(255))
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 最近一次成功认证(注册即登录,故注册时也会写入);失败登录不更新
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    avatar_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -79,6 +86,16 @@ class Space(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # 空间级检索参数(设计文档:RRF 按空间可配;默认值即全局基准)
+    retrieval_rrf_k: Mapped[int] = mapped_column(Integer, default=60, server_default="60")
+    retrieval_vector_weight: Mapped[float] = mapped_column(
+        Float, default=0.7, server_default="0.7"
+    )
+    retrieval_fulltext_weight: Mapped[float] = mapped_column(
+        Float, default=0.3, server_default="0.3"
+    )
+    retrieval_min_score: Mapped[float] = mapped_column(Float, default=0.3, server_default="0.3")
+    retrieval_default_top_k: Mapped[int] = mapped_column(Integer, default=6, server_default="6")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -120,6 +137,9 @@ class AuditLog(Base):
     )
     action: Mapped[str] = mapped_column(String(64))
     target: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    result: Mapped[str] = mapped_column(
+        String(16), default=AuditResult.SUCCESS, server_default="success"
+    )
     detail: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     ip: Mapped[str] = mapped_column(String(64), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
@@ -183,6 +203,8 @@ class Document(Base):
         String(16), default=DocumentStatus.PENDING, index=True
     )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 任务侧真实失败原因(定位用);error_code 仍是稳定机器码
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -302,4 +324,43 @@ class Message(Base):
     model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ApiKey(Base):
+    """程序化接入凭据(OPT-6):只存 SHA-256 哈希,明文仅创建时回显一次。
+
+    - `key_hash` 唯一索引:认证时按哈希等值查找,不需要遍历解密;
+    - `capabilities`:能力级授权(路由授权表 fail-closed),空数组 = 无任何能力;
+    - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受创建者成员身份约束);
+    - 吊销 = 置 `revoked_at`(保留行,审计与"最近使用"仍有据可查)。
+    """
+
+    __tablename__ = "api_keys"
+    __table_args__ = (Index("ix_api_keys_space_created", "space_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE")
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    key_hint: Mapped[str] = mapped_column(String(32))
+    capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
