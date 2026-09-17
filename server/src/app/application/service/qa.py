@@ -142,9 +142,20 @@ class QAService:
 
         yield _sse({"type": "meta", "conversation_id": str(conversation.id)})
 
-        hits = self._retrieval.search(
-            user_id, space_id, question, top_k=top_k, kb_ids=kb_ids, model_id=model_id
-        )
+        # 检索(含查询向量化)可能因模型未配置/上游失败而中断。此时 HTTP 200 与 meta
+        # 事件已发出,状态码改不了,只能靠 error 事件告知 —— 否则前端只看到流突然结束。
+        try:
+            hits = self._retrieval.search(
+                user_id, space_id, question, top_k=top_k, kb_ids=kb_ids, model_id=model_id
+            )
+        except AppError as exc:
+            logger.warning("retrieval failed in ask: %s", exc.message)
+            yield _sse({"type": "error", "message": exc.message, "code": exc.code_str})
+            return
+        except Exception:  # noqa: BLE001 — 兜底,不让流静默截断
+            logger.exception("retrieval crashed in ask")
+            yield _sse({"type": "error", "message": "检索失败,请稍后重试"})
+            return
         citations = [
             {
                 "index": position,

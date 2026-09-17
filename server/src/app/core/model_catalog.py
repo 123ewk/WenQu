@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from app.core.errors import AppError, ErrorCode
+
 
 @dataclass(frozen=True)
 class ProviderEntry:
@@ -28,8 +30,16 @@ class ModelEntry:
     enabled: bool = True
 
 
-class ModelNotConfigured(Exception):
-    """模型/供应商未配置或密钥缺失(6xxx 域,面向调用方 503 语义)。"""
+class ModelNotConfigured(AppError):
+    """模型/供应商未配置或密钥缺失。
+
+    属**服务端配置问题**(用户无法自救),故 503 而非 4xx;继承 AppError 是为了走
+    统一错误壳 —— 此前它是裸 Exception,直接落到 500 INTERNAL_ERROR,前端无法按
+    code 分支(标准 §5.4)。
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.MODEL_NOT_CONFIGURED, message, http_status=503)
 
 
 def _default_config_path() -> Path:
