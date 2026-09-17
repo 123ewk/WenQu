@@ -9,8 +9,6 @@ declare module 'vue-router' {
     /** 顶栏标题/副标题 */
     title?: string
     desc?: string
-    /** 占位页的功能名 */
-    feature?: string
     /** 仅当前空间 Admin 及以上可访问 */
     adminOnly?: boolean
   }
@@ -63,8 +61,8 @@ const router = createRouter({
         {
           path: 'api-keys',
           name: 'api-keys',
-          component: () => import('@/views/placeholder/PlaceholderView.vue'),
-          meta: { title: 'API Key', desc: '开放接口凭证管理', feature: 'API Key' },
+          component: () => import('@/views/apiKeys/ApiKeysView.vue'),
+          meta: { title: 'API Key', desc: '空间内程序化接入凭证管理' },
         },
         {
           path: 'audit',

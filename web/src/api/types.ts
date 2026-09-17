@@ -200,6 +200,43 @@ export interface ChunkPreviewItem {
   kind: string
 }
 
+/* ───── M3:API Key ───── */
+
+/**
+ * 能力取值与后端 `ApiCapability` 一致(契约里是 list[str],故这里也保留 string):
+ * `chat` = 对话检索(POST /ask 与 /search);`documents` = 文档管理。
+ */
+export type ApiCapability = 'chat' | 'documents'
+
+export interface ApiKeyOut {
+  id: string
+  name: string
+  description: string
+  /** 形如 sk-live-****ab12;完整明文只在创建响应里出现一次 */
+  key_hint: string
+  capabilities: string[]
+  /** 空数组 = 全部知识库 */
+  kb_ids: string[]
+  /** 非 null 即已吊销 */
+  revoked_at: string | null
+  last_used_at: string | null
+  created_at: string | null
+}
+
+export interface ApiKeyCreatedOut extends ApiKeyOut {
+  /** 完整明文 Key:仅创建响应返回一次,之后任何接口都取不回 */
+  plaintext: string
+}
+
+export interface CreateApiKeyRequest {
+  name: string
+  description?: string
+  /** 空数组合法但等于"什么都不能做"(后端 fail-closed) */
+  capabilities?: string[]
+  /** 空数组 = 全部知识库 */
+  kb_ids?: string[]
+}
+
 /* ───── M2:会话与问答 ───── */
 
 export interface ConversationOut {

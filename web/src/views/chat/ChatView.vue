@@ -47,8 +47,8 @@ const groupedConversations = computed(() => {
 
 /* ───── 消息 ───── */
 
-/** 历史消息来自接口;`stopped` 为前端本地标记(用户中断且模型尚未产出正文) */
-type LocalMessage = MessageOut & { stopped?: boolean }
+/** 历史消息来自接口;`stopped`/`incomplete` 为前端本地标记 */
+type LocalMessage = MessageOut & { stopped?: boolean; incomplete?: boolean }
 
 const messages = ref<LocalMessage[]>([])
 const msgLoading = ref(false)
@@ -153,12 +153,24 @@ watch(
   { immediate: true },
 )
 
+/**
+ * 刚流式结束、由本地落地消息的会话 id。
+ * 首次提问会 router.replace 到新会话,路由变化会触发下面的 watcher 重拉历史;
+ * 但失败/中断路径后端并不存助手消息,重拉会把本地渲染的提示冲掉(只剩孤立提问),
+ * 故对该会话跳过一次重拉。
+ */
+let skipReloadId: string | null = null
+
 // 直接打开 /chat/:id(含刷新)也要加载历史消息,故 immediate
 watch(
   activeConversationId,
   async (id) => {
     if (!id) {
       messages.value = []
+      return
+    }
+    if (id === skipReloadId) {
+      skipReloadId = null
       return
     }
     await loadMessages(id)
@@ -208,6 +220,24 @@ async function loadMessages(conversationId: string) {
   }
 }
 
+/**
+ * 流无声结束后的补救:后端会保存已生成的部分答案(M3 OPT-1),故重拉一次历史。
+ * 取到助手消息即以后端为准返回 true;取不到返回 false,由调用方给出提示。
+ */
+async function recoverCutoffAnswer(conversationId: string): Promise<boolean> {
+  try {
+    const list = await apiListMessages(spaceId.value, conversationId)
+    const last = list[list.length - 1]
+    if (last?.role === 'assistant' && last.content) {
+      messages.value = list
+      return true
+    }
+  } catch {
+    /* 重拉失败:退回本地提示,不掩盖错误 */
+  }
+  return false
+}
+
 function resetConversation() {
   messages.value = []
   streamText.value = ''
@@ -223,6 +253,13 @@ function abortStream() {
   abortController?.abort()
   abortController = null
   streaming.value = false
+}
+
+/** 流内 error 事件的 `code` 可选:仅有 code 的分支给面向用户的话术,其余用服务端 message */
+function streamErrorMessage(message: string, code?: string): string {
+  if (code === 'MODEL_NOT_CONFIGURED') return '回答模型未配置,请联系管理员检查服务端模型密钥'
+  if (code === 'MODEL_CALL_FAILED') return '模型调用失败,请稍后重试'
+  return message
 }
 
 async function onSend() {
@@ -275,7 +312,7 @@ async function onSend() {
         } else if (event.type === 'done') {
           citedIndexes.push(...(event.cited_indexes ?? []))
         } else if (event.type === 'error') {
-          streamError = event.message
+          streamError = streamErrorMessage(event.message, event.code)
         }
       },
       abortController.signal,
@@ -329,12 +366,29 @@ async function onSend() {
         stopped: true,
       },
     ]
+  } else if (!(conversationId && (await recoverCutoffAnswer(conversationId)))) {
+    // 流在未产出正文、也没有 error/done 帧的情况下结束(网关掐断或网络掉线);
+    // 此时前端零帧可依,若不显式收尾就会留下无回答的孤立提问。SSE 无续流,须告知。
+    messages.value = [
+      ...messages.value,
+      {
+        id: `local-assistant-${Date.now()}`,
+        role: 'assistant',
+        content: '',
+        seq: messages.value.length,
+        citations: [],
+        model_id: null,
+        created_at: new Date().toISOString(),
+        incomplete: true,
+      },
+    ]
   }
   streamText.value = ''
   streamCitations.value = []
 
   if (conversationId && conversationId !== activeConversationId.value) {
-    // 首次提问由后端新建会话:写入路由并刷新侧栏
+    // 首次提问由后端新建会话:写入路由并刷新侧栏(跳过随之而来的历史重拉,见 skipReloadId)
+    skipReloadId = conversationId
     await router.replace(`/chat/${conversationId}`)
     await loadConversations()
   } else if (conversationId) {
@@ -552,6 +606,12 @@ onUnmounted(abortStream)
                   class="miss-notice is-muted"
                 >
                   已停止生成,本轮未产生回答。可重新提问。
+                </div>
+                <div
+                  v-else-if="message.incomplete"
+                  class="miss-notice is-muted"
+                >
+                  <el-icon :size="14"><WarningFilled /></el-icon>回答未完整返回(连接中断),本轮暂无内容。请重新提问。
                 </div>
                 <div
                   v-else-if="message.content.startsWith('生成失败:')"

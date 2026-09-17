@@ -22,13 +22,18 @@ export function apiListMessages(spaceId: string, conversationId: string): Promis
     .then((r) => r.data)
 }
 
-/** SSE 五种事件(按 type 分派) */
+/**
+ * SSE 五种事件(按 type 分派)。
+ * `error` 的 `code` 是**可选**的:检索失败带 `code`(如 MODEL_NOT_CONFIGURED),
+ * 检索兜底与模型调用失败只有人话 `message` —— 前端按 code 分支前必须先判空。
+ * 另注意失败路径**不发 `done`**,收尾不能以 done 为唯一结束信号。
+ */
 export type AskEvent =
   | { type: 'meta'; conversation_id: string }
   | { type: 'citations'; citations: CitationOut[] }
   | { type: 'delta'; text: string }
   | { type: 'done'; message_id: string; cited_indexes?: number[] }
-  | { type: 'error'; message: string }
+  | { type: 'error'; message: string; code?: string }
 
 function parseError(status: number, data: unknown): ApiError {
   const shell = (data as { error?: { code?: unknown; message?: unknown; details?: unknown } })?.error

@@ -29,13 +29,20 @@ const memberMap = computed(() => {
   return map
 })
 
-/** 动作码 → 中文标签;与后端 AuditAction 枚举保持同步,未知码原样展示 */
+/**
+ * 动作码 → 中文标签;与后端 AuditAction 枚举保持同步,未知码原样展示(不隐藏)。
+ * 后端源码现为 23 个值(server/src/app/domain/enums.py),注意导出的 openapi.json 目前
+ * 落后 3 个 user.* 值(契约自 50ee21a 后未重导),故以源码为准补齐。
+ */
 const ACTION_LABELS: Record<string, string> = {
   'auth.register': '注册',
   'auth.login_success': '登录',
   'auth.login_failed': '登录失败',
   'auth.logout': '登出',
   'user.password_changed': '修改密码',
+  'user.updated': '修改资料',
+  'user.avatar_uploaded': '上传头像',
+  'user.avatar_deleted': '删除头像',
   'space.created': '创建空间',
   'space.updated': '空间设置变更',
   'space.deleted': '删除空间',
@@ -47,6 +54,10 @@ const ACTION_LABELS: Record<string, string> = {
   'kb.deleted': '知识库删除',
   'document.uploaded': '文档上传',
   'document.deleted': '文档删除',
+  'document.reparsed': '重新解析',
+  'api_key.created': '创建 API Key',
+  'api_key.revoked': '吊销 API Key',
+  'access.denied': '越权访问被拒',
 }
 
 function actionLabel(action: string): string {
