@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from app.main import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -131,3 +133,73 @@ def test_audit_result_is_enum_in_contract() -> None:
     result = spec["components"]["schemas"]["AuditLogOut"]["properties"]["result"]
     enum_values = result.get("enum") or []
     assert set(enum_values) == {"success", "denied"}, f"result 枚举缺失: {result}"
+
+
+# ---------------------------- OPT-8:CI 门禁(双向镜像 + 错误壳扫描) ----------------------------
+
+
+def test_required_paths_mirror_generated() -> None:
+    """REQUIRED_PATHS 必须与实际契约**双向一致**。
+
+    新增/删除路由而不改本清单 → CI 红(强制感知契约变化,不许悄悄上线新端点);
+    清单里的路径从契约中消失 → 同样红。
+    """
+    missing = REQUIRED_PATHS - generated_paths()
+    assert not missing, f"清单声明的路径不存在: {missing}"
+    undeclared = generated_paths() - REQUIRED_PATHS
+    assert not undeclared, f"契约新增路径未登记进 REQUIRED_PATHS: {undeclared}"
+
+
+def test_error_codes_mirror_registered() -> None:
+    """REQUIRED_ERROR_CODES 与 ErrorCode 注册表**双向一致**。
+
+    新增 ErrorCode 成员而不登记 → CI 红(新错误码必须过契约测试这一关)。
+    """
+    from app.core.errors import ErrorCode
+
+    registered = {
+        value[1]
+        for name, value in vars(ErrorCode).items()
+        if not name.startswith("_") and isinstance(value, tuple)
+    }
+    assert registered == REQUIRED_ERROR_CODES, (
+        f"未登记: {registered - REQUIRED_ERROR_CODES}; 已失效: {REQUIRED_ERROR_CODES - registered}"
+    )
+
+
+def test_unified_error_shell_on_protected_endpoints() -> None:
+    """所有需认证端点(抽样)未登录时必须返回统一错误壳 + AUTH_REQUIRED。
+
+    这是错误壳的漂移门禁:谁改了错误响应结构/兜底码,这里全量爆出来。
+    """
+    import uuid as _uuid
+
+    space = str(_uuid.uuid4())
+    protected = [
+        ("GET", "/api/v1/spaces"),
+        ("GET", "/api/v1/users/me"),
+        ("GET", f"/api/v1/spaces/{space}/knowledge-bases"),
+        ("GET", f"/api/v1/spaces/{space}/api-keys"),
+        ("GET", f"/api/v1/spaces/{space}/audit-logs"),
+        ("GET", f"/api/v1/spaces/{space}/ingestion-progress"),
+        ("POST", f"/api/v1/spaces/{space}/retrieval/search"),
+        ("POST", f"/api/v1/spaces/{space}/ask"),
+        ("POST", f"/api/v1/spaces/{space}/knowledge-bases"),
+        ("DELETE", f"/api/v1/spaces/{space}/api-keys/{_uuid.uuid4()}"),
+    ]
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    for method, path in protected:
+        resp = client.request(method, path)
+        assert resp.status_code == 401, f"{method} {path} -> {resp.status_code}"
+        body = resp.json()
+        assert body["success"] is False, f"{method} {path} 缺 success:false"
+        err = body["error"]
+        assert err["code"] == "AUTH_REQUIRED", f"{method} {path} 兜底码异常: {err}"
+        assert isinstance(err["message"], str) and err["message"]
+
+
+def test_public_endpoints_stay_public() -> None:
+    """健康检查与系统信息不要求认证(容器探针/前端启动探测依赖它)。"""
+    client = TestClient(create_app(), raise_server_exceptions=False)
+    assert client.get("/health").status_code == 200
+    assert client.get("/system/info").status_code == 200
