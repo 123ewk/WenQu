@@ -282,8 +282,9 @@ def get_current_space_id(
 def get_profile_service(
     users: UserRepository = Depends(get_user_repository),
     storage: ObjectStorage = Depends(get_storage),
+    audit: AuditRepository = Depends(get_audit_repository),
 ) -> ProfileService:
-    return ProfileService(users, storage, get_settings().avatar_max_mb)
+    return ProfileService(users, storage, audit, get_settings().avatar_max_mb)
 
 
 def get_client_ip(request: Request) -> str:

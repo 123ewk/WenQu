@@ -44,9 +44,10 @@ def me(
 def update_profile(
     body: UpdateProfileRequest,
     user: User = Depends(get_current_user),
+    service: ProfileService = Depends(get_profile_service),
 ) -> UserOut:
-    user.nickname = body.nickname
-    return UserOut.of(user)
+    """昵称修改走服务层(审计 user.updated),不再在路由里裸改 ORM。"""
+    return UserOut.of(service.update_profile(user, body.nickname))
 
 
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)

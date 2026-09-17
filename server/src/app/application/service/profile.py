@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import io
+import uuid
 
 from app.core.errors import AppError, ErrorCode
 from app.core.storage import ObjectStorage
-from app.domain.interfaces import UserRepository
-from app.domain.models import User
+from app.domain.enums import AuditAction, AuditResult
+from app.domain.interfaces import AuditRepository, UserRepository
+from app.domain.models import AuditLog, User
 
 # Pillow 识别的格式 → 回传 content-type
 _ALLOWED_FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
@@ -23,11 +25,28 @@ _MAX_PIXELS = 4096  # 单边像素上限(解压炸弹防护)
 
 class ProfileService:
     def __init__(
-        self, users: UserRepository, storage: ObjectStorage, avatar_max_mb: int = 2
+        self,
+        users: UserRepository,
+        storage: ObjectStorage,
+        audit: AuditRepository,
+        avatar_max_mb: int = 2,
     ) -> None:
         self._users = users
         self._storage = storage
+        self._audit = audit
         self._max_bytes = avatar_max_mb * 1024 * 1024
+
+    def update_profile(self, user: User, nickname: str) -> User:
+        """修改昵称(PATCH /users/me):此前绕过审计,账号资料变更必须留痕。"""
+        nickname = nickname.strip()
+        if not nickname:
+            raise AppError(ErrorCode.VALIDATION, "昵称不能为空", http_status=422)
+        old = user.nickname
+        user.nickname = nickname
+        self._users.save(user)
+        if old != nickname:
+            self._log(user.id, AuditAction.USER_UPDATED, detail={"field": "nickname"})
+        return user
 
     def set_avatar(self, user: User, content: bytes, content_type: str = "") -> str:
         """校验并保存头像,返回内容类型(供读取接口回传)。"""
@@ -44,6 +63,7 @@ class ProfileService:
         self._storage.put(key, content, _ALLOWED_FORMATS[fmt])
         user.avatar_key = key
         self._users.save(user)
+        self._log(user.id, AuditAction.AVATAR_UPLOADED)
         return _ALLOWED_FORMATS[fmt]
 
     def get_avatar(self, user: User) -> tuple[bytes, str]:
@@ -61,6 +81,26 @@ class ProfileService:
             self._storage.delete(user.avatar_key)
             user.avatar_key = None
             self._users.save(user)
+            self._log(user.id, AuditAction.AVATAR_DELETED)
+
+    def _log(
+        self,
+        actor_id: uuid.UUID,
+        action: AuditAction,
+        detail: dict | None = None,
+        ip: str = "",
+    ) -> None:
+        self._audit.add(
+            AuditLog(
+                actor_id=actor_id,
+                space_id=None,  # 个人资料不属于任何空间
+                action=str(action),
+                target=str(actor_id),
+                result=str(AuditResult.SUCCESS),
+                detail=detail or {},
+                ip=ip,
+            )
+        )
 
     def _detect_format(self, content: bytes) -> str:
         """真正解码校验:非图片/截断/超像素一律 415。"""
