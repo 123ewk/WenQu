@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import register as _register
+
+pytestmark = pytest.mark.integration
 
 
 def _uname(prefix: str) -> str:
