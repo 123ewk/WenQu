@@ -10,9 +10,14 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from app.api.deps import get_current_user, get_retrieval_service
+from app.api.deps import (
+    Caller,
+    get_api_key_service,
+    get_current_actor,
+    get_retrieval_service,
+)
+from app.application.service.api_keys import ApiKeyService
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
-from app.domain.models import User
 
 router = APIRouter(prefix="/api/v1/spaces/{space_id}/retrieval", tags=["retrieval"])
 
@@ -71,9 +76,15 @@ def _out(chunk: RetrievedChunk) -> RetrievedChunkOut:
 def search(
     space_id: uuid.UUID,
     body: SearchRequest,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: RetrievalService = Depends(get_retrieval_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> list[RetrievedChunkOut]:
+    user = caller.user
+    # API Key 调用:kb_ids 先按 Key 范围收窄(范围外被拒,绝不静默降级)
+    kb_ids = body.kb_ids
+    if caller.api_key is not None:
+        kb_ids = key_service.resolve_kb_scope(caller.api_key, kb_ids)
     overrides = {
         key: value
         for key, value in (
@@ -92,7 +103,7 @@ def search(
             space_id,
             body.query,
             top_k=body.top_k,
-            kb_ids=body.kb_ids,
+            kb_ids=kb_ids,
             model_id=body.model_id,
             overrides=overrides or None,
         )

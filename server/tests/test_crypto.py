@@ -53,8 +53,8 @@ def test_same_plaintext_encrypts_differently_each_time() -> None:
 
 
 def test_ciphertext_carries_version_prefix() -> None:
-    """带版本前缀,为将来换密钥/换算法留出可判别的迁移路径。"""
-    assert _cipher().encrypt("v").startswith("v1:")
+    """带版本前缀(与架构设计 §8 的统一加密入口 `enc:v1:` 一致),为将来换算法/轮换留判别路径。"""
+    assert _cipher().encrypt("v").startswith("enc:v1:")
 
 
 def test_plaintext_does_not_leak_into_ciphertext() -> None:
@@ -68,10 +68,10 @@ def test_plaintext_does_not_leak_into_ciphertext() -> None:
 def test_tampered_ciphertext_fails_to_decrypt() -> None:
     cipher = _cipher()
     token = cipher.encrypt("sk-live-tamper-me")
-    version, _, payload = token.partition(":")
+    prefix, _, payload = token.rpartition(":")
     raw = bytearray(base64.b64decode(payload))
     raw[-1] ^= 0x01  # 翻转密文最后一位
-    tampered = f"{version}:{base64.b64encode(bytes(raw)).decode('ascii')}"
+    tampered = f"{prefix}:{base64.b64encode(bytes(raw)).decode('ascii')}"
 
     with pytest.raises(AppError) as exc:
         cipher.decrypt(tampered)
@@ -101,10 +101,10 @@ def test_empty_master_key_fails_closed() -> None:
     "bad_token",
     [
         "not-a-versioned-token",
-        "v2:AAAA",  # 未知版本,不能当作 v1 硬解
-        "v1:",  # 空载荷
-        "v1:!!!!",  # 非法 base64
-        "v1:" + base64.b64encode(b"short").decode("ascii"),  # 长度不足 nonce+tag
+        "enc:v2:AAAA",  # 未知版本,不能当作 v1 硬解
+        "enc:v1:",  # 空载荷
+        "enc:v1:!!!!",  # 非法 base64
+        "enc:v1:" + base64.b64encode(b"short").decode("ascii"),  # 长度不足 nonce+tag
     ],
 )
 def test_malformed_token_rejected(bad_token: str) -> None:
@@ -123,7 +123,7 @@ def test_corrupted_utf8_payload_rejected() -> None:
     aead = AESGCM(hashlib.sha256(_MASTER_KEY.encode()).digest())
     nonce = os.urandom(12)
     blob = aead.encrypt(nonce, b"\xff\xfe\xfd", None)
-    forged = "v1:" + base64.b64encode(nonce + blob).decode("ascii")
+    forged = "enc:v1:" + base64.b64encode(nonce + blob).decode("ascii")
 
     with pytest.raises(AppError) as exc:
         _cipher().decrypt(forged)

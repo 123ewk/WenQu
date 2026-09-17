@@ -13,13 +13,17 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.api.deps import (
+    Caller,
+    get_api_key_service,
     get_client_ip,
+    get_current_actor,
     get_current_user,
     get_knowledge_service,
 )
 from app.application.repository.knowledge import KbStats
+from app.application.service.api_keys import ApiKeyService
 from app.application.service.knowledge import KnowledgeService
-from app.domain.models import Document, KnowledgeBase, User
+from app.domain.models import ApiKey, Document, KnowledgeBase, User
 
 router = APIRouter(prefix="/api/v1/spaces/{space_id}/knowledge-bases", tags=["knowledge"])
 
@@ -123,13 +127,29 @@ def _doc_out(document: Document) -> DocumentOut:
 # ---------------------------- 知识库 ----------------------------
 
 
+def _check_kb_scope(
+    key_service: ApiKeyService, api_key: ApiKey | None, kb_id: uuid.UUID
+) -> None:
+    """API Key 的 KB 范围收窄:范围外一律 403(JWT 调用 api_key 为 None,不受影响)。"""
+    if api_key is not None:
+        key_service.resolve_kb_scope(api_key, [kb_id])
+
+
 @router.get("", response_model=list[KnowledgeBaseOut])
 def list_kbs(
     space_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> list[KnowledgeBaseOut]:
+    user = caller.user
     kbs = service.list_kbs(user, space_id)
+    # API Key 调用:KB 列表按 Key 范围过滤(程序化客户端只看得到被授权的库)
+    if caller.api_key is not None:
+        scope = key_service.resolve_kb_scope(caller.api_key, None)
+        if scope is not None:
+            allowed = set(scope)
+            kbs = [kb for kb in kbs if kb.id in allowed]
     stats = service.kb_stats(space_id, [kb.id for kb in kbs])
     return [_kb_out(kb, stats.get(kb.id)) for kb in kbs]
 
@@ -150,9 +170,12 @@ def create_kb(
 def get_kb(
     space_id: uuid.UUID,
     kb_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> KnowledgeBaseOut:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     kb = service.get_kb(user, space_id, kb_id)
     return _kb_out(kb, service.kb_stats(space_id, [kb.id]).get(kb.id))
 
@@ -190,9 +213,12 @@ def list_documents(
     kb_id: uuid.UUID,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> DocumentPage:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     items, total = service.list_documents(user, space_id, kb_id, limit, offset)
     return DocumentPage(items=[_doc_out(d) for d in items], total=total)
 
@@ -202,10 +228,13 @@ async def upload_document(
     space_id: uuid.UUID,
     kb_id: uuid.UUID,
     file: UploadFile = File(description="文档文件(pdf/docx/xlsx/pptx/md/txt)"),
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
     ip: str = Depends(get_client_ip),
 ) -> DocumentOut:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     content = await file.read()
     filename = file.filename or "未命名"
     document = service.upload_document(
@@ -219,9 +248,12 @@ def get_document(
     space_id: uuid.UUID,
     kb_id: uuid.UUID,
     document_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> DocumentOut:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     return _doc_out(service.get_document(user, space_id, kb_id, document_id))
 
 
@@ -230,10 +262,13 @@ def delete_document(
     space_id: uuid.UUID,
     kb_id: uuid.UUID,
     document_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
     ip: str = Depends(get_client_ip),
 ) -> None:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     service.delete_document(user, space_id, kb_id, document_id, ip)
 
 
@@ -244,9 +279,12 @@ def list_chunks(
     document_id: uuid.UUID,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> ChunkPage:
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     items, total = service.list_chunks(user, space_id, kb_id, document_id, limit, offset)
     return ChunkPage(items=[_chunk_out(c) for c in items], total=total)
 
@@ -260,11 +298,14 @@ def reparse_document(
     space_id: uuid.UUID,
     kb_id: uuid.UUID,
     document_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
     ip: str = Depends(get_client_ip),
 ) -> DocumentOut:
     """重新解析/重建索引:重置为 pending 再入队,原文件不变;处理中调用 → 409。"""
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     return _doc_out(service.reparse_document(user, space_id, kb_id, document_id, ip))
 
 
@@ -277,9 +318,12 @@ def get_chunk(
     kb_id: uuid.UUID,
     document_id: uuid.UUID,
     chunk_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: KnowledgeService = Depends(get_knowledge_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> ChunkOut:
     """单块全文(引用抽屉"查看完整原文块";不走 excerpt 截断)。"""
+    user = caller.user
+    _check_kb_scope(key_service, caller.api_key, kb_id)
     chunk = service.get_chunk(user, space_id, kb_id, document_id, chunk_id)
     return _chunk_out(chunk)

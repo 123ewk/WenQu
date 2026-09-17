@@ -325,3 +325,42 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ApiKey(Base):
+    """程序化接入凭据(OPT-6):只存 SHA-256 哈希,明文仅创建时回显一次。
+
+    - `key_hash` 唯一索引:认证时按哈希等值查找,不需要遍历解密;
+    - `capabilities`:能力级授权(路由授权表 fail-closed),空数组 = 无任何能力;
+    - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受创建者成员身份约束);
+    - 吊销 = 置 `revoked_at`(保留行,审计与"最近使用"仍有据可查)。
+    """
+
+    __tablename__ = "api_keys"
+    __table_args__ = (Index("ix_api_keys_space_created", "space_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE")
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    key_hint: Mapped[str] = mapped_column(String(32))
+    capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

@@ -48,7 +48,21 @@ class AuditAction(StrEnum):
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DELETED = "document.deleted"
     DOCUMENT_REPARSED = "document.reparsed"
+    API_KEY_CREATED = "api_key.created"
+    API_KEY_REVOKED = "api_key.revoked"
     ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
+
+
+class ApiCapability(StrEnum):
+    """API Key 能力(能力级授权的最小单位;字符串值进契约,不可随意改)。
+
+    取值与原型页 07 的勾选项一一对应(两项,不是三个:"对话检索"同时覆盖 /ask 与
+    /search)。路由授权表(见 `app/api/api_key_auth.py`)把"能力 → 允许的路由"写死;
+    表里没有的路由,用 Key 访问一律拒绝(fail-closed)。
+    """
+
+    CHAT = "chat"  # 对话检索:/ask 流式问答 + /search 检索
+    DOCUMENTS = "documents"  # 文档管理:上传、删除文档、触发重新解析
 
 
 class DocumentStatus(StrEnum):

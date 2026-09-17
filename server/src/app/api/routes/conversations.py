@@ -18,7 +18,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_current_user, get_qa_service
+from app.api.deps import (
+    Caller,
+    get_api_key_service,
+    get_current_actor,
+    get_current_user,
+    get_qa_service,
+)
+from app.application.service.api_keys import ApiKeyService
 from app.application.service.qa import QAService
 from app.domain.models import Conversation, Message, User
 
@@ -138,16 +145,22 @@ def delete_conversation(
 def ask(
     space_id: uuid.UUID,
     body: AskRequest,
-    user: User = Depends(get_current_user),
+    caller: Caller = Depends(get_current_actor),
     service: QAService = Depends(get_qa_service),
+    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> StreamingResponse:
     """SSE 流式问答。首帧 meta 携带(可能是新建的)conversation_id。"""
+    user = caller.user
+    # API Key 调用:kb_ids 先按 Key 范围收窄(范围外被拒,绝不静默降级)
+    kb_ids = body.kb_ids
+    if caller.api_key is not None:
+        kb_ids = key_service.resolve_kb_scope(caller.api_key, kb_ids)
     events: Iterator[str] = service.ask_stream(
         user.id,
         space_id,
         body.question,
         conversation_id=body.conversation_id,
-        kb_ids=body.kb_ids,
+        kb_ids=kb_ids,
         top_k=body.top_k,
         model_id=body.model_id,
     )

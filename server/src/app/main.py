@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
 from app.api.denied_audit import record_denied
+from app.api.routes import api_keys as api_key_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
 from app.api.routes import conversations as conversation_routes
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(retrieval_routes.router)
     app.include_router(conversation_routes.router)
     app.include_router(model_routes.router)
+    app.include_router(api_key_routes.router)
     return app
 
 

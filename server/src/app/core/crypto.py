@@ -6,7 +6,8 @@ Key 托管)都不能明文落库,统一走本模块。
 设计取舍:
 - **AEAD 而非裸加密**:GCM 自带认证标签,密文被改动一位就解密失败,不会返回垃圾明文;
 - **每次加密独立随机 nonce**(12 字节),同一明文两次密文不同,杜绝密文比对;
-- **密文带 `v1:` 版本前缀**:将来换算法或轮换主密钥时,可以按前缀判别新旧记录,
+- **密文带 `enc:v1:` 版本前缀**(与 `docs/架构设计.md` §8 的统一加密入口一致):
+  将来换算法或轮换主密钥时,可以按前缀判别新旧记录,
   不必一次性停机重加密(轮换本身未实现,前缀是它的前置条件);
 - **密钥派生用 SHA-256**:主密钥在 `.env` 里是任意长度字符串,统一派生 32 字节;
   这不提升强度,主密钥必须是高熵随机串(生成方式见 `deploy/.env.example`);
@@ -28,7 +29,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 
-_VERSION = "v1"
+_VERSION = "enc:v1"
+_PREFIX = f"{_VERSION}:"
 _NONCE_BYTES = 12
 _TAG_BYTES = 16  # GCM 认证标签长度;最短合法载荷 = nonce + tag
 _KEY_BYTES = 32  # AES-256
@@ -49,12 +51,14 @@ class CredentialCipher:
     def encrypt(self, plaintext: str) -> str:
         nonce = os.urandom(_NONCE_BYTES)
         blob = self._aead.encrypt(nonce, plaintext.encode("utf-8"), None)
-        return f"{_VERSION}:{base64.b64encode(nonce + blob).decode('ascii')}"
+        return f"{_PREFIX}{base64.b64encode(nonce + blob).decode('ascii')}"
 
     def decrypt(self, token: str) -> str:
         """解密失败一律归一为 CREDENTIAL_DECRYPT_FAILED,不向调用方泄露原因。"""
-        version, sep, payload = token.partition(":")
-        if sep == "" or version != _VERSION or not payload:
+        if not token.startswith(_PREFIX):
+            raise self._invalid()
+        payload = token[len(_PREFIX) :]
+        if not payload:
             raise self._invalid()
         try:
             raw = base64.b64decode(payload, validate=True)
