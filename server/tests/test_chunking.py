@@ -157,3 +157,71 @@ def test_merge_tiny_keeps_header_without_breadcrumb() -> None:
     merged = _merge_tiny(drafts, max_tokens=512)
     assert len(merged) == 1
     assert merged[0].content == "第一小句。\n第二小句。", merged[0].content
+
+
+# ---------------------------- 小节级聚合:不超上限就整段一块 ----------------------------
+
+
+def test_section_under_budget_becomes_single_chunk() -> None:
+    """同一小节的多个段落,总量未超上限时必须合成**一个**块(不再按段落切散)。"""
+    blocks = [
+        _block(type="title", text="项目经验", level=1),
+        _block(text="第一段标记。" + _sentences(3, size=5)),
+        _block(text="第二段标记。" + _sentences(3, size=5)),
+        _block(text="第三段标记。" + _sentences(3, size=5)),
+    ]
+    drafts = chunk_blocks(blocks)  # 默认 512,三段合计远未超限
+    assert len(drafts) == 1, [d.body[:26] for d in drafts]
+    assert drafts[0].breadcrumb == ["项目经验"]
+    body = drafts[0].rendered_body()
+    for marker in ("第一段标记", "第二段标记", "第三段标记"):
+        assert marker in body, body
+    order = [body.index(m) for m in ("第一段标记", "第二段标记", "第三段标记")]
+    assert order == sorted(order), body
+
+
+def test_section_over_budget_splits_and_keeps_all_content_in_order() -> None:
+    """超上限时切开:每块 <= 上限,小节内容不丢、顺序不乱。"""
+    paragraphs = [f"第{i}段标记。" + _sentences(3, size=5) for i in range(6)]
+    blocks = [_block(type="title", text="长小节", level=1)]
+    blocks += [_block(text=p) for p in paragraphs]
+
+    drafts = chunk_blocks(blocks, max_tokens=128)
+    assert len(drafts) > 1, [d.body[:20] for d in drafts]
+    assert all(d.tokens <= 128 for d in drafts)
+
+    joined = "\n".join(d.rendered_body() for d in drafts)
+    for i in range(6):
+        assert f"第{i}段标记" in joined, i
+    order = [joined.index(f"第{i}段标记") for i in range(6)]
+    assert order == sorted(order), order
+
+
+def test_recursive_split_prefers_paragraph_boundary() -> None:
+    """递归切分优先落在段落边界:每块正文以完整段落开头(不从句中截断)。"""
+    import re as _re
+
+    paragraphs = [f"第{i}段标记。" + _sentences(3, size=5) for i in range(6)]
+    blocks = [_block(type="title", text="长小节", level=1)]
+    blocks += [_block(text=p) for p in paragraphs]
+
+    drafts = chunk_blocks(blocks, max_tokens=128, overlap_tokens=0)
+    assert len(drafts) > 1
+    for d in drafts:
+        assert _re.match(r"^第\d+段标记。", d.rendered_body()), d.body[:30]
+
+
+def test_table_breaks_run_and_keeps_position_in_section() -> None:
+    """小节内的表格仍是独立块,且位置保持在上下正文之间。"""
+    table = "\n".join(["| 名称 | 数量 |", "|---|---|", "| 苹果 | 3 |"])
+    blocks = [
+        _block(type="title", text="小节", level=1),
+        _block(text="表格前的说明文字。"),
+        _block(type="table", markdown=table),
+        _block(text="表格后的说明文字。"),
+    ]
+    drafts = chunk_blocks(blocks)
+    assert [d.kind for d in drafts] == ["text", "table", "text"], [d.kind for d in drafts]
+    assert "表格前" in drafts[0].content
+    assert "苹果" in drafts[1].content
+    assert "表格后" in drafts[2].content

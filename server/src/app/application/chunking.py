@@ -19,7 +19,9 @@ DEFAULT_MAX_TOKENS = 512
 _OVERLAP_RATIO = 0.15
 _MIN_CHUNK_TOKENS = 32  # 低于该值视为碎块,向后合并
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
-_SENTENCE_RE = re.compile(r"[^。！？!?\n]+[。！？!?]?")
+# 递归切分的分隔符阶梯(按语义强度从强到弱):段落 → 行 → 句 → 子句。
+# 优先在靠前的分隔符断开,尽量不把句子拦腰截断;全都没有时才字符级硬切。
+_SEPARATORS = ("\n\n", "\n", "。", "；", ";", "！", "!", "？", "?", ",", ",", "、", " ")
 
 # BlockLike:parser gRPC Block 的结构子集(type/text/markdown/page/level),便于测试构造
 
@@ -37,7 +39,6 @@ class ChunkDraft:
     def __post_init__(self) -> None:
         if not self.body:
             self.body = self.rendered_body()
-
 
     def rendered_body(self) -> str:
         """去掉面包屑头后的正文(头 = 第一行,且与 breadcrumb 渲染结果一致时才算)。"""
@@ -62,6 +63,14 @@ def chunk_blocks(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     overlap_tokens: int | None = None,
 ) -> list[ChunkDraft]:
+    """按小节装块:**装得下就一块,装不下才递归切**。
+
+    一个小节的正文被视为一个整体预算:小节总量不超过上限时产出**一个**块。
+    此前是逐段落调用切分函数,一个小节里有几段就产出几块,即使总量远小于上限 ——
+    这正是"块太散"的根因(检索时上下文被切碎,召回质量下降)。
+
+    表格仍单独成块(整体保留,表头进每块),并打断正文、保持在原位置。
+    """
     if overlap_tokens is None:
         overlap_tokens = int(max_tokens * _OVERLAP_RATIO)
     drafts: list[ChunkDraft] = []
@@ -69,17 +78,17 @@ def chunk_blocks(
         header = " > ".join(breadcrumb)
         header_cost = estimate_tokens(header) + 1 if header else 0
         budget = max_tokens - header_cost
+        run: list[tuple[str, int | None]] = []
         for kind, text, page in units:
             if kind == "table":
+                drafts.extend(_pack_run(run, breadcrumb, header, budget, overlap_tokens))
+                run = []
                 drafts.extend(
                     _chunk_table(text, breadcrumb, page, max_tokens, header_cost)
                 )
             else:
-                drafts.extend(
-                    _pack_sentences(
-                        text, breadcrumb, page, budget, overlap_tokens, header_cost
-                    )
-                )
+                run.append((text, page))
+        drafts.extend(_pack_run(run, breadcrumb, header, budget, overlap_tokens))
     drafts = _merge_tiny(drafts, max_tokens)
     _validate(drafts, max_tokens)
     return drafts
@@ -159,43 +168,119 @@ def _group_sections(
         yield list(breadcrumb), units
 
 
-def _pack_sentences(
-    text: str,
+def _pack_run(
+    run: list[tuple[str, int | None]],
     breadcrumb: list[str],
-    page: int | None,
+    header: str,
     budget: int,
     overlap_tokens: int,
-    header_cost: int,
-) -> Iterator[ChunkDraft]:
-    header = " > ".join(breadcrumb)
-    sentences = [s for s in (m.group(0) for m in _SENTENCE_RE.finditer(text)) if s.strip()]
-    if not sentences:
-        return
+) -> list[ChunkDraft]:
+    """把一个小节的连续正文段落装成块:整体装得下就一块,否则递归切。
+
+    "按小节决策"而不是"按段落决策"是这里的关键:段落只是排版单位,不是语义单位,
+    按段落切会把一个小节的上下文打散成多块(见 chunk_blocks 的说明)。
+    """
+    if not run:
+        return []
+    page = run[0][1]
+    text = "\n".join(part for part, _page in run)
+    if estimate_tokens(text) <= budget:
+        return [_emit([text], breadcrumb, page, header, "text")]
+
+    atoms, natural = _split_recursive(text, budget)
+    # 无自然边界的硬切不做重叠:重叠只会把无意义的长串(如 base64)重复一遍
+    effective_overlap = overlap_tokens if natural else 0
+    return _pack_atoms(atoms, breadcrumb, page, header, budget, effective_overlap)
+
+
+def _split_recursive(text: str, budget: int) -> tuple[list[str], bool]:
+    """递归切分:段落 → 行 → 句 → 子句 → 字符,返回 (片段列表, 是否用了自然边界)。
+
+    每个片段自身保证 <= budget;优先在语义边界断开,避免把句子拦腰截断。
+    只有当所有自然分隔符都不存在时才退化为按字符硬切(此时 natural=False)。
+    """
+    if estimate_tokens(text) <= budget:
+        return [text], True
+    for separator in _SEPARATORS:
+        pieces = _split_keep(text, separator)
+        if len(pieces) > 1:
+            atoms: list[str] = []
+            for piece in pieces:
+                sub, _natural = _split_recursive(piece, budget)
+                atoms.extend(sub)
+            return atoms, True
+    return _hard_split_text(text, budget), False
+
+
+def _split_keep(text: str, separator: str) -> list[str]:
+    """按分隔符切分,并把分隔符保留在**前一片末尾**(切分不丢字符)。"""
+    parts = text.split(separator)
+    pieces: list[str] = []
+    for index, part in enumerate(parts):
+        if index < len(parts) - 1:
+            pieces.append(part + separator)
+        elif part:
+            pieces.append(part)
+    return [piece for piece in pieces if piece]
+
+
+def _hard_split_text(text: str, budget: int) -> list[str]:
+    """无自然边界时的字符级硬切;每片 <= budget(单字符即超限时也保证有进展)。"""
+    pieces: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for char in text:
+        cost = estimate_tokens(char)
+        if current and current_tokens + cost > budget:
+            pieces.append("".join(current))
+            current, current_tokens = [], 0
+        current.append(char)
+        current_tokens += cost
+    if current:
+        pieces.append("".join(current))
+    return pieces
+
+
+def _pack_atoms(
+    atoms: list[str],
+    breadcrumb: list[str],
+    page: int | None,
+    header: str,
+    budget: int,
+    overlap_tokens: int,
+) -> list[ChunkDraft]:
+    """贪心装块 + 相邻块尾部重叠:重叠片段计入下一块预算,保证不超上限。"""
+    drafts: list[ChunkDraft] = []
     window: list[str] = []
     window_tokens = 0
-    for sentence in sentences:
-        cost = estimate_tokens(sentence)
-        if cost > budget:  # 单句超预算:硬切成预算大小的片
-            if window:
-                yield _emit(window, breadcrumb, page, header, "text")
-                window, window_tokens = [], 0
-            yield from _hard_split(sentence, breadcrumb, page, budget, header)
-            continue
-        if window_tokens + cost > budget and window:
-            yield _emit(window, breadcrumb, page, header, "text")
-            tail: list[str] = []
-            tail_tokens = 0
-            for prev in reversed(window):
-                t = estimate_tokens(prev)
-                if tail_tokens + t > overlap_tokens:
-                    break
-                tail.insert(0, prev)
-                tail_tokens += t
-            window, window_tokens = tail, tail_tokens
-        window.append(sentence)
+    fresh = 0  # window 里自上次产出后**新**加入的片段数(重叠带过来的不算)
+    for atom in atoms:
+        cost = estimate_tokens(atom)
+        if fresh and window_tokens + cost > budget:
+            drafts.append(_emit(window, breadcrumb, page, header, "text"))
+            window, window_tokens = _overlap_tail(window, overlap_tokens)
+            fresh = 0
+        window.append(atom)
         window_tokens += cost
-    if window:
-        yield _emit(window, breadcrumb, page, header, "text")
+        fresh += 1
+    if fresh:  # 只有重叠、没有新内容的尾巴不再单独成块
+        drafts.append(_emit(window, breadcrumb, page, header, "text"))
+    return drafts
+
+
+def _overlap_tail(window: list[str], overlap_tokens: int) -> tuple[list[str], int]:
+    """取窗口尾部不超过 overlap_tokens 的片段,作为下一块开头的上下文重叠。"""
+    if overlap_tokens <= 0:
+        return [], 0
+    tail: list[str] = []
+    tail_tokens = 0
+    for atom in reversed(window):
+        cost = estimate_tokens(atom)
+        if tail_tokens + cost > overlap_tokens:
+            break
+        tail.insert(0, atom)
+        tail_tokens += cost
+    return tail, tail_tokens
 
 
 def _hard_split(
