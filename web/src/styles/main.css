@@ -1,0 +1,478 @@
+/**
+ * 问渠 WenQu 全局样式 — 设计令牌(与 docs/design 原型一致)映射到 Element Plus CSS 变量
+ * 主色 #4F6EF2 · 分区背景 #F7F8FA · 边框 #E5E7EB · 正文 14px · 圆角 8px(卡片 12px) · 表格行高 44px
+ */
+
+:root {
+  /* Element Plus 主题色(含派生色阶,按主色与白色/黑色混合预计算) */
+  --el-color-primary: #4f6ef2;
+  --el-color-primary-dark-2: #3e5be0;
+  --el-color-primary-light-3: #849af6;
+  --el-color-primary-light-5: #a7b7f9;
+  --el-color-primary-light-7: #cad4fb;
+  --el-color-primary-light-8: #dce2fc;
+  --el-color-primary-light-9: #eef1fe;
+
+  --el-color-success: #10b981;
+  --el-color-success-dark-2: #0e9f6e;
+  --el-color-success-light-3: #58cea7;
+  --el-color-success-light-5: #88dcc0;
+  --el-color-success-light-7: #b7ead9;
+  --el-color-success-light-8: #cff1e6;
+  --el-color-success-light-9: #e7f8f2;
+
+  --el-color-warning: #f59e0b;
+  --el-color-warning-dark-2: #b45309;
+  --el-color-warning-light-3: #f8bb54;
+  --el-color-warning-light-5: #facf85;
+  --el-color-warning-light-7: #fce2b6;
+  --el-color-warning-light-8: #feeece;
+  --el-color-warning-light-9: #fef5e7;
+
+  --el-color-danger: #ef4444;
+  --el-color-danger-dark-2: #dc2626;
+  --el-color-danger-light-3: #f47c7c;
+  --el-color-danger-light-5: #f7a2a2;
+  --el-color-danger-light-7: #fbc7c7;
+  --el-color-danger-light-8: #fcdada;
+  --el-color-danger-light-9: #fdecec;
+  --el-color-error: #ef4444;
+  --el-color-error-dark-2: #dc2626;
+  --el-color-error-light-3: #f47c7c;
+  --el-color-error-light-5: #f7a2a2;
+  --el-color-error-light-7: #fbc7c7;
+  --el-color-error-light-8: #fcdada;
+  --el-color-error-light-9: #fdecec;
+
+  /* 中性色 */
+  --el-text-color-primary: #111827;
+  --el-text-color-regular: #374151;
+  --el-text-color-secondary: #6b7280;
+  --el-text-color-placeholder: #9ca3af;
+  --el-text-color-disabled: #9ca3af;
+  --el-border-color: #e5e7eb;
+  --el-border-color-light: #e5e7eb;
+  --el-border-color-lighter: #e5e7eb;
+  --el-border-color-extra-light: #f3f4f6;
+  --el-fill-color: #f7f8fa;
+  --el-fill-color-light: #f7f8fa;
+  --el-fill-color-lighter: #fafbfc;
+  --el-fill-color-blank: #ffffff;
+
+  /* 形状与字体:原型输入框/按钮高 36px,圆角 8px */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-component-size: 36px;
+  --el-font-size-base: 14px;
+  --el-font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    'Segoe UI', Inter, Roboto, sans-serif;
+  --el-box-shadow-light: 0 4px 16px rgba(17, 24, 39, 0.08);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #d8dce3;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: var(--el-font-family);
+  font-size: 14px;
+  line-height: 1.6;
+  color: #374151;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ───── 通用工具 ───── */
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+}
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 应用外壳:侧边栏 240px(可折叠为 64px) + 顶栏 56px */
+.app-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: #fff;
+}
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.app-topbar {
+  height: 56px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+}
+.app-topbar h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+}
+.topbar-desc {
+  font-size: 12px;
+  color: #9ca3af;
+}
+.app-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.app-content:has(.chat-layout),
+.app-content:has(.drawer) {
+  overflow: hidden;
+}
+.page-pad {
+  padding: 24px 32px;
+}
+
+/* ───── Element Plus 微调,对齐原型 ───── */
+.el-button {
+  font-weight: 500;
+}
+.el-dialog {
+  border-radius: 12px;
+}
+.el-message-box {
+  border-radius: 12px;
+}
+.el-message {
+  border-radius: 8px;
+}
+.el-table {
+  --el-table-border-color: #e5e7eb;
+  --el-table-header-bg-color: #f7f8fa;
+  --el-table-header-text-color: #9ca3af;
+  --el-table-text-color: #374151;
+  --el-table-row-height: 44px;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.el-table .cell {
+  line-height: 1.5;
+}
+.el-tabs__item {
+  font-size: 14px;
+}
+.el-form-item__label {
+  color: #374151;
+  font-size: 13px;
+}
+
+/* ───── 弹出菜单(空间切换器 / 用户菜单),对齐原型 .pop ───── */
+.el-popover.menu-pop {
+  padding: 6px;
+  border-radius: 12px;
+}
+.pop-label {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+.pop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font-size: 13px;
+  color: #374151;
+  text-align: left;
+  cursor: pointer;
+}
+.pop-item:hover {
+  background: #f7f8fa;
+}
+.pop-item.pop-primary {
+  color: #4f6ef2;
+}
+.pop-item.pop-danger {
+  color: #ef4444;
+}
+.pop-item.pop-danger:hover {
+  background: rgba(239, 68, 68, 0.05);
+}
+.pop-item .ic-ph {
+  width: 14px;
+  flex-shrink: 0;
+}
+.pop-side {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.pop-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.pop-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: #e5e7eb;
+}
+
+/* ───── 角色下拉(两行式选项) ───── */
+.el-popover.role-dd {
+  padding: 6px;
+  border-radius: 12px;
+}
+.role-dd .el-dropdown-menu__item {
+  height: auto;
+  padding: 6px 8px;
+  line-height: 1.4;
+  border-radius: 6px;
+}
+.role-dd .dd-name {
+  display: block;
+  font-size: 13px;
+  color: #374151;
+}
+.role-dd .dd-name.on {
+  color: #4f6ef2;
+  font-weight: 500;
+}
+.role-dd .dd-name.danger {
+  color: #ef4444;
+}
+.role-dd .dd-desc {
+  display: block;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* ───── 骨架屏 ───── */
+.skel {
+  border-radius: 6px;
+  background: #edeff2;
+  animation: skel-pulse 1.5s ease-in-out infinite;
+}
+@keyframes skel-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ───── 助手消息排版(.md) ───── */
+.md {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #374151;
+  word-break: break-word;
+}
+.md p {
+  margin: 8px 0;
+}
+.md h3 {
+  margin: 12px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+.md ul,
+.md ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 4px 0;
+}
+.md strong {
+  color: #111827;
+  font-weight: 600;
+}
+.md .icode {
+  padding: 1px 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #f7f8fa;
+  font-size: 13px;
+}
+
+/* 代码块 */
+.md .codeblock {
+  margin: 12px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.md .codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 14px;
+  background: #f7f8fa;
+  border-bottom: 1px solid #e5e7eb;
+}
+.md .cb-lang {
+  font-size: 12px;
+  color: #6b7280;
+}
+.md .cb-copy {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+}
+.md .cb-copy:hover {
+  background: #f7f8fa;
+}
+.md pre {
+  margin: 0;
+  padding: 12px 16px;
+  overflow-x: auto;
+  background: #fbfbfc;
+}
+.md pre code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #374151;
+}
+
+/* 引用角标 */
+.cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border: none;
+  border-radius: 50%;
+  background: #4f6ef2;
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: super;
+  cursor: pointer;
+}
+.cite:hover {
+  background: #3e5be0;
+}
+
+/* 流式光标 */
+.blink {
+  display: inline-block;
+  width: 2px;
+  height: 16px;
+  margin-left: 2px;
+  background: #4f6ef2;
+  vertical-align: -2px;
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ───── 页头(列表页统一的标题行) ───── */
+.page-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+.page-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+/* ───── 空态 / 错误态 ───── */
+.state-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 96px 0;
+}
+.state-ic {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  padding: 12px;
+  box-sizing: border-box;
+  font-size: 44px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+.state-title {
+  margin-top: 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+.state-desc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+.state-btn {
+  margin-top: 20px;
+}
+
