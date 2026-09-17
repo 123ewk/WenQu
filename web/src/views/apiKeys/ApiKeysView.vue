@@ -319,7 +319,7 @@ async function onRevoke(key: ApiKeyOut) {
               </label>
             </el-checkbox-group>
           </el-form-item>
-          <el-form-item>
+          <el-form-item class="ak-scope-item">
             <template #label>
               <div class="ak-scope-head">
                 <span>允许的知识库</span>
@@ -471,6 +471,16 @@ async function onRevoke(key: ApiKeyOut) {
   color: #9ca3af;
 }
 
+/*
+ * Element Plus 给 .el-checkbox-group 设了 font-size:0 / line-height:0(消除勾选项之间的空白间隙),
+ * 我们往组里放了自定义文案,若不重置就会继承这两个 0 —— line-height 计算值是长度会一并继承为 0,
+ * 行盒高度塌成 0,多行文字便叠在同一位置。scoped 属性选择器优先级高于 .el-checkbox-group,可覆盖。
+ */
+.ak-caps,
+.ak-kb-grid {
+  font-size: 14px;
+  line-height: 1.5;
+}
 .ak-caps {
   width: 100%;
   display: flex;
@@ -506,6 +516,10 @@ async function onRevoke(key: ApiKeyOut) {
   justify-content: space-between;
   width: 100%;
 }
+/* label-top 模式下 label 默认按内容收缩,撑满才能让「全部」靠右(与原型一致) */
+.ak-scope-item :deep(.el-form-item__label) {
+  width: 100%;
+}
 .ak-kb-grid {
   width: 100%;
   display: grid;
@@ -513,8 +527,7 @@ async function onRevoke(key: ApiKeyOut) {
   gap: 6px;
   max-height: 148px;
   overflow-y: auto;
-}
-.ak-kb-opt {
+}.ak-kb-opt {
   display: flex;
   align-items: center;
   gap: 8px;
