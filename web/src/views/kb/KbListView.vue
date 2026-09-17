@@ -160,7 +160,9 @@ function openKb(kb: KnowledgeBaseOut) {
         <div class="kb-desc truncate">{{ kb.description || '暂无描述' }}</div>
         <div class="kb-foot">
           <span class="kb-model">
-            <el-icon :size="12"><Box /></el-icon>{{ kb.embedding_model }} · {{ kb.embedding_dim }}
+            <el-icon :size="12"><Box /></el-icon>
+            <span class="truncate">{{ kb.embedding_model }}</span>
+            <span class="kb-dim">· {{ kb.embedding_dim }}</span>
           </span>
           <span class="kb-updated">{{ fmtRelative(kb.created_at) }}</span>
         </div>
@@ -168,6 +170,7 @@ function openKb(kb: KnowledgeBaseOut) {
         <!-- ⋯ 菜单:仅在有权限时出现 -->
         <el-dropdown
           v-if="canEdit || canDelete"
+          class="kb-more-wrap"
           trigger="click"
           placement="bottom-end"
           @command="(cmd: 'rename' | 'delete') => onCommand(cmd, kb)"
@@ -251,6 +254,7 @@ function openKb(kb: KnowledgeBaseOut) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid rgba(229, 231, 235, 0.7);
@@ -259,6 +263,8 @@ function openKb(kb: KnowledgeBaseOut) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* min-width:0 让这张徽章可被压缩,超长模型名由内层 .truncate 出省略号 */
+  min-width: 0;
   height: 20px;
   padding: 0 6px;
   border: 1px solid #e5e7eb;
@@ -267,14 +273,31 @@ function openKb(kb: KnowledgeBaseOut) {
   font-size: 11px;
   color: #6b7280;
 }
+.kb-model .el-icon {
+  flex-shrink: 0;
+}
+/* 维度是短信息,不参与压缩;被省略的是较长的模型名 */
+.kb-dim {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .kb-updated {
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 12px;
   color: #9ca3af;
 }
-.kb-more {
+/*
+ * ⋯ 菜单:Element Plus 把触发器包在 .el-dropdown 里,而该元素是 position:relative。
+ * 若把 absolute 加在内部按钮上,包含块就是那个零尺寸的包装元素(按钮被 absolute 抽离后
+ * 包装元素宽高为 0),按钮会跑到卡片外的左下角。故定位加在包装元素上,按钮回归常规流。
+ */
+.kb-more-wrap {
   position: absolute;
   top: 12px;
   right: 12px;
+}
+.kb-more {
   width: 28px;
   height: 28px;
   border: none;
