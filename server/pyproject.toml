@@ -21,6 +21,7 @@ dependencies = [
     "jieba>=0.42.1",
     "wenqu-parser",
     "pillow>=12.3.0",
+    "cryptography>=43",
 ]
 
 [dependency-groups]
