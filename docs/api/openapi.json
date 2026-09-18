@@ -293,6 +293,7 @@
           "users"
         ],
         "summary": "Update Profile",
+        "description": "昵称修改走服务层(审计 user.updated),不再在路由里裸改 ORM。",
         "operationId": "update_profile_api_v1_users_me_patch",
         "requestBody": {
           "content": {
@@ -2846,6 +2847,9 @@
           "auth.login_failed",
           "auth.logout",
           "user.password_changed",
+          "user.updated",
+          "user.avatar_uploaded",
+          "user.avatar_deleted",
           "space.created",
           "space.updated",
           "space.deleted",
@@ -2894,8 +2898,7 @@
             "title": "Actor Name"
           },
           "action": {
-            "type": "string",
-            "title": "Action"
+            "$ref": "#/components/schemas/AuditAction"
           },
           "target": {
             "type": "string",

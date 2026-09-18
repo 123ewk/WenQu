@@ -89,6 +89,19 @@ def generated_paths() -> set[str]:
     return set(create_app().openapi()["paths"])
 
 
+def _resolve_field_enum(spec: dict, field: dict) -> list[str] | None:
+    """取字段枚举:内联 enum 直接返回;$ref / allOf.$ref 则跳到 components.schemas 解析。"""
+    if "enum" in field:
+        return field["enum"]
+    ref = field.get("$ref")
+    if not ref and "allOf" in field:
+        ref = next((part.get("$ref") for part in field["allOf"] if part.get("$ref")), None)
+    if ref:
+        target = spec["components"]["schemas"][ref.rsplit("/", 1)[-1]]
+        return target.get("enum")
+    return None
+
+
 def test_required_endpoints_exist() -> None:
     paths = generated_paths()
     missing = REQUIRED_PATHS - paths
@@ -133,6 +146,33 @@ def test_audit_result_is_enum_in_contract() -> None:
     result = spec["components"]["schemas"]["AuditLogOut"]["properties"]["result"]
     enum_values = result.get("enum") or []
     assert set(enum_values) == {"success", "denied"}, f"result 枚举缺失: {result}"
+
+
+def test_audit_action_is_enum_in_contract() -> None:
+    """AuditLogOut.action 必须绑定 AuditAction 枚举(不能退回裸 str),前端据此生成动作联合类型。"""
+    from app.domain.enums import AuditAction
+
+    spec = create_app().openapi()
+    field = spec["components"]["schemas"]["AuditLogOut"]["properties"]["action"]
+    enum_values = _resolve_field_enum(spec, field)
+    assert enum_values is not None, f"action 未绑定枚举(退回裸 string): {field}"
+    assert set(enum_values) == {a.value for a in AuditAction}, (
+        f"action 枚举与源码 AuditAction 不一致: {set(enum_values)}"
+    )
+
+
+def test_committed_audit_action_mirrors_source() -> None:
+    """入库契约的 AuditAction 枚举必须与源码双向一致:新增动作后不重导契约 -> CI 红(OPT-8)。"""
+    from app.domain.enums import AuditAction
+
+    committed = json.loads(COMMITTED_CONTRACT.read_text(encoding="utf-8"))
+    committed_values = set(committed["components"]["schemas"]["AuditAction"]["enum"])
+    source_values = {a.value for a in AuditAction}
+    assert committed_values == source_values, (
+        "审计动作契约漂移(请运行 make server-openapi 重导);"
+        f"未重导进契约: {source_values - committed_values};"
+        f"契约多余: {committed_values - source_values}"
+    )
 
 
 # ---------------------------- OPT-8:CI 门禁(双向镜像 + 错误壳扫描) ----------------------------

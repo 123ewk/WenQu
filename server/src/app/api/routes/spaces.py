@@ -119,7 +119,7 @@ class AuditLogOut(BaseModel):
     id: str
     actor_id: str | None
     actor_name: str | None  # 操作人昵称冗余:操作人退空间后仍可读,前端不必再映射
-    action: str
+    action: AuditAction  # 枚举化(与筛选入参一致),前端可直接生成动作联合类型,勿退回裸 str
     target: str
     result: Literal["success", "denied"]  # 枚举化,前端可直接生成类型(缺口 #3)
     detail: dict
