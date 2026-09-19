@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     stream_grace_seconds: float = Field(5.0, validation_alias="APP_STREAM_GRACE_SECONDS")
     # 事件日志空闲 TTL:已完成且空闲超过该时长的流会被清道夫回收
     stream_log_ttl_seconds: float = Field(3600.0, validation_alias="APP_STREAM_LOG_TTL")
+    # 问答流水线阶段序(OPT-5):逗号分隔,未知名/空值启动即失败(fail-closed)
+    qa_pipeline: str = Field(
+        "retrieve,cite,fallback,compose,generate,persist",
+        validation_alias="APP_QA_PIPELINE",
+    )
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

@@ -285,6 +285,8 @@ def get_qa_service(
             get_settings().retrieval_min_score,
         ),
         db=db,
+        # 流水线阶段序由配置决定(OPT-5);未知名在 build_stages 启动即失败
+        pipeline=[name.strip() for name in get_settings().qa_pipeline.split(",") if name.strip()],
     )
 
 
