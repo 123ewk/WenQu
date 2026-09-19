@@ -10,7 +10,8 @@ import {
 } from '@/api/chat'
 import { ApiError, errMessage } from '@/api/http'
 import { apiListKbs } from '@/api/knowledge'
-import type { CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut } from '@/api/types'
+import { apiGetModelCatalog } from '@/api/models'
+import type { CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -99,6 +100,40 @@ const allKbSelected = computed({
   set: (v: boolean) => {
     selectedKbIds.value = v ? kbs.value.map((k) => k.id) : []
   },
+})
+
+/* ───── 回答模型(GET /models,全局;提交用 id 字段) ───── */
+
+const catalog = ref<ModelCatalogOut | null>(null)
+/** '' = 默认模型(不传 model_id,由服务端自选);仅当用户显式选择时才提交 */
+const selectedModelId = ref('')
+
+const chatModels = computed(() => catalog.value?.chat ?? [])
+
+/** provider 是显示名,做下拉分组 */
+const modelGroups = computed(() => {
+  const groups = new Map<string, ModelItem[]>()
+  for (const m of chatModels.value) {
+    const list = groups.get(m.provider) ?? []
+    list.push(m)
+    groups.set(m.provider, list)
+  }
+  return Array.from(groups, ([label, options]) => ({ label, options }))
+})
+
+const selectedModelLabel = computed(
+  () => chatModels.value.find((m) => m.id === selectedModelId.value)?.model ?? '默认模型',
+)
+
+onMounted(async () => {
+  try {
+    catalog.value = await apiGetModelCatalog()
+  } catch {
+    catalog.value = null // 清单拉不到则不渲染选择器,后端用空间默认模型
+  }
+  // ⚠️ 不默认选 defaults.chat:后端 /ask 现把 model_id 同时传给检索嵌入(embed 要求
+  // embedding 类型)与回答生成(要求 chat 类型),任何对话模型 id 都会在检索阶段 503
+  // (见 对接缺口清单 #6/后端 qa.py:163)。修复前默认不传,行为与后端默认一致。
 })
 
 /* ───── 输入 ───── */
@@ -300,6 +335,7 @@ async function onSend() {
         conversation_id: conversationId,
         kb_ids: selectedKbIds.value.length === kbs.value.length ? null : selectedKbIds.value,
         top_k: 6,
+        model_id: selectedModelId.value || null,
       },
       (event) => {
         if (event.type === 'meta') {
@@ -680,6 +716,20 @@ onUnmounted(abortStream)
                 <div v-if="!kbs.length" class="scope-empty">当前空间还没有知识库</div>
               </div>
             </el-popover>
+
+            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。默认"默认模型"不传 model_id -->
+            <el-select
+              v-if="chatModels.length"
+              v-model="selectedModelId"
+              class="model-select"
+              :title="`回答模型:${selectedModelLabel}`"
+              :disabled="streaming"
+            >
+              <el-option label="默认模型" value="" />
+              <el-option-group v-for="g in modelGroups" :key="g.label" :label="g.label">
+                <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
+              </el-option-group>
+            </el-select>
 
             <textarea
               ref="textarea"
@@ -1103,8 +1153,7 @@ onUnmounted(abortStream)
   font-size: 14px;
   color: #374151;
   cursor: pointer;
-  flex-shrink: 0;
-}
+  flex-shrink: 0;}
 .scope-btn:hover {
   background: #f7f8fa;
 }
@@ -1114,6 +1163,16 @@ onUnmounted(abortStream)
 }
 .scope-label {
   min-width: 0;
+}
+.model-select {
+  width: 168px;
+  flex-shrink: 0;
+}
+.model-select :deep(.el-select__wrapper) {
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 .scope-head {
   display: flex;

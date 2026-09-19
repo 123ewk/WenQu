@@ -210,6 +210,29 @@ export interface ChunkPage {
   total: number
 }
 
+/* ───── 模型清单(对话选模型;全局,不挂空间) ───── */
+
+export interface ModelItem {
+  /** 提交值:对话传 model_id 用它,不是 model 字段 */
+  id: string
+  /** 供应商显示名(可做下拉分组) */
+  provider: string
+  provider_key: string
+  model: string
+  /** 仅 embedding 有意义 */
+  dims: number | null
+  /** 仅 chat 有意义 */
+  context_tokens: number | null
+}
+
+export interface ModelCatalogOut {
+  chat: ModelItem[]
+  embedding: ModelItem[]
+  rerank: ModelItem[]
+  /** 各类别的默认模型 id */
+  defaults: Record<string, string>
+}
+
 /* ───── M2:检索 ───── */
 
 export interface SearchRequest {
