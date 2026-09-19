@@ -22,7 +22,7 @@ import { renderMarkdown } from '@/utils/markdown'
  * SSE 五类事件:meta(新会话 id)/ citations / delta(累加正文)/ done / error。
  * 引用角标 [n] 对应 citations[n-1],点击打开右侧引用抽屉展示 excerpt 与溯源信息;
  * "查看完整原文"按 chunk_id 调单块全文接口(excerpt 只截前 300 字)。
- * 契约未提供:非流式重试 —— 对应入口不渲染(见 对接缺口清单)。
+ * 契约未提供:非流式重试 —— 对应入口不渲染(见 对接文档.md §11.3)。
  */
 const route = useRoute()
 const router = useRouter()
@@ -156,7 +156,7 @@ onMounted(async () => {
   }
   // ⚠️ 不默认选 defaults.chat:后端 /ask 现把 model_id 同时传给检索嵌入(embed 要求
   // embedding 类型)与回答生成(要求 chat 类型),任何对话模型 id 都会在检索阶段 503
-  // (见 对接缺口清单 #6/后端 qa.py:163)。修复前默认不传,行为与后端默认一致。
+  // (见 对接文档.md §11.2-1/后端 qa.py:163)。修复前默认不传,行为与后端默认一致。
 })
 
 /* ───── 输入 ───── */

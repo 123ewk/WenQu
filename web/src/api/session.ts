@@ -1,5 +1,5 @@
 /**
- * 登录态在 localStorage 中的持久化(键名见 对接说明.md)。
+ * 登录态在 localStorage 中的持久化(键名见 对接文档.md §8.1)。
  * 独立于 Pinia:http.ts 的刷新链不依赖任何 Store 即可覆盖令牌。
  * 活动空间不单独存键:随契约值保存在 user JSON 的 current_space_id 里(单一事实来源)。
  */

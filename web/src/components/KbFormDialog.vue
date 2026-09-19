@@ -8,7 +8,7 @@ import type { KnowledgeBaseOut } from '@/api/types'
 /**
  * 知识库新建 / 重命名(原型 03 的两个模态框)。
  * 注意:接口不接受嵌入模型(由服务端配置),也不支持修改嵌入模型,
- * 因此不渲染模型选择器与"重建索引"流程 —— 见 对接缺口清单。
+ * 因此不渲染模型选择器与"重建索引"流程 —— 见 对接文档.md §11.2。
  */
 const visible = defineModel<boolean>({ default: false })
 const props = defineProps<{ mode: 'create' | 'rename'; spaceId: string; kb?: KnowledgeBaseOut | null }>()

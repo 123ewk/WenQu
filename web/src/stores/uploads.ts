@@ -1,8 +1,7 @@
 /**
  * 顶栏全局上传进度。
  * 只跟踪「浏览器 → 服务端」的上传阶段进度(axios onUploadProgress);
- * 之后的解析/分块/向量化由后台 worker 推进,进度需在文档列表按 status 轮询查看,
- * 契约未提供跨页面的入库进度聚合接口(见 对接缺口清单)。
+ * 入队后的入库进度由 stores/ingestion.ts 轮询空间级聚合接口,浮层里分两段展示(见 对接文档.md §9.2)。
  */
 import { defineStore } from 'pinia'
 
