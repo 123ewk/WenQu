@@ -97,6 +97,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function updateNickname(nickname: string): Promise<void> {
     const updated = await apiUpdateMe({ nickname })
+    applyUser(updated)
+  }
+
+  /** 头像上传/删除等返回完整 UserOut 的场景:同步内存与持久化(含 current_space_id) */
+  function applyUser(updated: UserOut) {
     user.value = updated
     session.saveUser(updated)
   }
@@ -152,6 +157,7 @@ export const useAuthStore = defineStore('auth', () => {
     createSpace,
     refreshSpaces,
     updateNickname,
+    applyUser,
     logout,
     resetAuth,
     bootstrap,

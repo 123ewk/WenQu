@@ -10,6 +10,12 @@ export interface UserOut {
   created_at: string | null
   /** 当前活动空间(从 access token 推导);注册/登录未选空间为 null */
   current_space_id: string | null
+  /** 最近一次成功登录;失败登录不改写 */
+  last_login_at: string | null
+  /** 直连客户端地址(未解析 X-Forwarded-For,挂网关时显示代理 IP → 文案保持中性) */
+  last_login_ip: string | null
+  /** 有头像时为 "/users/me/avatar"(不带 /api/v1 前缀);仅对自己有意义 */
+  avatar_url: string | null
 }
 
 /** 登录/注册/刷新响应中 spaces[] 的元素,role 为当前用户在该空间的角色 */
