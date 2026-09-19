@@ -99,11 +99,48 @@ def test_happy_path_status_flow_and_chunks() -> None:
     assert env.task.status == TaskStatus.SUCCEEDED
     assert env.doc.status == DocumentStatus.COMPLETED
     stored = env.chunks.chunks[env.doc.id]
-    assert len(stored) == 1
-    seq, content, embedding, meta = stored[0]
-    assert (seq, embedding) == (0, [0.5, 0.5])
+    assert len(stored) == 1  # 单段小文档:1 个父块
+    seq, content, meta, children = stored[0]
+    assert seq == 0
     assert "breadcrumb" in meta and "kind" in meta
     assert meta["tokens"] > 0  # 分块 token 数随 meta 落库(前端缺口台账 §11.2-4)
+    # 短父块整块作为子块;向量只打在子块上(OPT-4)
+    assert len(children) == 1
+    child_content, child_embedding, child_meta = children[0]
+    assert child_content == content
+    assert child_embedding == [0.5, 0.5]
+    assert child_meta["tokens"] > 0
+
+
+def test_long_document_parents_unindexed_children_embedded() -> None:
+    """父子分块落库形态:每个父块至少一个子块,向量只给子块;只向量化子块文本。"""
+    embedder = FakeEmbedder()
+    env = build_env(
+        parser=FakeParser(
+            blocks=[
+                SimpleNamespace(
+                    type="paragraph",
+                    text="第一段。" + "内容句子。" * 120,
+                    markdown="",
+                    page=0,
+                    level=0,
+                )
+            ]
+        ),
+        embedder=embedder,
+    )
+    env.service.handle_next(db=NullSession(), worker_id="w1")
+    stored = env.chunks.chunks[env.doc.id]
+    assert len(stored) >= 1
+    child_total = sum(len(children) for _s, _c, _m, children in stored)
+    assert child_total > len(stored)  # 长文:子块比父块多(窗口更细)
+    for _seq, _content, _meta, children in stored:
+        assert all(emb is not None for _c, emb, _m in children)
+        assert all(cm["tokens"] > 0 for _c, _e, cm in children)
+    # 向量化调用只包含子块文本(按序),不含父块全文
+    texts, _model = embedder.calls[0]
+    assert texts == [c for _s, _ct, _m, ch in stored for c, _e, _cm in ch]
+    assert len(texts) == child_total
 
 
 def test_completed_document_is_idempotent() -> None:

@@ -312,26 +312,28 @@ class FakeChunkRepository:
     def replace_for_document(
         self,
         document: Document,
-        drafts: list[tuple[int, str, list[float] | None, dict]],
+        families: list[
+            tuple[int, str, dict, list[tuple[str, list[float] | None, dict]]]
+        ],
     ) -> None:
-        self.chunks[document.id] = list(drafts)
+        self.chunks[document.id] = list(families)
 
     def get(self, chunk_id):
         for document_id, rows in self.chunks.items():
-            for seq, content, _emb, meta in rows:
-                if getattr(meta, "get", lambda *_: None)("id") == chunk_id:
+            for seq, content, _meta, _children in rows:
+                if getattr(_meta, "get", lambda *_: None)("id") == chunk_id:
                     return Chunk(
                         id=chunk_id,
                         document_id=document_id,
                         space_id=uuid.uuid4(),
                         seq=seq,
                         content=content,
-                        meta=meta,
+                        meta=_meta,
                     )
         return None
 
     def list_for_document(self, document_id, limit: int, offset: int):
-        """查询语义与 DB 实现一致:按 seq 升序分页,返回 (items, total)。"""
+        """查询语义与 DB 实现一致:父块按 seq 升序分页,返回 (items, total)。"""
         rows = self.chunks.get(document_id, [])
         items = [
             Chunk(
@@ -341,7 +343,7 @@ class FakeChunkRepository:
                 content=content,
                 meta=meta,
             )
-            for seq, content, _emb, meta in rows
+            for seq, content, meta, _children in rows
         ]
         items.sort(key=lambda c: c.seq)
         return items[offset : offset + limit], len(rows)

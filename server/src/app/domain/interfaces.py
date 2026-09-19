@@ -95,9 +95,16 @@ class ChunkRepository(Protocol):
     def replace_for_document(
         self,
         document: Document,
-        drafts: list[tuple[int, str, list[float] | None, dict]],
+        families: list[
+            tuple[int, str, dict, list[tuple[str, list[float] | None, dict]]]
+        ],
     ) -> None:
-        """幂等重建:先删后插。drafts = [(seq, content, embedding, meta)];meta 含 tokens。"""
+        """幂等重建:先删后插(父子分块,OPT-4)。
+
+        families = [(seq, 父块content, 父块meta, [(子块content, 子块embedding, 子块meta), ...])];
+        父块是引用/上下文单元,不进索引(embedding/tsv 落空);子块是检索窗口,
+        携带向量与全文索引,meta 含 tokens。
+        """
 
 
 class TaskRepository(Protocol):

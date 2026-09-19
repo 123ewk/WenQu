@@ -12,7 +12,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.application.chunking import chunk_blocks
+from app.application.chunking import parent_child_chunks
 from app.core.storage import ObjectStorage
 from app.domain.enums import DocumentStatus, TaskType
 from app.domain.interfaces import (
@@ -87,33 +87,49 @@ class IngestionService:
 
         document.status = DocumentStatus.CHUNKING
         self._documents.save(document)
-        drafts = chunk_blocks(blocks)
+        families = parent_child_chunks(blocks)  # 父块=上下文/引用,子块=检索窗口(OPT-4)
 
         document.status = DocumentStatus.EMBEDDING
         self._documents.save(document)
         kb = self._kbs.get(document.kb_id)
         # KB 级 embedding 模型(换模型 = 该 KB 重建索引);KB 意外缺失退回默认模型
         model_id = kb.embedding_model if kb is not None else None
-        texts = [d.content for d in drafts]
-        vectors = self._embedder.embed(texts, model_id) if texts else []
+        # 只有子块进索引;检索命中子块后回取父块组装引用与上下文
+        child_texts = [c.content for _parent, children in families for c in children]
+        vectors = self._embedder.embed(child_texts, model_id) if child_texts else []
 
-        self._chunks.replace_for_document(
-            document,
-            [
+        payload = []
+        cursor = 0
+        for seq, (parent, children) in enumerate(families):
+            indexed = []
+            for offset, child in enumerate(children):
+                indexed.append(
+                    (
+                        child.content,
+                        vectors[cursor + offset] if cursor + offset < len(vectors) else None,
+                        {
+                            "breadcrumb": child.breadcrumb,
+                            "page": child.page,
+                            "kind": child.kind,
+                            "tokens": child.tokens,
+                        },
+                    )
+                )
+            cursor += len(children)
+            payload.append(
                 (
                     seq,
-                    draft.content,
-                    vectors[seq] if seq < len(vectors) else None,
+                    parent.content,
                     {
-                        "breadcrumb": draft.breadcrumb,
-                        "page": draft.page,
-                        "kind": draft.kind,
-                        "tokens": draft.tokens,  # ChunkOut.tokens 展示用(前端缺口台账 §11.2-4)
+                        "breadcrumb": parent.breadcrumb,
+                        "page": parent.page,
+                        "kind": parent.kind,
+                        "tokens": parent.tokens,  # ChunkOut.tokens 展示用(前端缺口台账 §11.2-4)
                     },
+                    indexed,
                 )
-                for seq, draft in enumerate(drafts)
-            ],
-        )
+            )
+        self._chunks.replace_for_document(document, payload)
         document.status = DocumentStatus.COMPLETED
         document.error_code = None
         self._documents.save(document)

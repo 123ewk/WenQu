@@ -110,7 +110,10 @@ class KbStatsRepositoryImpl:
                 (doc_id, int(count))
                 for doc_id, count in self._db.execute(
                     select(Chunk.document_id, sa_func.count(Chunk.id))
-                    .where(Chunk.document_id.in_(list(doc_kb)))
+                    .where(
+                        Chunk.document_id.in_(list(doc_kb)),
+                        Chunk.parent_id.is_(None),  # 统计口径:只数父块(子块不对外可见)
+                    )
                     .group_by(Chunk.document_id)
                 ).all()
             ]
@@ -221,28 +224,50 @@ class ChunkRepositoryImpl:
     def replace_for_document(
         self,
         document: Document,
-        drafts: list[tuple[int, str, list[float] | None, dict]],
+        families: list[
+            tuple[int, str, dict, list[tuple[str, list[float] | None, dict]]]
+        ],
     ) -> None:
+        """父子落库(结构见 ChunkRepository 协议):父块不进索引,子块带向量与全文。"""
         import jieba
         from sqlalchemy import delete
-        from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: F401
 
         from app.domain.models import Chunk
 
         self._db.execute(delete(Chunk).where(Chunk.document_id == document.id))
-        for seq, content, embedding, meta in drafts:
-            tokens = " ".join(jieba.cut_for_search(content))
-            self._db.add(
-                Chunk(
-                    document_id=document.id,
-                    space_id=document.space_id,
-                    seq=seq,
-                    content=content,
-                    embedding=embedding,
-                    tsv=func.to_tsvector("simple", tokens),
-                    meta=meta,
-                )
+        parents: list[Chunk] = []
+        for seq, content, meta, _children in families:
+            parent = Chunk(
+                document_id=document.id,
+                space_id=document.space_id,
+                seq=seq,
+                content=content,
+                embedding=None,
+                tsv=None,
+                meta=meta,
             )
+            self._db.add(parent)
+            parents.append(parent)
+        self._db.flush()  # 先取父块 id,子块挂 parent_id
+        child_seq = len(families)  # 子块 seq 续在父块之后(列表页只查父块,排序不受影响)
+        for (_seq, _content, _meta, children), parent in zip(
+            families, parents, strict=True
+        ):
+            for child_content, embedding, child_meta in children:
+                tokens = " ".join(jieba.cut_for_search(child_content))
+                self._db.add(
+                    Chunk(
+                        document_id=document.id,
+                        space_id=document.space_id,
+                        parent_id=parent.id,
+                        seq=child_seq,
+                        content=child_content,
+                        embedding=embedding,
+                        tsv=func.to_tsvector("simple", tokens),
+                        meta=child_meta,
+                    )
+                )
+                child_seq += 1
         self._db.flush()
 
 
@@ -262,13 +287,15 @@ class ChunkQueryRepositoryImpl:
     ) -> tuple[list[Chunk], int]:
         from app.domain.models import Chunk
 
+        # 只返回父块(OPT-4):子块是检索窗口,不对外可见
+        visible = (Chunk.document_id == document_id, Chunk.parent_id.is_(None))
         total = self._db.scalar(
-            select(func.count()).select_from(Chunk).where(Chunk.document_id == document_id)
+            select(func.count()).select_from(Chunk).where(*visible)
         )
         items = list(
             self._db.scalars(
                 select(Chunk)
-                .where(Chunk.document_id == document_id)
+                .where(*visible)
                 .order_by(Chunk.seq)
                 .limit(limit)
                 .offset(offset)
