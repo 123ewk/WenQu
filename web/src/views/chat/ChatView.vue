@@ -1,14 +1,7 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, Close, Collection, Delete, Document, Edit, Promotion, WarningFilled } from '@element-plus/icons-vue'
 
-import {
-  apiCreateConversation,
-  apiDeleteConversation,
-  apiListConversations,
-  apiListMessages,
-  apiRenameConversation,
-  askStream,
-} from '@/api/chat'
+import { apiCreateConversation, apiDeleteConversation, apiListConversations, apiListMessages, apiRenameConversation, askStream, resumeStream, type AskEvent } from '@/api/chat'
 import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
@@ -22,6 +15,8 @@ import { renderMarkdown } from '@/utils/markdown'
  * SSE 五类事件:meta(新会话 id)/ citations / delta(累加正文)/ done / error。
  * 引用角标 [n] 对应 citations[n-1],点击打开右侧引用抽屉展示 excerpt 与溯源信息;
  * "查看完整原文"按 chunk_id 调单块全文接口(excerpt 只截前 300 字)。
+ * 断线续流(OPT-3):事件带单调 seq,流中断且已有 seq 时自动调续流路由精确补播,
+ * 不可续(404)或再失败则回退重拉 messages(见 对接文档.md §9.1)。
  * 契约未提供:非流式重试 —— 对应入口不渲染(见 对接文档.md §11.3)。
  */
 const route = useRoute()
@@ -50,8 +45,8 @@ const groupedConversations = computed(() => {
 
 /* ───── 消息 ───── */
 
-/** 历史消息来自接口;`stopped`/`incomplete` 为前端本地标记 */
-type LocalMessage = MessageOut & { stopped?: boolean; incomplete?: boolean }
+/** 历史消息来自接口;`stopped`/`incomplete`/`partial` 为前端本地标记(见流式收尾) */
+type LocalMessage = MessageOut & { stopped?: boolean; incomplete?: boolean; partial?: boolean }
 
 const messages = ref<LocalMessage[]>([])
 const msgLoading = ref(false)
@@ -154,9 +149,8 @@ onMounted(async () => {
   } catch {
     catalog.value = null // 清单拉不到则不渲染选择器,后端用空间默认模型
   }
-  // ⚠️ 不默认选 defaults.chat:后端 /ask 现把 model_id 同时传给检索嵌入(embed 要求
-  // embedding 类型)与回答生成(要求 chat 类型),任何对话模型 id 都会在检索阶段 503
-  // (见 对接文档.md §11.2-1/后端 qa.py:163)。修复前默认不传,行为与后端默认一致。
+  // 默认"默认模型"(不传 model_id,与后端默认一致);显式选择提交 id。
+  // 后端已修 model_id 语义冲突(检索向量化改用 KB 的 embedding_model),显式选择即生效。
 })
 
 /* ───── 输入 ───── */
@@ -348,7 +342,27 @@ async function onSend() {
   let conversationId = activeConversationId.value
   let streamError: string | null = null
   let aborted = false
+  let partialAnswer = false
+  let streamBroken = false
+  let lastSeq = 0
   const citedIndexes: number[] = []
+
+  const onEvent = (event: AskEvent) => {
+    if (event.seq != null) lastSeq = event.seq // 断线续流游标(OPT-3)
+    if (event.type === 'meta') {
+      conversationId = event.conversation_id
+    } else if (event.type === 'citations') {
+      streamCitations.value = event.citations
+      drawerCitations.value = event.citations
+    } else if (event.type === 'delta') {
+      streamText.value += event.text
+    } else if (event.type === 'done') {
+      citedIndexes.push(...(event.cited_indexes ?? []))
+      if (event.partial) partialAnswer = true // 生成被中断,落库的是部分答案
+    } else if (event.type === 'error') {
+      streamError = streamErrorMessage(event.message, event.code)
+    }
+  }
 
   try {
     await askStream(
@@ -360,25 +374,20 @@ async function onSend() {
         top_k: 6,
         model_id: selectedModelId.value || null,
       },
-      (event) => {
-        if (event.type === 'meta') {
-          conversationId = event.conversation_id
-        } else if (event.type === 'citations') {
-          streamCitations.value = event.citations
-          drawerCitations.value = event.citations
-        } else if (event.type === 'delta') {
-          streamText.value += event.text
-        } else if (event.type === 'done') {
-          citedIndexes.push(...(event.cited_indexes ?? []))
-        } else if (event.type === 'error') {
-          streamError = streamErrorMessage(event.message, event.code)
-        }
-      },
+      onEvent,
       abortController.signal,
     )
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') {
       aborted = true // 用户主动停止:保留已生成内容
+    } else if (conversationId && lastSeq > 0) {
+      // 断线续流(OPT-3):服务端按 seq 精确补播缺失事件并接着实时推,无需去重。
+      // 不可续(404 STREAM_NOT_RESUMABLE 等)或续流再失败 → 落到下方收尾逻辑
+      try {
+        await resumeStream(spaceId.value, conversationId, lastSeq, onEvent, abortController.signal)
+      } catch {
+        streamBroken = true // 有正文则保留并标注"部分回答";无正文走重拉/提示
+      }
     } else if (e instanceof ApiError && e.code === 'MODEL_CALL_FAILED') {
       streamError = '模型调用失败,请稍后重试'
     } else {
@@ -391,7 +400,8 @@ async function onSend() {
 
   const answerText = streamText.value
 
-  // 落地为一条正式助手消息;cited_indexes 决定抽屉里展示哪几条引用
+  // 落地为一条正式助手消息;cited_indexes 决定抽屉里展示哪几条引用。
+  // 断线续流失败但有部分正文时保留正文并标注 partial,不用错误提示覆盖真实内容
   if (answerText || streamError) {
     const citations = streamError
       ? []
@@ -408,6 +418,7 @@ async function onSend() {
         citations,
         model_id: null,
         created_at: new Date().toISOString(),
+        partial: (partialAnswer || streamBroken) && !streamError,
       },
     ]
   } else if (aborted) {
@@ -714,6 +725,9 @@ onUnmounted(abortStream)
                     <el-icon :size="14"><WarningFilled /></el-icon>知识库中没有找到相关内容,以下回答未引用知识库资料。
                   </div>
                   <div class="md" v-html="assistantHtml(message)" @click="onContentClick($event, message)"></div>
+                  <div v-if="message.partial" class="miss-notice is-muted">
+                    <el-icon :size="14"><WarningFilled /></el-icon>连接中断,以上为已生成的部分回答。可重新提问获取完整内容。
+                  </div>
                 </template>
               </div>
             </div>
