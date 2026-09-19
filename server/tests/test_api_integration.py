@@ -1451,7 +1451,7 @@ def test_avatar_url_usable_with_api_base(client) -> None:
     assert client.get("/api/v1/users/me", headers=auth).json()["avatar_url"] == avatar_url
 
 
-def test_model_errors_return_branchable_codes(client) -> None:
+def test_model_errors_return_branchable_codes(client, no_model_keys) -> None:
     """模型侧异常必须走统一错误壳并给稳定 code(标准 §5.4),不能是 500 INTERNAL_ERROR。
 
     实测背景:此前「未配 Key」返回 500 INTERNAL_ERROR,前端无法分支;
@@ -1464,29 +1464,22 @@ def test_model_errors_return_branchable_codes(client) -> None:
         "/api/v1/spaces", json={"name": "模型错误空间"}, headers=auth
     ).json()["id"]
 
-    # 确保密钥不存在(集成容器的环境变量 + 本地 .env 都清掉)
-    import os
-
-    saved = {k: os.environ.pop(k, None) for k in ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY")}
-    try:
-        resp = client.post(
-            f"/api/v1/spaces/{space_id}/retrieval/search",
-            json={"query": "任意查询"},
-            headers=auth,
-        )
-        assert resp.status_code == 503, f"应为 503 而非 {resp.status_code}: {resp.text}"
-        body = resp.json()
-        assert body["success"] is False
-        assert body["error"]["code"] == "MODEL_NOT_CONFIGURED"
-        # 可读信息里要指出缺哪个变量名(便于运维定位),但不得包含密钥值
-        assert "DASHSCOPE_API_KEY" in body["error"]["message"]
-    finally:
-        for key, value in saved.items():
-            if value is not None:
-                os.environ[key] = value
+    # no_model_keys 夹具把环境变量与 .env 两条密钥渠道都切断(OPT-21;
+    # 旧写法 os.environ.pop 拦不住 .env 回落,本地有真实密钥时会误打真模型)
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "任意查询"},
+        headers=auth,
+    )
+    assert resp.status_code == 503, f"应为 503 而非 {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "MODEL_NOT_CONFIGURED"
+    # 可读信息里要指出缺哪个变量名(便于运维定位),但不得包含密钥值
+    assert "DASHSCOPE_API_KEY" in body["error"]["message"]
 
 
-def test_ask_emits_error_event_when_model_unconfigured(client) -> None:
+def test_ask_emits_error_event_when_model_unconfigured(client, no_model_keys) -> None:
     """SSE 流内失败必须发 error 事件 —— 不能静默截断。
 
     实测背景:未配 Key 时流只发 meta 就结束(HTTP 200),前端既拿不到 citations
@@ -1494,7 +1487,6 @@ def test_ask_emits_error_event_when_model_unconfigured(client) -> None:
     通道就是 error 事件(m2 契约定的事件类型之一)。
     """
     import json as json_mod
-    import os
 
     owner = _register(client, "sseerr")
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -1502,25 +1494,20 @@ def test_ask_emits_error_event_when_model_unconfigured(client) -> None:
         "/api/v1/spaces", json={"name": "SSE 错误空间"}, headers=auth
     ).json()["id"]
 
-    saved = {k: os.environ.pop(k, None) for k in ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY")}
-    try:
-        resp = client.post(
-            f"/api/v1/spaces/{space_id}/ask", json={"question": "任意问题"}, headers=auth
-        )
-        assert resp.status_code == 200
-        events = [
-            json_mod.loads(line[len("data: ") :])
-            for line in resp.text.splitlines()
-            if line.startswith("data: ")
-        ]
-        types = [e["type"] for e in events]
-        assert "error" in types, f"流内失败必须发 error 事件,实际事件序列: {types}"
-        error_event = next(e for e in events if e["type"] == "error")
-        # 人话可读,且能指出缺什么(运维可定位)
-        assert "DASHSCOPE_API_KEY" in error_event["message"] or "模型" in error_event["message"]
-        # 不该再发 done(本次没有成功答案)
-        assert "done" not in types
-    finally:
-        for key, value in saved.items():
-            if value is not None:
-                os.environ[key] = value
+    # no_model_keys 夹具切断环境变量与 .env 两条渠道(OPT-21,替代 os.environ.pop)
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/ask", json={"question": "任意问题"}, headers=auth
+    )
+    assert resp.status_code == 200
+    events = [
+        json_mod.loads(line[len("data: ") :])
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    types = [e["type"] for e in events]
+    assert "error" in types, f"流内失败必须发 error 事件,实际事件序列: {types}"
+    error_event = next(e for e in events if e["type"] == "error")
+    # 人话可读,且能指出缺什么(运维可定位)
+    assert "DASHSCOPE_API_KEY" in error_event["message"] or "模型" in error_event["message"]
+    # 不该再发 done(本次没有成功答案)
+    assert "done" not in types

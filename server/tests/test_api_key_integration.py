@@ -134,7 +134,7 @@ def test_key_on_jwt_only_route_denied(client) -> None:
     assert resp.json()["error"]["code"] == "AUTH_REQUIRED"
 
 
-def test_search_capability_and_scope(client) -> None:
+def test_search_capability_and_scope(client, no_model_keys) -> None:
     """chat 能力:/search 范围内放行;范围外 403;未授 chat 能力 → 403。"""
     owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -291,7 +291,7 @@ def test_documents_capability_flow(client) -> None:
     assert any(item["action"] == "document.uploaded" for item in logs)
 
 
-def test_ask_with_key_scope(client) -> None:
+def test_ask_with_key_scope(client, no_model_keys) -> None:
     """/ask:范围内放行进入 SSE(模型未配置 → 流内 error 事件);范围外 403。"""
     owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}

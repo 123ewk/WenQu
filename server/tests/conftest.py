@@ -66,6 +66,22 @@ def client():
         container.stop()
 
 
+@pytest.fixture()
+def no_model_keys(tmp_path, monkeypatch):
+    """模拟"服务端未配置任何模型密钥"(OPT-21):密钥的两条渠道全部切断。
+
+    resolve_api_key 运行时先读进程环境变量,读不到再回落读 cwd 下的 .env
+    (见 model_client.py)—— 密钥不经 Settings 字段,单删 os.environ 拦不住
+    .env 渠道,本地 server/.env 有真实密钥时"未配置"用例会误打真模型
+    (实测打 dashscope 200)。做法与 test_model_client 的 _isolate_model_env
+    同源:cwd 指向无 .env 的临时目录 + 删环境变量;请求链路的其余路径
+    (models.yaml、VERSION、数据库 URL)都不依赖 cwd,不受 chdir 影响。
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in ("DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def register(client, username: str) -> dict:
     """注册并返回 AuthResponse(集成测试通用前置)。"""
     resp = client.post(
