@@ -15,6 +15,17 @@ export function apiDeleteConversation(spaceId: string, conversationId: string): 
     .then((r) => r.data)
 }
 
+/** 会话重命名:title 1–128 字;列表按 updated_at 倒序,重命名后会话会排到最前(属预期) */
+export function apiRenameConversation(
+  spaceId: string,
+  conversationId: string,
+  title: string,
+): Promise<ConversationOut> {
+  return http
+    .patch<ConversationOut>(`/spaces/${spaceId}/conversations/${conversationId}`, { title })
+    .then((r) => r.data)
+}
+
 /** 历史消息:assistant 消息自带 citations,可直接复现引用角标与抽屉 */
 export function apiListMessages(spaceId: string, conversationId: string): Promise<MessageOut[]> {
   return http

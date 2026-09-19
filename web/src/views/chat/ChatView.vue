@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, Close, Collection, Delete, Document, Promotion, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Close, Collection, Delete, Document, Edit, Promotion, WarningFilled } from '@element-plus/icons-vue'
 
 import {
   apiCreateConversation,
   apiDeleteConversation,
   apiListConversations,
   apiListMessages,
+  apiRenameConversation,
   askStream,
 } from '@/api/chat'
 import { ApiError, errMessage } from '@/api/http'
@@ -488,6 +489,31 @@ async function onNewConversation() {
   }
 }
 
+async function onRenameConversation(conversation: ConversationOut) {
+  let title: string
+  try {
+    const res = await ElMessageBox.prompt('输入新的会话名称', '重命名会话', {
+      inputValue: conversation.title || '',
+      inputPattern: /\S/,
+      inputErrorMessage: '名称不能为空',
+      inputValidator: (v: string) => (v.trim().length > 128 ? '名称不能超过 128 个字' : true),
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    title = res.value.trim()
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const updated = await apiRenameConversation(spaceId.value, conversation.id, title)
+    const index = conversations.value.findIndex((c) => c.id === updated.id)
+    if (index >= 0) conversations.value[index] = updated
+    ElMessage.success('已重命名')
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  }
+}
+
 async function onDeleteConversation(conversation: ConversationOut) {
   const confirmed = await ElMessageBox.confirm(
     `删除会话「${conversation.title || '新会话'}」?该会话的全部消息与引用记录将被移除。`,
@@ -579,7 +605,10 @@ onUnmounted(abortStream)
               <div class="sess-meta">
                 <span>{{ fmtClock(conversation.updated_at ?? conversation.created_at) }}</span>
               </div>
-              <span class="sess-del" title="删除会话" @click.stop="onDeleteConversation(conversation)">
+              <span class="sess-del" title="重命名会话" @click.stop="onRenameConversation(conversation)">
+                <el-icon :size="12"><Edit /></el-icon>
+              </span>
+              <span class="sess-del sess-del-danger" title="删除会话" @click.stop="onDeleteConversation(conversation)">
                 <el-icon :size="12"><Delete /></el-icon>
               </span>
             </button>
@@ -900,7 +929,7 @@ onUnmounted(abortStream)
 .sess-del {
   position: absolute;
   top: 8px;
-  right: 8px;
+  right: 34px;
   width: 22px;
   height: 22px;
   border-radius: 6px;
@@ -910,6 +939,12 @@ onUnmounted(abortStream)
   color: #9ca3af;
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid #e5e7eb;
+}
+.sess-del-danger {
+  right: 8px;
+}
+.sess-del-danger:hover {
+  color: #ef4444;
 }
 .sess-item:hover .sess-del {
   display: flex;
