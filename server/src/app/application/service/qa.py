@@ -1,6 +1,7 @@
-"""带引用的流式问答(M2 核心闭环;OPT-3 起生成与响应解耦)。
+"""带引用的流式问答(M2 核心闭环;OPT-3 起生成与响应解耦,OPT-5 起流水线插件链化)。
 
 链路:多轮历史 → 混合检索 → 组装带编号上下文的提示词 → 流式生成 → 落库(含引用)。
+生成流程的阶段拆分见 qa_pipeline(检索/引用/兜底/组装/生成/落库六个阶段插件)。
 
 引用溯源:M2 用编号方案(简洁且对模型友好)——上下文块标 [1][2]…,要求模型以同样
 编号标注;生成结束后把编号映射回真实 chunk_id/文件/摘录,存进 messages.citations。
@@ -20,7 +21,7 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -32,6 +33,12 @@ from app.application.repository.knowledge import (
 )
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.service.qa_pipeline import (
+    DEFAULT_PIPELINE,
+    GenerationState,
+    Pipeline,
+    build_stages,
+)
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
 from app.application.streaming import GenerationHandle, StreamSupervisor
 from app.core.errors import AppError, ErrorCode
@@ -48,18 +55,8 @@ from app.domain.models import Conversation, Message
 
 logger = logging.getLogger("app.qa")
 
-_MAX_HISTORY_MESSAGES = 10
-_NO_RESULT_ANSWER = "知识库中没有检索到与该问题相关的内容,请调整提问或先上传相关文档。"
 # SSE 心跳(OPT-2):读流空闲期发注释帧,防止前置 nginx(proxy_read_timeout 60s)掐断静默流
 _PING_FRAME = ": ping\n\n"
-
-SYSTEM_PROMPT = (
-    "你是企业知识库问答助手。规则:\n"
-    "1. 只依据下面提供的资料回答问题,不得编造资料之外的事实;\n"
-    "2. 引用资料时用其编号标注,如 [1]、[2];一句话综合多处资料时可标注多个编号;\n"
-    "3. 资料不足以回答时,直接说明资料中没有相关信息,不要猜测;\n"
-    "4. 回答保持简洁,使用与提问相同的语言。"
-)
 
 
 @dataclass
@@ -135,6 +132,7 @@ class QAService:
         supervisor: StreamSupervisor | None = None,
         background_db: BackgroundDb | None = None,
         db: Session | None = None,
+        pipeline: Sequence[str] | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -147,6 +145,15 @@ class QAService:
         self._event_log = event_log if event_log is not None else MemoryEventLog()
         self._supervisor = supervisor if supervisor is not None else StreamSupervisor()
         self._background_db = background_db
+        # 流水线插件链(OPT-5):默认序 = M2 硬编码直调的行为;可按名重组
+        self._pipeline = Pipeline(
+            build_stages(
+                pipeline if pipeline is not None else DEFAULT_PIPELINE,
+                search=self._search,
+                persist=self._persist_assistant,
+                chat=chat,
+            )
+        )
 
     def create_conversation(
         self, user_id: uuid.UUID, space_id: uuid.UUID, title: str
@@ -273,102 +280,21 @@ class QAService:
     # ---------------------------- 后台泵 ----------------------------
 
     def _generate(self, handle: GenerationHandle, ctx: _AskContext) -> None:
-        """后台泵:把生成过程逐事件写入日志;宽限到期无人回来则中止并落库部分答案。"""
+        """后台泵:跑流水线插件链,把生成过程逐事件写入日志;收尾固定在此兜底。"""
         cid = ctx.conversation.id
         sid = handle.stream_id  # 事件日志的键:一次生成一条流
-        log = self._event_log
+        state = GenerationState(ctx=ctx, handle=handle, stream_id=sid, log=self._event_log)
         try:
-            log.append(sid, "meta", {"conversation_id": str(cid)})
-
-            # 检索(含查询向量化)可能因模型未配置/上游失败而中断:HTTP 200 与 meta
-            # 已发出,状态码改不了,只能靠 error 事件告知 —— 否则前端只看到流突然结束。
-            try:
-                hits = self._search(ctx)
-            except AppError as exc:
-                logger.warning("retrieval failed in ask: %s", exc.message)
-                log.append(sid, "error", {"message": exc.message, "code": exc.code_str})
-                return
-            except Exception:  # noqa: BLE001 — 兜底,不让流静默截断
-                logger.exception("retrieval crashed in ask")
-                log.append(sid, "error", {"message": "检索失败,请稍后重试"})
-                return
-            citations = [
-                {
-                    "index": position,
-                    "chunk_id": hit.chunk_id,
-                    "document_id": hit.document_id,
-                    "kb_id": hit.kb_id,
-                    "filename": hit.filename,
-                    "excerpt": hit.content[:300],
-                    "score": hit.score,
-                    "breadcrumb": hit.meta.get("breadcrumb", []),
-                    "page": hit.meta.get("page"),
-                }
-                for position, hit in enumerate(hits, start=1)
-            ]
-            log.append(sid, "citations", {"citations": citations})
-
-            if not hits:
-                self._persist_assistant(ctx, _NO_RESULT_ANSWER, [], None)
-                log.append(sid, "delta", {"text": _NO_RESULT_ANSWER})
-                log.append(sid, "done", {"message_id": str(ctx.user_message_id)})
-                return
-
-            prompt = _build_messages(ctx.history, ctx.question, citations)
-            pieces: list[str] = []
-            interrupted = False
-            try:
-                upstream = self._chat.chat_stream(prompt, ctx.model_id)
-                try:
-                    for frame in upstream:
-                        if handle.stop_requested.is_set():
-                            interrupted = True
-                            break
-                        pieces.append(frame)
-                        log.append(sid, "delta", {"text": frame})
-                finally:
-                    if interrupted:
-                        # 宽限耗尽仍无人回来:立即释放上游模型连接
-                        # (close 在当前 yield 点触发实现内部的 with 清理)
-                        upstream.close()
-            except Exception as exc:  # noqa: BLE001 — 上游失败要作为事件告知而非断流
-                logger.warning("chat stream failed: %s", exc)
-                log.append(sid, "error", {"message": "模型调用失败,请稍后重试"})
-                return
-
-            if interrupted:
-                content = "".join(pieces)
-                # 与完整答案不同:部分答案空内容不落库(没有半截空消息)
-                saved = (
-                    self._persist_assistant(ctx, content, citations, ctx.model_id)
-                    if content.strip()
-                    else None
-                )
-                log.append(
-                    sid,
-                    "done",
-                    {"partial": True, "message_id": str(saved.id) if saved else None},
-                )
-                return
-
-            answer = "".join(pieces)
-            saved = self._persist_assistant(ctx, answer, citations, ctx.model_id)
-            log.append(
-                sid,
-                "done",
-                {
-                    "message_id": str(saved.id),
-                    "cited_indexes": _cited_indexes(answer, len(citations)),
-                },
-            )
+            state.emit("meta", conversation_id=str(cid))
+            self._pipeline.run(state)
         except Exception:  # noqa: BLE001 — 泵兜底:绝不让流无声卡死
             logger.exception("ask generation crashed conv=%s", cid)
             try:
-                log.append(sid, "error", {"message": "生成失败,请稍后重试"})
+                state.emit("error", message="生成失败,请稍后重试")
             except Exception:  # noqa: BLE001 — 日志已被新请求作废等场景,只能记日志
                 logger.exception("failed to append error event conv=%s", cid)
         finally:
-            log.mark_finished(sid)
+            self._event_log.mark_finished(sid)
             self._supervisor.finish(cid)
 
     def _search(self, ctx: _AskContext) -> list[RetrievedChunk]:
@@ -452,29 +378,6 @@ class QAService:
         ):
             raise AppError(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在", http_status=404)
         return conversation
-
-
-def _build_messages(
-    history: list[Message], question: str, citations: list[dict]
-) -> list[dict[str, str]]:
-    """系统提示词 + 编号上下文 + 最近若干轮历史 + 本轮提问。"""
-    context = "\n\n".join(
-        f"[{c['index']}] 来源:{c['filename']}\n{c['excerpt']}" for c in citations
-    )
-    system_content = f"{SYSTEM_PROMPT}\n\n=== 资料开始 ===\n{context}\n=== 资料结束 ==="
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
-    for message in history[-_MAX_HISTORY_MESSAGES:]:
-        messages.append({"role": message.role, "content": message.content})
-    messages.append({"role": "user", "content": question})
-    return messages
-
-
-def _cited_indexes(answer: str, upper_bound: int) -> list[int]:
-    """从答案里提取被真正引用的编号(前端高亮 + 质量观测用)。"""
-    import re
-
-    found = {int(m) for m in re.findall(r"\[(\d+)\]", answer)}
-    return sorted(i for i in found if 1 <= i <= upper_bound)
 
 
 def _sse(payload: dict) -> str:
