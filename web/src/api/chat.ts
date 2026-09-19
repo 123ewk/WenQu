@@ -34,12 +34,15 @@ export function apiListMessages(spaceId: string, conversationId: string): Promis
 }
 
 /**
- * SSE 五种事件(按 type 分派)。后端(OPT-3 起)给所有事件载荷附加单调 `seq`(从 1 起,
+ * SSE 事件(按 type 分派)。后端(OPT-3 起)给所有事件载荷附加单调 `seq`(从 1 起,
  * 按生成流独立计数),前端用它做断线续流的游标。
  * `error` 的 `code` 是**可选**的:检索失败带 `code`(如 MODEL_NOT_CONFIGURED),
  * 检索兜底与模型调用失败只有人话 `message` —— 前端按 code 分支前必须先判空。
  * 另注意失败路径**不发 `done`**,收尾不能以 done 为唯一结束信号;
  * `done.partial=true` 表示生成被中断、落库的是部分答案。
+ * OPT-10:`agent: true` 时新增 `tool_call`/`tool_result` 两种事件,`id` 配对;
+ * `output` 是截断展示文本(≤2000 字),不要当全文数据;工具失败只 `ok:false` 循环继续,
+ * 整体失败仍走 `error`。
  */
 export type AskEvent = (
   | { type: 'meta'; conversation_id: string }
@@ -47,6 +50,8 @@ export type AskEvent = (
   | { type: 'delta'; text: string }
   | { type: 'done'; message_id: string; cited_indexes?: number[]; partial?: boolean }
   | { type: 'error'; message: string; code?: string }
+  | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; ok: boolean; duration_ms: number; output: string }
 ) & { seq?: number }
 
 function parseError(status: number, data: unknown): ApiError {

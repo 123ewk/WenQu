@@ -5,14 +5,15 @@ import { apiCreateConversation, apiDeleteConversation, apiListConversations, api
 import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
-import type { CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem } from '@/api/types'
+import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
 
 /**
  * 对话页(原型 02,核心页)。
- * SSE 五类事件:meta(新会话 id)/ citations / delta(累加正文)/ done / error。
+ * SSE 事件:meta(新会话 id)/ citations / delta(累加正文)/ done / error;
+ * agent 模式(OPT-10,请求级开关,默认关)额外有 tool_call / tool_result(id 配对)。
  * 引用角标 [n] 对应 citations[n-1],点击打开右侧引用抽屉展示 excerpt 与溯源信息;
  * "查看完整原文"按 chunk_id 调单块全文接口(excerpt 只截前 300 字)。
  * 断线续流(OPT-3):事件带单调 seq,流中断且已有 seq 时自动调续流路由精确补播,
@@ -60,6 +61,53 @@ const streaming = ref(false)
 const streamText = ref('')
 const streamCitations = ref<CitationOut[]>([])
 let abortController: AbortController | null = null
+
+/* ───── Agent 模式(OPT-10) ───── */
+
+/** 请求级开关,默认关 —— 不拨开关的用户与直检管线零感知 */
+const agentMode = ref(false)
+
+/** 流式中的工具卡状态:tool_call 建卡(执行中),tool_result 按 id 落定 */
+type ToolCallView = {
+  id: string
+  name: string
+  query: string
+  state: 'running' | 'ok' | 'fail'
+  durationMs: number | null
+  output: string
+}
+const streamTools = ref<ToolCallView[]>([])
+
+/** args.query 做"正在检索:…"文案;args 结构由模型生成,取用前判型 */
+function toolQuery(args: Record<string, unknown>): string {
+  return typeof args.query === 'string' ? args.query : ''
+}
+
+function agentCallCount(steps?: AgentStepOut[] | null): number {
+  return (steps ?? []).reduce((n, s) => n + s.tool_calls.length, 0)
+}
+
+function agentHasFailure(steps?: AgentStepOut[] | null): boolean {
+  return (steps ?? []).some((s) => s.tool_calls.some((c) => !c.ok))
+}
+
+/** 流式工具卡落地为落库同型结构,消息渲染与 F5 回放共用一条链路 */
+function streamToolsToSteps(tools: ToolCallView[]): AgentStepOut[] {
+  return [
+    {
+      round: 0,
+      thought: '',
+      tool_calls: tools.map((t) => ({
+        id: t.id,
+        name: t.name,
+        args: { query: t.query },
+        ok: t.state === 'ok',
+        duration_ms: t.durationMs ?? 0,
+        output_preview: t.output,
+      })),
+    },
+  ]
+}
 
 /* ───── 引用抽屉 ───── */
 
@@ -294,6 +342,7 @@ function resetConversation() {
   messages.value = []
   streamText.value = ''
   streamCitations.value = []
+  streamTools.value = []
   drawerOpen.value = false
   msgError.value = null
   if (route.params.conversationId) router.push('/chat')
@@ -335,6 +384,7 @@ async function onSend() {
   streaming.value = true
   streamText.value = ''
   streamCitations.value = []
+  streamTools.value = []
   drawerOpen.value = false
   drawerCitations.value = []
 
@@ -361,6 +411,23 @@ async function onSend() {
       if (event.partial) partialAnswer = true // 生成被中断,落库的是部分答案
     } else if (event.type === 'error') {
       streamError = streamErrorMessage(event.message, event.code)
+    } else if (event.type === 'tool_call') {
+      streamTools.value.push({
+        id: event.id,
+        name: event.name,
+        query: toolQuery(event.args ?? {}),
+        state: 'running',
+        durationMs: null,
+        output: '',
+      })
+    } else if (event.type === 'tool_result') {
+      // 按 id 配对落定;找不到对应 call(续流补播边界)则不渲染
+      const call = streamTools.value.find((t) => t.id === event.id)
+      if (call) {
+        call.state = event.ok ? 'ok' : 'fail'
+        call.durationMs = event.duration_ms
+        call.output = event.output ?? ''
+      }
     }
   }
 
@@ -373,6 +440,7 @@ async function onSend() {
         kb_ids: selectedKbIds.value.length === kbs.value.length ? null : selectedKbIds.value,
         top_k: 6,
         model_id: selectedModelId.value || null,
+        agent: agentMode.value,
       },
       onEvent,
       abortController.signal,
@@ -418,6 +486,8 @@ async function onSend() {
         citations,
         model_id: null,
         created_at: new Date().toISOString(),
+        // 工具卡随消息落地,渲染链路与 F5 回放的 agent_steps 同型
+        agent_steps: streamTools.value.length ? streamToolsToSteps(streamTools.value) : null,
         partial: (partialAnswer || streamBroken) && !streamError,
       },
     ]
@@ -455,6 +525,7 @@ async function onSend() {
   }
   streamText.value = ''
   streamCitations.value = []
+  streamTools.value = []
 
   if (conversationId && conversationId !== activeConversationId.value) {
     // 首次提问由后端新建会话:写入路由并刷新侧栏(跳过随之而来的历史重拉,见 skipReloadId)
@@ -672,8 +743,42 @@ onUnmounted(abortStream)
                   <template v-if="message.created_at"> · {{ fmtClock(message.created_at) }}</template>
                 </div>
 
-                <!-- 检索工具卡片(对应原型的 Agent 工具调用卡,默认折叠) -->
-                <div v-if="message.citations.length" class="tool-card">
+                <!-- Agent 工具卡(OPT-10):有真实轨迹(agent_steps)按轨迹回放,否则回退 citations 合成 -->
+                <div v-if="message.agent_steps?.length" class="tool-card">
+                  <button class="tool-head" @click="toggleTool(message.id)">
+                    <el-icon class="tool-ic" :size="14"><Promotion /></el-icon>
+                    <span class="tool-name">Agent 检索</span>
+                    <span v-if="agentHasFailure(message.agent_steps)" class="tool-ok is-fail">
+                      <span class="dot fail"></span>有调用失败
+                    </span>
+                    <span v-else class="tool-ok"><span class="dot ok"></span>已完成</span>
+                    <span class="tool-open">{{ agentCallCount(message.agent_steps) }} 次调用</span>
+                    <el-icon class="tool-caret" :class="{ open: expandedTool === message.id }" :size="14">
+                      <ArrowDown />
+                    </el-icon>
+                  </button>
+                  <div v-if="expandedTool === message.id" class="tool-body">
+                    <template v-for="step in message.agent_steps ?? []" :key="step.round">
+                      <div v-if="step.thought" class="tool-line">
+                        <span class="tool-key">思考</span>
+                        <span class="tool-val">{{ step.thought }}</span>
+                      </div>
+                      <div v-for="call in step.tool_calls" :key="call.id" class="tool-line">
+                        <span class="tool-key">{{ call.ok ? `已检索 (${call.duration_ms}ms)` : '检索失败' }}</span>
+                        <span class="tool-val">
+                          {{ toolQuery(call.args) || call.name }}
+                          <div v-if="call.output_preview" class="agent-output">{{ call.output_preview }}</div>
+                        </span>
+                      </div>
+                    </template>
+                    <button v-if="message.citations.length" class="tool-btn" @click="openCitations(message.citations)">
+                      打开引用抽屉
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 检索工具卡片(直检:由本轮引用合成,默认折叠) -->
+                <div v-else-if="message.citations.length" class="tool-card">
                   <button class="tool-head" @click="toggleTool(message.id)">
                     <el-icon class="tool-ic" :size="14"><Promotion /></el-icon>
                     <span class="tool-name">检索知识库</span>
@@ -736,7 +841,33 @@ onUnmounted(abortStream)
             <div v-if="streaming" class="msg-block">
               <div class="msg-assistant">
                 <div class="msg-head">正在生成…</div>
-                <div v-if="streamCitations.length" class="tool-card">
+                <!-- agent 模式实时工具卡:tool_call 建"正在检索",tool_result 按 id 落定 -->
+                <div v-if="streamTools.length" class="tool-card">
+                  <div class="tool-head">
+                    <el-icon class="tool-ic" :size="14"><Promotion /></el-icon>
+                    <span class="tool-name">Agent 检索</span>
+                    <span v-if="streamTools.some((t) => t.state === 'running')" class="tool-ok is-running">
+                      <span class="dot running"></span>执行中
+                    </span>
+                    <span v-else-if="streamTools.some((t) => t.state === 'fail')" class="tool-ok is-fail">
+                      <span class="dot fail"></span>有调用失败
+                    </span>
+                    <span v-else class="tool-ok"><span class="dot ok"></span>已完成</span>
+                    <span class="tool-open">{{ streamTools.length }} 次调用</span>
+                  </div>
+                  <div class="tool-body">
+                    <div v-for="t in streamTools" :key="t.id" class="tool-line">
+                      <span class="tool-key">{{
+                        t.state === 'running' ? '正在检索' : t.state === 'ok' ? `已检索 (${t.durationMs}ms)` : '检索失败'
+                      }}</span>
+                      <span class="tool-val">
+                        {{ t.query || t.name }}
+                        <div v-if="t.output" class="agent-output">{{ t.output }}</div>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div v-else-if="streamCitations.length" class="tool-card">
                   <div class="tool-head">
                     <el-icon class="tool-ic" :size="14"><Promotion /></el-icon>
                     <span class="tool-name">检索知识库</span>
@@ -795,6 +926,17 @@ onUnmounted(abortStream)
                 <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
               </el-option-group>
             </el-select>
+
+            <!-- Agent 模式开关(OPT-10,请求级,默认关):开启后模型自主决定检索,SSE 出工具事件 -->
+            <el-tooltip
+              content="Agent 模式:由模型自主决定知识库检索(可多次),回答带工具卡;默认关闭为直检"
+              placement="top"
+            >
+              <span class="agent-toggle">
+                <el-switch v-model="agentMode" size="small" :disabled="streaming" />
+                <span class="agent-label">Agent</span>
+              </span>
+            </el-tooltip>
 
             <textarea
               ref="textarea"
@@ -1135,6 +1277,52 @@ onUnmounted(abortStream)
 }
 .dot.ok {
   background: #10b981;
+}
+.dot.fail {
+  background: #ef4444;
+}
+.dot.running {
+  background: #f59e0b;
+  animation: agent-pulse 1s ease-in-out infinite;
+}
+@keyframes agent-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.tool-ok.is-fail {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+.tool-ok.is-running {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+/* 工具输出为截断展示文本(非全文),限高滚动防撑爆卡片 */
+.agent-output {
+  margin-top: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #6b7280;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  cursor: pointer;
+}
+.agent-label {
+  font-size: 12px;
+  color: #6b7280;
+  user-select: none;
 }
 .tool-open {
   margin-left: auto;

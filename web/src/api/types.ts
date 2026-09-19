@@ -363,6 +363,23 @@ export interface CitationOut {
   page: number | null
 }
 
+/** agent 模式(OPT-10)单次工具调用轨迹;output_preview 为截断展示文本,非全文 */
+export interface AgentToolCallOut {
+  id: string
+  name: string
+  args: Record<string, unknown>
+  ok: boolean
+  duration_ms: number
+  output_preview: string
+}
+
+/** ReAct 一轮:thought 是模型思考文本(可能为空),tool_calls 为该轮调用 */
+export interface AgentStepOut {
+  round: number
+  thought: string
+  tool_calls: AgentToolCallOut[]
+}
+
 export interface MessageOut {
   id: string
   /** user | assistant */
@@ -371,6 +388,8 @@ export interface MessageOut {
   seq: number
   citations: CitationOut[]
   model_id: string | null
+  /** OPT-10 agent 模式的工具调用轨迹;直检模式恒为 null/缺省,判空回退 citations 合成 */
+  agent_steps?: AgentStepOut[] | null
   created_at: string | null
 }
 
@@ -381,4 +400,6 @@ export interface AskRequest {
   kb_ids?: string[] | null
   top_k?: number
   model_id?: string | null
+  /** OPT-10:true = ReAct 工具循环(SSE 增 tool_call/tool_result 事件);缺省 false 行为不变 */
+  agent?: boolean
 }
