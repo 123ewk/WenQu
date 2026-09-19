@@ -317,6 +317,13 @@ def test_chunk_preview_api(client) -> None:
     assert all(c["tokens"] <= 512 for c in chunks)
     assert all(c["breadcrumb"] == ["接入指南"] for c in chunks)
     assert all(c["kind"] == "text" for c in chunks)
+    # 父子分块(OPT-4):预览暴露两层结构,超预算父块派生子块且子块 ≤ 256
+    assert all("children" in c for c in chunks)
+    split = [c for c in chunks if c["children"]]
+    assert split, "80 句长文应有父块被切出子块"
+    assert all(
+        child["tokens"] <= 256 for c in split for child in c["children"]
+    )
 
 
 def test_task_queue_claim_retry_dead_and_recover(client) -> None:

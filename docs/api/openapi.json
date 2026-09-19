@@ -3245,6 +3245,14 @@
           "kind": {
             "type": "string",
             "title": "Kind"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkPreviewItem"
+            },
+            "type": "array",
+            "title": "Children",
+            "default": []
           }
         },
         "type": "object",
