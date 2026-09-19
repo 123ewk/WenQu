@@ -55,7 +55,9 @@ class RetrievalParams(BaseModel):
 
 class UpdateSpaceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
-    description: str = Field(default="", max_length=512)
+    # PATCH 语义:省略 = 不改动(此前省略会被清成空串,前端只能整体提交防清空);
+    # 显式传 "" 仍表示清空描述
+    description: str | None = Field(default=None, max_length=512)
     retrieval_params: RetrievalParams | None = None
 
 

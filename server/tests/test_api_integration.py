@@ -1053,6 +1053,37 @@ def test_space_retrieval_params_persist_and_validate(client) -> None:
     assert forbidden.status_code == 403
 
 
+def test_space_patch_omitted_description_preserved(client) -> None:
+    """PATCH 语义(前端缺口台账 §9.6):description 省略 = 不改动,显式 "" 才清空。
+
+    此前省略会被清成空串,前端保存检索参数时被迫把 name/description 一并提交。
+    """
+    owner = _register(client, "patchdescowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space = client.post("/api/v1/spaces", json={"name": "描述空间"}, headers=auth).json()
+
+    # 先写入描述
+    first = client.patch(
+        f"/api/v1/spaces/{space['id']}", json={"name": "描述空间", "description": "有价值的描述"},
+        headers=auth,
+    )
+    assert first.status_code == 200 and first.json()["description"] == "有价值的描述"
+
+    # 省略 description 只改名字:描述保持不变
+    omitted = client.patch(
+        f"/api/v1/spaces/{space['id']}", json={"name": "只改名"}, headers=auth
+    )
+    assert omitted.status_code == 200, omitted.text
+    assert omitted.json()["name"] == "只改名"
+    assert omitted.json()["description"] == "有价值的描述"
+
+    # 显式 "" 清空;省略 retrieval_params 不改配置(既有语义不变)
+    cleared = client.patch(
+        f"/api/v1/spaces/{space['id']}", json={"name": "只改名", "description": ""}, headers=auth
+    )
+    assert cleared.status_code == 200 and cleared.json()["description"] == ""
+
+
 
 def test_avatar_upload_validate_and_fetch(client) -> None:
     """缺口 #6:头像上传/读取。要点:

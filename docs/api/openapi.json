@@ -4400,10 +4400,16 @@
             "title": "Name"
           },
           "description": {
-            "type": "string",
-            "maxLength": 512,
-            "title": "Description",
-            "default": ""
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           },
           "retrieval_params": {
             "anyOf": [

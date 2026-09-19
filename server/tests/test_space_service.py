@@ -46,6 +46,23 @@ def test_update_requires_admin() -> None:
     assert str(AuditAction.SPACE_UPDATED) in actions
 
 
+def test_update_description_none_keeps_value() -> None:
+    """PATCH 语义(前端缺口台账 §9.6):description 省略 = 不改动;显式 "" 才清空。
+
+    此前省略会被无条件清成空串,前端只能把 name/description 一并提交防清空。
+    """
+    scene = setup_two_users()
+    space = scene.env.space_svc.update(scene.space_id, scene.owner, "改名", "原始描述")
+    assert space.description == "原始描述"
+
+    kept = scene.env.space_svc.update(scene.space_id, scene.owner, "再改名")
+    assert kept.name == "再改名"
+    assert kept.description == "原始描述"  # 省略不动
+
+    cleared = scene.env.space_svc.update(scene.space_id, scene.owner, "再改名", "")
+    assert cleared.description == ""  # 显式清空仍可用
+
+
 def test_delete_owner_only() -> None:
     scene = setup_two_users()
     with pytest.raises(AppError) as forbidden:

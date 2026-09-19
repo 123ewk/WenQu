@@ -63,13 +63,18 @@ class SpaceService:
         space_id: uuid.UUID,
         user: User,
         name: str,
-        description: str,
+        description: str | None = None,
         ip: str = "",
         retrieval_params: dict[str, float | int] | None = None,
     ) -> Space:
+        """改名/改描述/调检索参数。
+
+        description=None 表示不改动(PATCH 语义,前端缺口台账 §9.6);显式 "" 为清空。
+        """
         space, _role = self._require_role(space_id, user.id, Role.ADMIN)
         space.name = name
-        space.description = description
+        if description is not None:
+            space.description = description
         if retrieval_params:
             space.retrieval_rrf_k = int(retrieval_params["rrf_k"])
             space.retrieval_vector_weight = float(retrieval_params["vector_weight"])
