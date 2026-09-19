@@ -26,7 +26,10 @@ export const useAuthStore = defineStore('auth', () => {
   const isOwner = computed(() => isAtLeast(role.value, ROLE.OWNER))
   const isLoggedIn = computed(() => !!user.value && session.isLoggedIn())
 
-  /** AuthResponse 整体落地;默认保留当前空间,失效则回退到第一个空间 */
+  /**
+   * AuthResponse 整体落地。活动空间以契约为准:data.current_space_id
+   * (switch-space 后即新空间);为 null(登录/注册未选空间)时回退第一个空间,保持既有 UX。
+   */
   function applyAuth(data: AuthResponse, opts?: { switchTo?: string }) {
     session.saveAuth(data)
     user.value = data.user
@@ -35,8 +38,7 @@ export const useAuthStore = defineStore('auth', () => {
       currentSpaceId.value && data.spaces.some((s) => s.id === currentSpaceId.value)
         ? currentSpaceId.value
         : null
-    const target = opts?.switchTo ?? kept ?? data.spaces[0]?.id ?? null
-    session.setCurrentSpaceId(target)
+    const target = opts?.switchTo ?? data.current_space_id ?? kept ?? data.spaces[0]?.id ?? null
     currentSpaceId.value = target
   }
 
@@ -65,8 +67,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (currentSpaceId.value && !spaces.value.some((s) => s.id === currentSpaceId.value)) {
       const next = spaces.value[0]?.id ?? null
       currentSpaceId.value = next
-      session.setCurrentSpaceId(next)
-      if (next) await switchUnlocked(next)
+      if (next) await switchUnlocked(next) // 切换会轮换令牌,契约回包带新 current_space_id
     }
   }
 
@@ -116,7 +117,11 @@ export const useAuthStore = defineStore('auth', () => {
     currentSpaceId.value = null
   }
 
-  /** F5 后校验令牌并静默刷新用户与空间列表(失败交由 401 链处理) */
+  /**
+   * F5 后校验令牌并静默刷新用户与空间列表(失败交由 401 链处理)。
+   * 活动空间以契约(/users/me 的 current_space_id)为准覆盖本地初值;
+   * 该值不在 spaces[] 里时由 refreshSpaces 的回退逻辑处理。
+   */
   async function bootstrap(): Promise<void> {
     if (!isLoggedIn) return
     try {
@@ -124,6 +129,9 @@ export const useAuthStore = defineStore('auth', () => {
       user.value = me
       session.saveUser(me)
       await refreshSpaces()
+      if (me.current_space_id && spaces.value.some((s) => s.id === me.current_space_id)) {
+        currentSpaceId.value = me.current_space_id
+      }
     } catch {
       /* 静默:令牌失效时拦截器已处理 */
     }

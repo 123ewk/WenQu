@@ -8,6 +8,8 @@ export interface UserOut {
   username: string
   nickname: string
   created_at: string | null
+  /** 当前活动空间(从 access token 推导);注册/登录未选空间为 null */
+  current_space_id: string | null
 }
 
 /** 登录/注册/刷新响应中 spaces[] 的元素,role 为当前用户在该空间的角色 */
@@ -41,6 +43,8 @@ export interface AuthResponse {
   refresh_token: string
   token_type: string
   expires_in: number
+  /** 本响应绑定的活动空间:登录/注册为 null,switch-space 后为新空间,refresh 延续原绑定 */
+  current_space_id: string | null
 }
 
 export interface AuditLogOut {

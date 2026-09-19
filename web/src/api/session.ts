@@ -1,6 +1,7 @@
 /**
  * 登录态在 localStorage 中的持久化(键名见 对接说明.md)。
  * 独立于 Pinia:http.ts 的刷新链不依赖任何 Store 即可覆盖令牌。
+ * 活动空间不单独存键:随契约值保存在 user JSON 的 current_space_id 里(单一事实来源)。
  */
 import type { AuthResponse, SpaceBriefOut, UserOut } from './types'
 
@@ -8,8 +9,10 @@ const K_ACCESS = 'wenqu_access_token'
 const K_REFRESH = 'wenqu_refresh_token'
 const K_USER = 'wenqu_user'
 const K_SPACES = 'wenqu_spaces'
-const K_SPACE_ID = 'wenqu_current_space_id'
 const K_SIDEBAR = 'wenqu_sidebar_collapsed'
+
+// 历史遗留:活动空间曾用独立键自管理,契约提供 current_space_id 后已废弃;老用户浏览器里有残留,一次性清掉
+localStorage.removeItem('wenqu_current_space_id')
 
 function readJson<T>(key: string): T | null {
   const raw = localStorage.getItem(key)
@@ -42,15 +45,16 @@ export function getSpaces(): SpaceBriefOut[] {
   return readJson<SpaceBriefOut[]>(K_SPACES) ?? []
 }
 
+/** 活动空间以契约为准:读已落盘 user 的 current_space_id(login/register 未选空间时为 null) */
 export function getCurrentSpaceId(): string | null {
-  return localStorage.getItem(K_SPACE_ID)
+  return getUser()?.current_space_id ?? null
 }
 
 export function isLoggedIn(): boolean {
   return !!getAccessToken() && !!getUser()
 }
 
-/** AuthResponse 整体落盘(登录/注册/刷新/切空间共用);当前空间 ID 由调用方单独维护 */
+/** AuthResponse 整体落盘(登录/注册/刷新/切空间共用);活动空间随 user.current_space_id 持久化 */
 export function saveAuth(data: AuthResponse) {
   localStorage.setItem(K_ACCESS, data.access_token)
   localStorage.setItem(K_REFRESH, data.refresh_token)
@@ -66,13 +70,8 @@ export function saveSpaces(spaces: SpaceBriefOut[]) {
   writeJson(K_SPACES, spaces)
 }
 
-export function setCurrentSpaceId(id: string | null) {
-  if (id) localStorage.setItem(K_SPACE_ID, id)
-  else localStorage.removeItem(K_SPACE_ID)
-}
-
 export function clearAuth() {
-  for (const key of [K_ACCESS, K_REFRESH, K_USER, K_SPACES, K_SPACE_ID]) {
+  for (const key of [K_ACCESS, K_REFRESH, K_USER, K_SPACES]) {
     localStorage.removeItem(key)
   }
 }
