@@ -10,7 +10,13 @@ import pytest
 
 from app.core.config import Settings
 from app.core.model_catalog import ModelCatalog, ModelNotConfigured
-from app.core.model_client import ChatClient, EmbeddingClient, ModelCallError, resolve_api_key
+from app.core.model_client import (
+    ChatClient,
+    EmbeddingClient,
+    ModelCallError,
+    ToolCallRequest,
+    resolve_api_key,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -195,3 +201,70 @@ def test_resolve_api_key_local_provider_needs_no_key() -> None:
     catalog = _catalog()
     provider = catalog.get_provider("ollama")  # 免密钥本地供应商
     assert resolve_api_key(provider, _settings()) == "local-no-key"
+
+
+def _sse_tools_response(
+    text_pieces: list[str], fragments: list[dict]
+) -> httpx.Response:
+    lines = []
+    for piece in text_pieces:
+        payload = json.dumps({"choices": [{"delta": {"content": piece}}]})
+        lines.append(f"data: {payload}\n\n")
+    for fragment in fragments:
+        payload = json.dumps({"choices": [{"delta": {"tool_calls": [fragment]}}]})
+        lines.append(f"data: {payload}\n\n")
+    lines.append("data: [DONE]\n\n")
+    return httpx.Response(
+        200, content="".join(lines).encode(), headers={"content-type": "text/event-stream"}
+    )
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {"name": "search_knowledge", "description": "检索", "parameters": {}},
+    }
+]
+
+
+def test_chat_stream_tools_aggregates_fragmented_call(monkeypatch) -> None:
+    """function calling 流式分片跨 chunk 聚合:文本先发,意图在流末完整给出。"""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    fragments = [
+        {
+            "index": 0,
+            "id": "call_0",
+            "function": {"name": "search_knowledge", "arguments": "{\"que"},
+        },
+        {"index": 0, "function": {"arguments": "ry\": \"报销\"}"}},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["tools"] == _TOOLS  # 工具 Schema 随请求发出
+        return _sse_tools_response(["先查一下。"], fragments)
+
+    client = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    frames = list(
+        client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS)
+    )
+    assert frames[0] == "先查一下。"
+    call = frames[1]
+    assert isinstance(call, ToolCallRequest)
+    assert (call.id, call.name) == ("call_0", "search_knowledge")
+    assert json.loads(call.arguments) == {"query": "报销"}
+
+
+def test_chat_stream_tools_multiple_calls_in_index_order(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    fragments = [
+        {"index": 1, "id": "call_b", "function": {"name": "t2", "arguments": "{}"}},
+        {"index": 0, "function": {"name": "t1", "arguments": "{\"a\":1}"}},  # 无 id,按 index 兜底
+    ]
+    client = ChatClient(
+        _catalog(), _settings(),
+        transport=httpx.MockTransport(lambda req: _sse_tools_response([], fragments)),
+    )
+    frames = list(client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS))
+    assert [f.name for f in frames] == ["t1", "t2"]
+    assert frames[0].id == "call_0" and frames[1].id == "call_b"
