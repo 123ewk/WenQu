@@ -4,6 +4,7 @@ import type {
   CreateKBRequest,
   DocumentOut,
   DocumentPage,
+  IngestionProgressOut,
   KnowledgeBaseOut,
   UpdateKBRequest,
 } from './types'
@@ -93,5 +94,15 @@ export function apiListChunks(
     .get<ChunkPage>(`/spaces/${spaceId}/knowledge-bases/${kbId}/documents/${docId}/chunks`, {
       params: { limit, offset },
     })
+    .then((r) => r.data)
+}
+
+/**
+ * 空间级入库进度(顶栏浮层数据源):`active` 只含在途 + 近期失败,不含已完成;
+ * `total_active === 0` 即全部处理完。与浏览器上传进度(onUploadProgress)是两回事。
+ */
+export function apiGetIngestionProgress(spaceId: string, limit = 50): Promise<IngestionProgressOut> {
+  return http
+    .get<IngestionProgressOut>(`/spaces/${spaceId}/ingestion-progress`, { params: { limit } })
     .then((r) => r.data)
 }

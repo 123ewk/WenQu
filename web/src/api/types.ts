@@ -143,6 +143,29 @@ export interface DocumentPage {
   total: number
 }
 
+/* ───── 空间级入库进度(顶栏浮层) ───── */
+
+/** 在途(pending/parsing/chunking/embedding)+ 近期失败的文档;已完成的不返回 */
+export interface IngestionProgressItem {
+  document_id: string
+  kb_id: string
+  filename: string
+  status: string
+  error_code: string | null
+  error_message: string | null
+  updated_at: string | null
+}
+
+export interface IngestionProgressOut {
+  active: IngestionProgressItem[]
+  /** 各状态文档数(含 completed),键为状态名 */
+  counts: Record<string, number>
+  /** 未终结数量;为 0 即"都处理完了" */
+  total_active: number
+  /** 有失败文档时为真(独立于 index_status 的优先级) */
+  has_failure: boolean
+}
+
 /** 分块元数据:breadcrumb(标题路径)/page/kind(text|table,后端不区分标题块) */
 export interface ChunkMeta {
   breadcrumb?: string[]

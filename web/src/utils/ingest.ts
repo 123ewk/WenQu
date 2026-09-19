@@ -12,22 +12,23 @@ const INDEX: Record<DocumentStatus, number> = {
   failed: -1,
 }
 
-export function isTerminal(status: DocumentStatus): boolean {
+export function isTerminal(status: string): boolean {
   return status === 'completed' || status === 'failed'
 }
 
 /** 当前处于第几步(0 基);failed 返回 -1 */
-export function stepIndex(status: DocumentStatus): number {
-  return INDEX[status] ?? -1
+export function stepIndex(status: string): number {
+  return INDEX[status as DocumentStatus] ?? -1
 }
 
-export function statusLabel(status: DocumentStatus): string {
+/** 状态 → 中文;入参放宽为 string,未映射值(后端新增状态)原样展示 */
+export function statusLabel(status: string): string {
   if (status === 'failed') return '失败'
   return INGEST_STEPS[stepIndex(status)] ?? status
 }
 
 /** 单个步骤点的状态:已完成全部点亮;进行中当前点高亮;其余灰 */
-export function stepState(status: DocumentStatus, index: number): 'done' | 'current' | 'idle' {
+export function stepState(status: string, index: number): 'done' | 'current' | 'idle' {
   const current = stepIndex(status)
   if (status === 'completed') return 'done'
   if (current < 0) return 'idle'

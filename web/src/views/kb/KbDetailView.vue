@@ -13,6 +13,7 @@ import {
 import { apiRetrievalSearch } from '@/api/retrieval'
 import type { DocumentOut, KnowledgeBaseOut, RetrievedChunkOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useIngestionStore } from '@/stores/ingestion'
 import { useUploadStore } from '@/stores/uploads'
 import { fmtBytes, fmtStamp } from '@/utils/format'
 import { failureReason, INGEST_STEPS, isTerminal, stepState, statusLabel, UPLOAD_ACCEPT } from '@/utils/ingest'
@@ -28,6 +29,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const uploads = useUploadStore()
+const ingestion = useIngestionStore()
 
 const kbId = computed(() => String(route.params.kbId ?? ''))
 const spaceId = computed(() => auth.currentSpaceId ?? '')
@@ -133,6 +135,8 @@ async function uploadOne(file: File) {
     })
     uploads.patch(taskKey, { percent: 100, phase: 'queued' })
     ElMessage.success(`「${file.name}」已上传,正在后台解析入库`)
+    // 文档已入队(pending):立即拉一次空间级入库进度,顶栏浮层从"上传中"切"入库中"
+    ingestion.refresh(spaceId.value)
   } catch (e) {
     const message = errMessage(e)
     uploads.patch(taskKey, { phase: 'error', error: message })
