@@ -55,7 +55,7 @@ data: {"type":"tool_result","id":"call_0","name":"search_knowledge","ok":true,"d
 
 ## 4. 落库:工具卡在 F5 之后也有真实数据
 
-助手消息新增**可选**字段 `agent_steps`(迁移 0012,JSONB,可空):
+助手消息新增**可选**字段 `agent_steps`(迁移 0011,JSONB,可空):
 
 ```json
 "agent_steps": [
@@ -93,5 +93,5 @@ data: {"type":"tool_result","id":"call_0","name":"search_knowledge","ok":true,"d
 ## 7. 后端落地序列(每步独立提交)
 
 工具接口与注册表 → 模型客户端 function calling → ReAct 循环 → 工具输出防护 →
-问答接入(迁移 0012)→ 契约重导 + 护栏测试 → 台账同步。
+问答接入(迁移 0011)→ 契约重导 + 护栏测试 → 台账同步。
 落地完成后本说明与 openapi.json 一起复核;有出入按对接标准 §2 以实测为准写回 §11。
