@@ -1,18 +1,24 @@
-"""流式生成监督(OPT-3):读者计数 + 断线宽限 + 中止信号。
+"""流式生成监督(OPT-3):读者计数 + 断线宽限 + 中止信号 + 资源治理。
 
 策略(产品决策):客户端断开后,生成**最多再跑宽限期**(默认 5 秒,弱网不白烧
 token,又不至于网络抖一下就截断回答);期间任何读者(ask 响应 / 续流路由)回来
 都取消宽限继续生成;宽限耗尽仍无人回来 → 置位中止信号,泵线程停在下个事件边界,
 释放上游连接并落库部分答案。
 
-线程模型:泵线程消费上游模型流;定时器线程在宽限耗尽时置位;读流线程 attach/detach。
-所有状态由各 handle 自己的锁保护,Supervisor 只管注册表。
+线程模型:泵线程消费上游模型流;定时器线程在宽限耗尽时置位;读流线程 attach/detach;
+清道夫线程周期清理事件日志。所有状态由各 handle 自己的锁保护,Supervisor 只管注册表。
 """
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 import uuid
+
+from app.core.event_log import EventLog
+
+logger = logging.getLogger("app.streaming")
 
 
 class GenerationHandle:
@@ -29,6 +35,7 @@ class GenerationHandle:
         self._readers = 0
         self._timer: threading.Timer | None = None
         self._finished = False
+        self._finished_event = threading.Event()
 
     def reader_attached(self) -> None:
         """读流线程接入:撤销宽限计时(有人在看,继续生成)。"""
@@ -58,6 +65,11 @@ class GenerationHandle:
             if self._timer is not None:
                 self._timer.cancel()
                 self._timer = None
+            self._finished_event.set()
+
+    def wait_finished(self, timeout: float) -> bool:
+        """有界等待泵收尾(关停兜底用);返回是否在时限内等到。"""
+        return self._finished_event.wait(timeout)
 
     def _on_grace_expired(self) -> None:
         with self._lock:
@@ -104,10 +116,54 @@ class StreamSupervisor:
         if handle is not None:
             handle.mark_finished()
 
-    def shutdown_all(self) -> None:
-        """进程关闭:置位全部中止信号(泵线程据此落库部分答案)。"""
+    def shutdown_all(self, wait_seconds: float = 5.0) -> int:
+        """进程关停兜底:置位全部中止信号(泵据此落库部分答案),有界等待收尾。
+
+        返回被通知的生成数。等待有界:泵若阻塞在上游读(最长 read 超时)则放弃
+        等待,由守护线程随进程退出 —— 极端场景丢部分答案,不做无限期阻塞。
+        """
         with self._lock:
             handles = list(self._active.values())
         for handle in handles:
             handle.stop_requested.set()
-            handle.mark_finished()
+        deadline = time.monotonic() + wait_seconds
+        for handle in handles:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            handle.wait_finished(remaining)
+        return len(handles)
+
+
+class StreamJanitor:
+    """事件日志清道夫:周期 evict 已完成且空闲超时的流(TTL 可配,默认 1 小时)。
+
+    事件日志是 API 进程内单例,清道夫必须在同一进程运行(worker 进程摸不到它);
+    因此不进 worker 的维护任务,而是随 API 生命周期启停。
+    """
+
+    def __init__(self, event_log: EventLog, interval_seconds: float = 600.0) -> None:
+        self._event_log = event_log
+        self._interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="stream-janitor"
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            try:
+                evicted = self._event_log.evict_idle()
+                if evicted:
+                    logger.info("事件日志清理了 %d 条空闲流", evicted)
+            except Exception:  # noqa: BLE001 — 清理失败只记日志,不影响主流程
+                logger.exception("事件日志清理失败")

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Iterator
@@ -49,26 +50,34 @@ class EventLog(Protocol):
 
     def is_resumable(self, stream_id: uuid.UUID, after_seq: int) -> bool: ...
 
+    def evict_idle(self) -> int: ...
+
 
 class _StreamState:
     """单条流的状态:事件环 + seq 计数 + 完成标记,由自己的 Condition 保护。"""
 
-    __slots__ = ("condition", "events", "finished", "next_seq")
+    __slots__ = ("condition", "events", "finished", "last_activity", "next_seq")
 
     def __init__(self, capacity: int) -> None:
         self.events: deque[StreamEvent] = deque(maxlen=capacity)
         self.next_seq: int = 1
         self.finished: bool = False
+        self.last_activity: float = time.monotonic()  # 最近一次 append,供 TTL 清理
         self.condition: threading.Condition = threading.Condition()
 
 
 class MemoryEventLog:
     """内存实现:dict[stream_id → 流状态],环形容量淘汰最旧事件。"""
 
-    def __init__(self, max_events_per_conversation: int = 2000) -> None:
+    def __init__(
+        self,
+        max_events_per_conversation: int = 2000,
+        idle_ttl_seconds: float = 3600.0,
+    ) -> None:
         if max_events_per_conversation < 1:
             raise ValueError("max_events_per_conversation 必须 >= 1")
         self._capacity = max_events_per_conversation
+        self._idle_ttl_seconds = idle_ttl_seconds
         self._streams: dict[uuid.UUID, _StreamState] = {}
         self._registry_lock = threading.Lock()
 
@@ -95,6 +104,7 @@ class MemoryEventLog:
             )
             stream.next_seq += 1
             stream.events.append(event)  # deque(maxlen) 满时静默淘汰最旧
+            stream.last_activity = time.monotonic()
             stream.condition.notify_all()
         return event.seq
 
@@ -159,3 +169,20 @@ class MemoryEventLog:
                 return False
             oldest = stream.events[0].seq
         return after_seq >= oldest - 1
+
+    def evict_idle(self) -> int:
+        """清理已完成且空闲超过 idle_ttl_seconds 的流(资源治理,OPT-3 收尾)。
+
+        只清 finished 流:进行中的生成不会因空闲被误杀(模型读超时 180s 远小于
+        默认 TTL 1h)。last_activity 的跨线程读只用于粗粒度 TTL 判断,无需加锁。
+        """
+        now = time.monotonic()
+        with self._registry_lock:
+            stale = [
+                sid
+                for sid, stream in self._streams.items()
+                if stream.finished and now - stream.last_activity > self._idle_ttl_seconds
+            ]
+            for sid in stale:
+                self._streams.pop(sid, None)
+        return len(stale)

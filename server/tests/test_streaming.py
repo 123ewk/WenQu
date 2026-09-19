@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 
-from app.application.streaming import GenerationHandle, StreamSupervisor
+from app.application.streaming import GenerationHandle, StreamJanitor, StreamSupervisor
 
 
 def test_reader_detach_arms_grace_then_stop_requested() -> None:
@@ -66,6 +67,48 @@ def test_supervisor_finish_removes_handle() -> None:
     supervisor.start(cid)
     supervisor.finish(cid)
     assert supervisor.get(cid) is None
+
+
+def test_shutdown_all_notifies_and_waits_for_finish() -> None:
+    """关停兜底:置位中止信号;泵收尾后 wait 返回;未收尾的有界放弃。"""
+    supervisor = StreamSupervisor(grace_seconds=5.0)
+    finishing = supervisor.start(uuid.uuid4())
+    stuck = supervisor.start(uuid.uuid4())
+
+    def finish_soon() -> None:
+        time.sleep(0.05)
+        supervisor.finish(finishing.conversation_id)
+
+    thread = threading.Thread(target=finish_soon)
+    thread.start()
+    notified = supervisor.shutdown_all(wait_seconds=2.0)
+    thread.join()
+    assert notified == 2
+    assert finishing.stop_requested.is_set()
+    assert finishing.wait_finished(0)  # 已等到收尾
+    assert not stuck.wait_finished(0)  # 没收尾的有界放弃
+
+
+def test_janitor_periodically_evicts() -> None:
+    """清道夫按周期调用 evict_idle,stop 后不再调用。"""
+
+    class CountingLog:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def evict_idle(self) -> int:
+            self.calls += 1
+            return 0
+
+    log = CountingLog()
+    janitor = StreamJanitor(log, interval_seconds=0.02)
+    janitor.start()
+    time.sleep(0.1)
+    janitor.stop()
+    calls_at_stop = log.calls
+    assert calls_at_stop >= 2
+    time.sleep(0.05)
+    assert log.calls == calls_at_stop  # stop 后不再跑
 
 
 def test_grace_expiry_race_with_reader_attach_is_benign() -> None:

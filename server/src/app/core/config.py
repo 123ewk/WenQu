@@ -49,6 +49,8 @@ class Settings(BaseSettings):
 
     # ---- 流式问答(OPT-3:断线宽限 —— 期间重连继续生成到完整,无人回来才中止) ----
     stream_grace_seconds: float = Field(5.0, validation_alias="APP_STREAM_GRACE_SECONDS")
+    # 事件日志空闲 TTL:已完成且空闲超过该时长的流会被清道夫回收
+    stream_log_ttl_seconds: float = Field(3600.0, validation_alias="APP_STREAM_LOG_TTL")
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

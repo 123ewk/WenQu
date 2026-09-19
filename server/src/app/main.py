@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 
 from app.api.denied_audit import record_denied
+from app.api.deps import get_event_log, get_stream_supervisor
 from app.api.routes import api_keys as api_key_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
@@ -21,6 +24,7 @@ from app.api.routes import models as model_routes
 from app.api.routes import retrieval as retrieval_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import users as users_routes
+from app.application.streaming import StreamJanitor
 from app.core.config import get_settings
 from app.core.errors import (
     AppError,
@@ -32,6 +36,21 @@ from app.core.errors import (
 from app.core.logging import request_id_var, setup_logging
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def stream_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """OPT-3 流式资源的生命周期(事件日志为 API 进程内单例,治理只能在同进程):
+    启动清道夫(TTL 回收已完成流);关停时通知进行中的生成落库部分答案。"""
+    janitor = StreamJanitor(get_event_log())
+    janitor.start()
+    try:
+        yield
+    finally:
+        janitor.stop()
+        notified = get_stream_supervisor().shutdown_all(wait_seconds=5.0)
+        if notified:
+            logger.info("关停:已通知 %d 个进行中的生成落库部分答案", notified)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -52,6 +71,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="WenQu API",
         version=settings.version,
+        lifespan=stream_lifespan,
         # Go-Live 翻转项 #7:Swagger/OpenAPI 仅非生产模式暴露
         docs_url="/docs" if settings.env == "dev" else None,
         redoc_url=None,

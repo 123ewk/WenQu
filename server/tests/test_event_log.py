@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 
 import pytest
@@ -115,6 +116,28 @@ def test_follow_timeout_yields_none_tick_when_idle() -> None:
         "meta",
         "done",
     ]
+
+
+def test_evict_idle_removes_only_finished_stale_streams() -> None:
+    """TTL 清理只收"已完成 + 空闲超时"的流;进行中的生成不会被误杀。"""
+    log = MemoryEventLog(idle_ttl_seconds=0.0)
+    done_sid = uuid.uuid4()
+    log.append(done_sid, "done", {})
+    log.mark_finished(done_sid)  # 完成 + TTL=0 → 立即可清
+
+    active_sid = uuid.uuid4()
+    log.append(active_sid, "delta", {})  # 未完成 → 不可清
+
+    kept_sid = uuid.uuid4()
+    log2 = MemoryEventLog(idle_ttl_seconds=3600.0)
+    log2.append(kept_sid, "done", {})
+    log2.mark_finished(kept_sid)  # 完成,但 TTL 很长 → 不可清
+
+    time.sleep(0.02)  # Windows monotonic 粒度较粗,确保"空闲时长"真的大于 0
+    assert log.evict_idle() == 1
+    assert log.is_resumable(done_sid, 0) is False  # 已被清
+    assert log.is_resumable(active_sid, 0) is True  # 进行中的还在
+    assert log2.is_resumable(kept_sid, 0) is True  # 未到 TTL 的还在
 
 
 def test_concurrent_append_produces_unique_ordered_seq() -> None:

@@ -253,7 +253,7 @@ def get_chat_gateway() -> ChatGateway:
 @lru_cache
 def get_event_log() -> EventLog:
     """进程级单例(OPT-3):后台泵写入,ask 响应与续流路由读取共用一本日志。"""
-    return MemoryEventLog()
+    return MemoryEventLog(idle_ttl_seconds=get_settings().stream_log_ttl_seconds)
 
 
 @lru_cache
