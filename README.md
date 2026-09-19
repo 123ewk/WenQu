@@ -47,7 +47,7 @@ make db-migrate  # alembic upgrade head
 - [x] M0 骨架(仓库/工具链/CI/compose/迁移框架/hello world)
 - [x] M1 账号与空间(JWT + 空间 RBAC + 审计基础;前端页面对接完成)
 - [x] M2 核心 RAG 闭环(解析/入库流水线/分块+预览/混合检索/引用流式问答;页面对接完成)
-- [ ] M3 体验与治理(父子分块/插件链化/API Key/契约测试扩面)
+- [x] M3 体验与治理(父子分块/插件链化/API Key/契约测试扩面;另含凭据加密与断线续流,均提前交付)
 - [ ] M4 Agent 与上线(ReAct 工具/Go-Live 14 项翻转/备份演练/冒烟)
 
 > 判定依据:`docs/架构设计.md` §10 路线图与 git 提交历史(非本清单自身)。
