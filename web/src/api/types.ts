@@ -105,6 +105,9 @@ export interface ChangePasswordRequest {
 
 /* ───── M2:知识库 / 文档 / 分块 ───── */
 
+/** 知识库索引聚合状态:判序 empty → processing → degraded → ready(在途优先于失败) */
+export type KbIndexStatus = 'empty' | 'processing' | 'degraded' | 'ready'
+
 export interface KnowledgeBaseOut {
   id: string
   space_id: string
@@ -113,6 +116,12 @@ export interface KnowledgeBaseOut {
   /** 嵌入模型由服务端配置,创建/改名接口不接受该字段 */
   embedding_model: string
   embedding_dim: number
+  /** 以下四项为列表/详情接口一次算齐的聚合统计 */
+  document_count: number
+  chunk_count: number
+  /** 原始文件体积之和(字节) */
+  size_bytes: number
+  index_status: KbIndexStatus
   created_at: string | null
 }
 

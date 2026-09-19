@@ -6,13 +6,14 @@ import { apiDeleteKb, apiListKbs } from '@/api/knowledge'
 import type { KnowledgeBaseOut } from '@/api/types'
 import KbFormDialog from '@/components/KbFormDialog.vue'
 import { useAuthStore } from '@/stores/auth'
-import { fmtRelative } from '@/utils/format'
+import { fmtBytes, fmtRelative } from '@/utils/format'
 import { isAtLeast, ROLE } from '@/utils/roles'
 
 /**
  * 知识库列表(原型 03):卡片网格 + 新建/重命名/删除。
  * 角色门槛:创建/改名 = Editor(20)+;删除 = Admin(30)+;查看 = 任意成员。
- * 契约未提供文档数/分块数/存储量的聚合字段,卡片不渲染这些统计(见 对接缺口清单)。
+ * 卡片统计(document/chunk/size/index_status)来自列表接口聚合字段,四态:
+ * empty 灰 / processing 蓝(动)/ ready 绿 / degraded 橙;"有失败"提示走顶栏 #12 的 has_failure。
  */
 const router = useRouter()
 const auth = useAuthStore()
@@ -29,6 +30,18 @@ const formMode = ref<'create' | 'rename'>('create')
 const editing = ref<KnowledgeBaseOut | null>(null)
 
 const spaceName = computed(() => auth.currentSpace?.name ?? '')
+
+/** index_status → 圆点颜色 + 文案(工单 #8 的四态映射) */
+const INDEX_STATUS_META: Record<string, { label: string; cls: string }> = {
+  empty: { label: '暂无文档', cls: 'is-empty' },
+  processing: { label: '索引中', cls: 'is-processing' },
+  degraded: { label: '部分失败', cls: 'is-degraded' },
+  ready: { label: '就绪', cls: 'is-ready' },
+}
+
+function indexStatusMeta(status: string) {
+  return INDEX_STATUS_META[status] ?? { label: status, cls: 'is-empty' }
+}
 
 watch(
   () => auth.currentSpaceId,
@@ -158,6 +171,12 @@ function openKb(kb: KnowledgeBaseOut) {
         </div>
         <div class="kb-name">{{ kb.name }}</div>
         <div class="kb-desc truncate">{{ kb.description || '暂无描述' }}</div>
+        <div class="kb-stats">
+          <span>文档 {{ kb.document_count.toLocaleString() }} · 分块 {{ kb.chunk_count.toLocaleString() }} · {{ fmtBytes(kb.size_bytes) }}</span>
+          <span class="kb-status" :class="indexStatusMeta(kb.index_status).cls" :title="`index_status=${kb.index_status}`">
+            <span class="kb-status-dot"></span>{{ indexStatusMeta(kb.index_status).label }}
+          </span>
+        </div>
         <div class="kb-foot">
           <span class="kb-model">
             <el-icon :size="12"><Box /></el-icon>
@@ -249,6 +268,50 @@ function openKb(kb: KnowledgeBaseOut) {
   margin-top: 4px;
   font-size: 13px;
   color: #6b7280;
+}
+.kb-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.kb-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.kb-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+.kb-status.is-processing .kb-status-dot {
+  background: #4f6ef2;
+  animation: kb-pulse 1.2s ease-in-out infinite;
+}
+.kb-status.is-ready .kb-status-dot {
+  background: #10b981;
+}
+.kb-status.is-degraded .kb-status-dot {
+  background: #f59e0b;
+}
+.kb-status.is-degraded {
+  color: #f59e0b;
+}
+@keyframes kb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 .kb-foot {
   display: flex;
