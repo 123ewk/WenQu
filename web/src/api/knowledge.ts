@@ -1,5 +1,6 @@
 import { http } from './http'
 import type {
+  ChunkOut,
   ChunkPage,
   CreateKBRequest,
   DocumentOut,
@@ -104,5 +105,20 @@ export function apiListChunks(
 export function apiGetIngestionProgress(spaceId: string, limit = 50): Promise<IngestionProgressOut> {
   return http
     .get<IngestionProgressOut>(`/spaces/${spaceId}/ingestion-progress`, { params: { limit } })
+    .then((r) => r.data)
+}
+
+/**
+ * 单块全文(引用抽屉"查看完整原文"数据源):SSE citations[].excerpt 只截前 300 字,
+ * 该接口返回不截断的 content。文档被删除后 404 属预期。
+ */
+export function apiGetChunk(
+  spaceId: string,
+  kbId: string,
+  docId: string,
+  chunkId: string,
+): Promise<ChunkOut> {
+  return http
+    .get<ChunkOut>(`/spaces/${spaceId}/knowledge-bases/${kbId}/documents/${docId}/chunks/${chunkId}`)
     .then((r) => r.data)
 }

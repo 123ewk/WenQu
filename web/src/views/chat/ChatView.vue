@@ -9,7 +9,7 @@ import {
   askStream,
 } from '@/api/chat'
 import { ApiError, errMessage } from '@/api/http'
-import { apiListKbs } from '@/api/knowledge'
+import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
 import type { CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -19,8 +19,9 @@ import { renderMarkdown } from '@/utils/markdown'
 /**
  * 对话页(原型 02,核心页)。
  * SSE 五类事件:meta(新会话 id)/ citations / delta(累加正文)/ done / error。
- * 引用角标 [n] 对应 citations[n-1],点击打开右侧引用抽屉展示 excerpt 与溯源信息。
- * 契约未提供:会话重命名、非流式重试、查看完整原文块 —— 对应入口不渲染(见 对接缺口清单)。
+ * 引用角标 [n] 对应 citations[n-1],点击打开右侧引用抽屉展示 excerpt 与溯源信息;
+ * "查看完整原文"按 chunk_id 调单块全文接口(excerpt 只截前 300 字)。
+ * 契约未提供:非流式重试 —— 对应入口不渲染(见 对接缺口清单)。
  */
 const route = useRoute()
 const router = useRouter()
@@ -68,6 +69,27 @@ let abortController: AbortController | null = null
 
 const drawerOpen = ref(false)
 const drawerCitations = ref<CitationOut[]>([])
+
+/** 单块全文缓存:excerpt 只截前 300 字,"查看完整原文"按 chunk_id 拉全量;missing=文档已删(404 属预期) */
+const fullChunks = ref<Record<string, { state: 'loading' | 'ready' | 'missing'; content?: string; tokens?: number | null }>>({})
+const expandedChunks = ref<Set<string>>(new Set())
+
+async function toggleFullChunk(citation: CitationOut) {
+  const id = citation.chunk_id
+  if (expandedChunks.value.has(id)) {
+    expandedChunks.value.delete(id)
+    return
+  }
+  expandedChunks.value.add(id)
+  if (fullChunks.value[id]) return
+  fullChunks.value[id] = { state: 'loading' }
+  try {
+    const chunk = await apiGetChunk(spaceId.value, citation.kb_id, citation.document_id, id)
+    fullChunks.value[id] = { state: 'ready', content: chunk.content, tokens: chunk.tokens }
+  } catch {
+    fullChunks.value[id] = { state: 'missing' }
+  }
+}
 
 function openCitations(citations: CitationOut[], index?: number) {
   drawerCitations.value = citations
@@ -776,9 +798,27 @@ onUnmounted(abortStream)
                 <span class="cite-loc">{{ chunkLocation(citation) }}</span>
               </div>
               <div class="cite-excerpt">{{ citation.excerpt }}</div>
+              <div
+                v-if="expandedChunks.has(citation.chunk_id)"
+                class="cite-full"
+              >
+                <div v-if="fullChunks[citation.chunk_id]?.state === 'loading'" class="cite-full-hint">加载全文…</div>
+                <template v-else-if="fullChunks[citation.chunk_id]?.state === 'ready'">
+                  <div class="cite-full-text">{{ fullChunks[citation.chunk_id]?.content }}</div>
+                  <div v-if="fullChunks[citation.chunk_id]?.tokens" class="cite-full-meta mono">
+                    {{ fullChunks[citation.chunk_id]?.tokens }} tokens
+                  </div>
+                </template>
+                <div v-else class="cite-full-hint is-missing">原文档已删除,无法查看完整原文</div>
+              </div>
               <div class="cite-foot">
                 <span class="cite-score">融合分 <b class="mono">{{ citation.score.toFixed(3) }}</b></span>
-                <el-button size="small" @click="viewDocument(citation)">查看文档</el-button>
+                <div class="cite-actions">
+                  <el-button size="small" @click="toggleFullChunk(citation)">
+                    {{ expandedChunks.has(citation.chunk_id) ? '收起全文' : '查看完整原文' }}
+                  </el-button>
+                  <el-button size="small" @click="viewDocument(citation)">查看文档</el-button>
+                </div>
               </div>
             </div>
             <el-empty v-if="!drawerCitations.length" description="暂无引用" :image-size="72" />
@@ -1397,5 +1437,39 @@ onUnmounted(abortStream)
 .cite-score b {
   color: #374151;
   font-weight: 500;
+}
+.cite-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+/* 单块全文:content 不截断,抽屉内限高滚动 */
+.cite-full {
+  margin-top: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f7f8fa;
+  padding: 8px 10px;
+}
+.cite-full-text {
+  max-height: 220px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #374151;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cite-full-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: right;
+}
+.cite-full-hint {
+  font-size: 12px;
+  color: #9ca3af;
+}
+.cite-full-hint.is-missing {
+  color: #f59e0b;
 }
 </style>

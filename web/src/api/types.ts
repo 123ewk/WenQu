@@ -203,6 +203,8 @@ export interface ChunkOut {
   seq: number
   content: string
   meta: ChunkMeta
+  /** 入库时算好的 token 数;可能为 null */
+  tokens: number | null
 }
 
 export interface ChunkPage {
