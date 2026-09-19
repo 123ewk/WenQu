@@ -241,9 +241,15 @@ export interface ModelCatalogOut {
 
 export interface SearchRequest {
   query: string
+  /** 缺省用空间配置值 */
   top_k?: number
   kb_ids?: string[] | null
   model_id?: string | null
+  /** 以下为请求级覆盖(仅本次生效,不写回空间配置);vector/fulltext 必须成对且和 ≤ 1 */
+  rrf_k?: number
+  vector_weight?: number
+  fulltext_weight?: number
+  min_score?: number
 }
 
 export interface RetrievedChunkOut {

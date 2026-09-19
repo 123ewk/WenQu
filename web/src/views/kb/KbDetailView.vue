@@ -12,7 +12,7 @@ import {
   apiUploadDocument,
 } from '@/api/knowledge'
 import { apiRetrievalSearch } from '@/api/retrieval'
-import type { DocumentOut, KnowledgeBaseOut, RetrievedChunkOut } from '@/api/types'
+import type { DocumentOut, KnowledgeBaseOut, RetrievedChunkOut, SearchRequest } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useIngestionStore } from '@/stores/ingestion'
 import { useUploadStore } from '@/stores/uploads'
@@ -242,16 +242,35 @@ const results = ref<RetrievedChunkOut[]>([])
 const searched = ref(false)
 const expanded = ref<string | null>(null)
 
+/* ───── 请求级调参(仅本次生效,不写回空间配置) ───── */
+
+const tuneEnabled = ref(false)
+const tune = reactive({ vector: 0.7, fulltext: 0.3, minScore: 0.3, rrfK: 60 })
+const weightSum = computed(() => Math.round((tune.vector + tune.fulltext) * 100) / 100)
+const weightInvalid = computed(() => weightSum.value > 1)
+
 async function onSearch() {
   const q = query.value.trim()
   if (!q) {
     ElMessage.warning('请输入检索内容')
     return
   }
+  if (tuneEnabled.value && weightInvalid.value) {
+    ElMessage.warning(`向量权重与全文权重之和不能超过 1(当前 ${weightSum.value});请调整后重试`)
+    return
+  }
   searching.value = true
   searchError.value = null
   try {
-    results.value = await apiRetrievalSearch(spaceId.value, { query: q, top_k: topK.value, kb_ids: [kbId.value] })
+    const body: SearchRequest = { query: q, top_k: topK.value, kb_ids: [kbId.value] }
+    if (tuneEnabled.value) {
+      // 只对本次调用生效;调完空间配置不变(自检点:GET /spaces/{id} 的 retrieval_params 不变)
+      body.vector_weight = tune.vector
+      body.fulltext_weight = tune.fulltext
+      body.min_score = tune.minScore
+      body.rrf_k = tune.rrfK
+    }
+    results.value = await apiRetrievalSearch(spaceId.value, body)
     searched.value = true
     expanded.value = null
   } catch (e) {
@@ -518,6 +537,33 @@ function openChunks(doc: DocumentOut) {
             混合检索:向量 ∥ 全文双路召回 + RRF 融合 · topK
             <el-input-number v-model="topK" :min="1" :max="50" size="small" controls-position="right" class="topk-input" />
             · 仅检索当前知识库
+          </div>
+
+          <!-- 请求级调参:仅对本次检索生效,不写回空间默认配置 -->
+          <div class="tune-row">
+            <el-checkbox v-model="tuneEnabled" size="small">自定义调参(仅本次)</el-checkbox>
+            <template v-if="tuneEnabled">
+              <span class="tune-item" :class="{ 'is-err': weightInvalid }">
+                向量权重
+                <el-input-number v-model="tune.vector" :min="0" :max="1" :step="0.1" size="small" controls-position="right" class="tune-num" />
+              </span>
+              <span class="tune-item" :class="{ 'is-err': weightInvalid }">
+                全文权重
+                <el-input-number v-model="tune.fulltext" :min="0" :max="1" :step="0.1" size="small" controls-position="right" class="tune-num" />
+              </span>
+              <span class="tune-item">
+                最小相似度
+                <el-input-number v-model="tune.minScore" :min="0" :max="1" :step="0.05" size="small" controls-position="right" class="tune-num" />
+              </span>
+              <span class="tune-item">
+                RRF k
+                <el-input-number v-model="tune.rrfK" :min="1" :max="1000" :step="10" size="small" controls-position="right" class="tune-num" />
+              </span>
+            </template>
+          </div>
+          <div v-if="tuneEnabled" class="tune-note" :class="{ 'is-err': weightInvalid }">
+            <template v-if="weightInvalid">向量权重 + 全文权重 = {{ weightSum }} > 1,请调整后再检索(后端同样会拒绝)</template>
+            <template v-else>以上参数仅用于本次测试,不会修改知识库默认配置(权重和 {{ weightSum }})</template>
           </div>
 
           <div v-if="searchError" class="inline-error">
@@ -846,6 +892,34 @@ function openChunks(doc: DocumentOut) {
   margin-top: 12px;
   font-size: 12px;
   color: #9ca3af;
+}
+.tune-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+.tune-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.tune-item.is-err {
+  color: #ef4444;
+}
+.tune-num {
+  width: 96px;
+}
+.tune-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.tune-note.is-err {
+  color: #ef4444;
 }
 .topk-input {
   width: 100px;
