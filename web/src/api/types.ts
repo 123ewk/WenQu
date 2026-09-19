@@ -297,6 +297,8 @@ export interface ChunkPreviewItem {
   breadcrumb: string[]
   page: number | null
   kind: string
+  /** OPT-4 父子分块:父块内子块预览,未触发切分时空数组(子块只活在检索索引,别处不出现) */
+  children?: ChunkPreviewItem[]
 }
 
 /* ───── M3:API Key ───── */
