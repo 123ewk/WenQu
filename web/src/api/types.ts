@@ -26,11 +26,21 @@ export interface SpaceBriefOut {
   description?: string
 }
 
+/** 空间级检索参数(真实驱动检索,改完立即生效无需重建索引);权重之和 ≤ 1 */
+export interface RetrievalParams {
+  rrf_k: number
+  vector_weight: number
+  fulltext_weight: number
+  min_score: number
+  default_top_k: number
+}
+
 export interface SpaceOut {
   id: string
   name: string
   description: string
   role: number
+  retrieval_params: RetrievalParams
   created_at: string | null
 }
 
@@ -101,6 +111,8 @@ export interface CreateSpaceRequest {
 export interface UpdateSpaceRequest {
   name?: string
   description?: string
+  /** 省略 = 不改动;注意 name 必填(省略 422)、description 省略会被清空 —— 建议一并提交当前表单值 */
+  retrieval_params?: RetrievalParams
 }
 
 export interface AddMemberRequest {

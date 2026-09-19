@@ -191,12 +191,28 @@ async function onInvite() {
 /* ───── 空间设置 ───── */
 
 const settingForm = reactive({ name: '', description: '' })
+/** 默认检索参数(Admin+ 可改;真实驱动检索,改完立即生效无需重建索引) */
+const paramForm = reactive({ rrf_k: 60, vector_weight: 0.7, fulltext_weight: 0.3, min_score: 0.3, default_top_k: 6 })
 const savingSpace = ref(false)
+const savingParams = ref(false)
+
+const weightSum = computed(() => Math.round((paramForm.vector_weight + paramForm.fulltext_weight) * 100) / 100)
+const paramInvalid = computed(
+  () =>
+    weightSum.value > 1 ||
+    paramForm.rrf_k < 1 ||
+    paramForm.rrf_k > 1000 ||
+    paramForm.min_score < 0 ||
+    paramForm.min_score > 1 ||
+    paramForm.default_top_k < 1 ||
+    paramForm.default_top_k > 50,
+)
 
 watch(space, (s) => {
   if (s) {
     settingForm.name = s.name
     settingForm.description = s.description
+    Object.assign(paramForm, s.retrieval_params)
   }
 })
 
@@ -210,15 +226,42 @@ async function onSaveSpace() {
     space.value = await apiUpdateSpace(auth.currentSpaceId!, {
       name: settingForm.name.trim(),
       description: settingForm.description.trim(),
+      // 不带 retrieval_params = 不改动检索参数(契约语义)
     })
     settingForm.name = space.value.name
     settingForm.description = space.value.description
+    Object.assign(paramForm, space.value.retrieval_params)
     ElMessage.success('空间信息已保存')
     await auth.refreshSpaces() // 同步侧栏中的空间名
   } catch (e) {
     actionError(e)
   } finally {
     savingSpace.value = false
+  }
+}
+
+/**
+ * 保存检索参数。⚠️ PATCH 字段语义:name 必填、description 省略会被清空、
+ * retrieval_params 省略 = 不改动 —— 故把当前基本信息一并带上,防止清空描述。
+ */
+async function onSaveParams() {
+  if (weightSum.value > 1) {
+    ElMessage.warning(`向量权重与全文权重之和不能超过 1(当前 ${weightSum.value})`)
+    return
+  }
+  savingParams.value = true
+  try {
+    space.value = await apiUpdateSpace(auth.currentSpaceId!, {
+      name: settingForm.name.trim() || space.value?.name || '',
+      description: settingForm.description.trim(),
+      retrieval_params: { ...paramForm, rrf_k: Math.round(paramForm.rrf_k), default_top_k: Math.round(paramForm.default_top_k) },
+    })
+    Object.assign(paramForm, space.value.retrieval_params)
+    ElMessage.success('检索参数已保存,立即生效')
+  } catch (e) {
+    actionError(e)
+  } finally {
+    savingParams.value = false
   }
 }
 
@@ -426,7 +469,33 @@ async function onDeleteSpace() {
 
               <div class="card block-card">
                 <div class="block-title">默认检索参数</div>
-                <div class="block-note">此能力依赖知识库接口,将于后续版本上线。</div>
+                <div class="block-note">
+                  真实驱动检索(混合检索、问答的召回),保存后立即生效,无需重建索引。
+                  <template v-if="weightSum > 1"><span class="param-err">当前向量 + 全文权重之和为 {{ weightSum }} > 1,无法保存</span></template>
+                </div>
+                <el-form label-position="top" class="block-form param-form">
+                  <div class="param-grid">
+                    <el-form-item label="向量权重(0–1)">
+                      <el-input-number v-model="paramForm.vector_weight" :min="0" :max="1" :step="0.05" controls-position="right" class="param-num" />
+                    </el-form-item>
+                    <el-form-item label="全文权重(0–1)">
+                      <el-input-number v-model="paramForm.fulltext_weight" :min="0" :max="1" :step="0.05" controls-position="right" class="param-num" />
+                    </el-form-item>
+                    <el-form-item label="最小相似度(0–1)">
+                      <el-input-number v-model="paramForm.min_score" :min="0" :max="1" :step="0.05" controls-position="right" class="param-num" />
+                    </el-form-item>
+                    <el-form-item label="RRF k(1–1000)">
+                      <el-input-number v-model="paramForm.rrf_k" :min="1" :max="1000" :step="10" controls-position="right" class="param-num" />
+                    </el-form-item>
+                    <el-form-item label="默认 topK(1–50)">
+                      <el-input-number v-model="paramForm.default_top_k" :min="1" :max="50" controls-position="right" class="param-num" />
+                    </el-form-item>
+                  </div>
+                  <div class="param-desc">最小相似度:低于该值的向量召回候选将被丢弃,调高会"召回更少但更准"。</div>
+                </el-form>
+                <el-button type="primary" :loading="savingParams" :disabled="paramInvalid" @click="onSaveParams">
+                  保存检索参数
+                </el-button>
               </div>
 
               <div class="card block-card">
@@ -700,6 +769,24 @@ async function onDeleteSpace() {
   margin-top: 6px;
   font-size: 12px;
   color: #9ca3af;
+  line-height: 1.6;
+}
+.param-err {
+  color: #ef4444;
+  font-weight: 500;
+}
+.param-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 24px;
+}
+.param-num {
+  width: 130px;
+}
+.param-desc {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-bottom: 8px;
 }
 .danger-row {
   display: flex;
