@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
-from app.application.chunking import blocks_from_text, chunk_blocks
+from app.application.chunking import blocks_from_text, parent_child_chunks
 from app.domain.models import User
 
 router = APIRouter(prefix="/api/v1/chunks", tags=["chunking"])
@@ -28,6 +28,8 @@ class ChunkPreviewItem(BaseModel):
     breadcrumb: list[str]
     page: int | None
     kind: str
+    # 父子分块(OPT-4):父块内子块预览(检索窗口层);未触发切分时为空
+    children: list[ChunkPreviewItem] = []
 
 
 @router.post("/preview", response_model=list[ChunkPreviewItem])
@@ -35,10 +37,24 @@ def preview_chunks(
     body: ChunkPreviewRequest,
     user: User = Depends(get_current_user),
 ) -> list[ChunkPreviewItem]:
-    blocks = blocks_from_text(body.text, body.format)
+    pairs = parent_child_chunks(blocks_from_text(body.text, body.format))
     return [
         ChunkPreviewItem(
-            content=d.content, tokens=d.tokens, breadcrumb=d.breadcrumb, page=d.page, kind=d.kind
+            content=parent.content,
+            tokens=parent.tokens,
+            breadcrumb=parent.breadcrumb,
+            page=parent.page,
+            kind=parent.kind,
+            children=[
+                ChunkPreviewItem(
+                    content=c.content,
+                    tokens=c.tokens,
+                    breadcrumb=c.breadcrumb,
+                    page=c.page,
+                    kind=c.kind,
+                )
+                for c in children
+            ],
         )
-        for d in chunk_blocks(blocks)
+        for parent, children in pairs
     ]

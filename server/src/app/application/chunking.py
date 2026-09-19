@@ -94,6 +94,54 @@ def chunk_blocks(
     return drafts
 
 
+DEFAULT_CHILD_MAX_TOKENS = 256  # 父子分块:子块(检索窗口)上限;父块仍 ≤ max_tokens
+
+
+def parent_child_chunks(
+    blocks: Iterable[object],
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    child_max_tokens: int = DEFAULT_CHILD_MAX_TOKENS,
+) -> list[tuple[ChunkDraft, list[ChunkDraft]]]:
+    """父子分块(ADR-5,OPT-4):父块 = 上下文/引用单元,子块 = 检索窗口。
+
+    父块由 chunk_blocks 产出(行为与 M2 完全一致);每个父块至少派生一个子块:
+    - 短父块(≤ child_max_tokens)与表格父块整块作为子块 —— 表格行本身已是
+      细粒度匹配单元,再拆 markdown 行会破坏表结构;
+    - 长父块按 recursive 阶梯以 child_max_tokens 重切,相邻子块保留尾部重叠。
+    子块正文是父块正文的**连续片段**(重叠部分与后续片段在原文中相接),因此
+    子块 tokens ≤ 父块 tokens,不会突破 max_tokens 不变量。入库时只有子块进
+    向量/全文索引,检索命中子块后回取父块组装引用与生成上下文。
+    """
+    result: list[tuple[ChunkDraft, list[ChunkDraft]]] = []
+    for parent in chunk_blocks(blocks, max_tokens):
+        result.append((parent, _child_drafts(parent, child_max_tokens)))
+    return result
+
+
+def _child_drafts(parent: ChunkDraft, child_max_tokens: int) -> list[ChunkDraft]:
+    header = " > ".join(parent.breadcrumb)
+    if parent.kind == "table" or parent.tokens <= child_max_tokens:
+        return [
+            ChunkDraft(
+                content=parent.content,
+                breadcrumb=list(parent.breadcrumb),
+                page=parent.page,
+                kind=parent.kind,
+                tokens=parent.tokens,
+                body=parent.body,
+            )
+        ]
+    header_cost = estimate_tokens(header) + 1 if header else 0
+    # 面包屑头比子块上限还长时保底 32 保证有进展;此时子块最坏等于父块本身,
+    # 仍是连续片段,不突破 max_tokens
+    budget = max(child_max_tokens - header_cost, 32)
+    atoms, natural = _split_recursive(parent.body, budget)
+    overlap = int(child_max_tokens * _OVERLAP_RATIO)
+    return _pack_atoms(
+        atoms, parent.breadcrumb, parent.page, header, budget, overlap if natural else 0
+    )
+
+
 def blocks_from_text(text: str, fmt: str = "md") -> list[SimpleNamespace]:
     """预览入口的轻量 md/txt 分块前置解析(流水线正式入口以 parser 服务为准)。
 

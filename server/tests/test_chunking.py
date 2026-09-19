@@ -7,11 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.application.chunking import (
+    DEFAULT_CHILD_MAX_TOKENS,
     DEFAULT_MAX_TOKENS,
     ChunkDraft,
     blocks_from_text,
     chunk_blocks,
     estimate_tokens,
+    parent_child_chunks,
 )
 
 
@@ -225,3 +227,76 @@ def test_table_breaks_run_and_keeps_position_in_section() -> None:
     assert "表格前" in drafts[0].content
     assert "苹果" in drafts[1].content
     assert "表格后" in drafts[2].content
+
+
+# ---------------------------- 父子分块(OPT-4):父块=上下文,子块=检索窗口 ---------------------------
+
+
+def test_parent_layer_identical_to_chunk_blocks() -> None:
+    """父子分块的父层必须与 chunk_blocks 输出完全一致(M2 行为不变)。"""
+    blocks = [
+        _block(type="title", text="长小节", level=1),
+        *[_block(text=f"第{i}段。" + _sentences(3, size=5)) for i in range(8)],
+        _block(type="table", markdown="|名称|数量|\n|---|---|\n|苹果|3|"),
+    ]
+    parents = [p for p, _cs in parent_child_chunks(blocks)]
+    assert parents == chunk_blocks(blocks)
+
+
+def test_short_parent_yields_single_identical_child() -> None:
+    """不超过子块上限的父块:唯一子块与父块同内容(1:1,检索行为等价)。"""
+    (parent, children), = parent_child_chunks([_block(text=_sentences(10, size=5))])
+    assert len(children) == 1
+    child = children[0]
+    assert child.content == parent.content
+    assert child.kind == parent.kind
+    assert child.tokens == parent.tokens
+
+
+def test_long_parent_splits_children_within_child_budget() -> None:
+    """超上限的父块:子块各自 ≤ 子块预算,相邻子块保留尾部重叠,面包屑头进每个子块。"""
+    blocks = [
+        _block(type="title", text="系统设计", level=1),
+        _block(type="title", text="检索模块", level=2),
+        _block(text=_sentences(60, size=5)),  # ~1140 token,父块切多块,子块切更多
+    ]
+    pairs = parent_child_chunks(blocks)
+    assert all(len(children) >= 2 for _p, children in pairs)
+    for parent, children in pairs:
+        assert all(c.tokens <= DEFAULT_CHILD_MAX_TOKENS for c in children), [
+            c.tokens for c in children
+        ]
+        assert all(c.breadcrumb == parent.breadcrumb for c in children)
+        assert all(c.content.startswith("系统设计 > 检索模块\n") for c in children)
+    # 重叠:第 i 个子块的尾部句子必须出现在第 i+1 个子块里(句子编号唯一)
+    for children in [children for _p, children in pairs]:
+        for prev, nxt in zip(children, children[1:], strict=False):
+            tail_sentence = prev.content.split("。")[-2].strip()
+            assert tail_sentence in nxt.content
+
+
+def test_table_parent_never_split_into_children() -> None:
+    """表格父块整块作为子块(不再二次拆 markdown 行,保住表结构)。"""
+    rows = ["| 品名 | 描述信息列 |", "|---|---|"]
+    rows += [f"| 物品{i} | {'描述' * 20} |" for i in range(8)]  # ~370 token:>子块预算,≤父块上限
+    (parent, children), = parent_child_chunks([_block(type="table", markdown="\n".join(rows))])
+    assert parent.tokens > DEFAULT_CHILD_MAX_TOKENS  # 前置:确实超了子块预算
+    assert len(children) == 1
+    assert children[0].content == parent.content
+    assert children[0].kind == "table"
+
+
+def test_children_never_exceed_parent_token_limit() -> None:
+    """子块是父块正文的连续片段:tokens 永不超过父块上限(不变量)。"""
+    weird = [
+        _block(type="title", text="很长标题" * 15, level=1),  # 面包屑头超子块预算的极端情况
+        _block(text="字" * 700),
+        _block(type="table", markdown="|a|"),
+        _block(text=_sentences(30)),
+    ]
+    for parent, children in parent_child_chunks(weird, max_tokens=256, child_max_tokens=64):
+        assert all(c.tokens <= max(DEFAULT_MAX_TOKENS, parent.tokens) for c in children), (
+            parent.tokens,
+            [c.tokens for c in children],
+        )
+        assert all(c.content.strip() for c in children)
