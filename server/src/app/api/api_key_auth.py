@@ -43,6 +43,8 @@ _ROUTE_CAPABILITIES: dict[ApiCapability, set[tuple[str, str]]] = {
     ApiCapability.CHAT: {
         ("/api/v1/spaces/{space_id}/ask", "POST"),
         ("/api/v1/spaces/{space_id}/retrieval/search", "POST"),
+        # OPT-3:断线续流与 /ask 同属对话检索能力
+        ("/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream", "GET"),
     },
     ApiCapability.DOCUMENTS: {
         ("/api/v1/spaces/{space_id}/knowledge-bases", "GET"),

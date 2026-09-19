@@ -2229,6 +2229,74 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Resume Stream",
+        "description": "断线续流(OPT-3):`after` 传最后收到的事件 seq,服务端补播缺失事件。\n\n生成仍在进行时补播后接着实时推;已结束则纯回放(含 done)。\n不可续(重启/淘汰/无流)→ 404 STREAM_NOT_RESUMABLE,前端回退拉 messages。",
+        "operationId": "resume_stream_api_v1_spaces__space_id__conversations__conversation_id__stream_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}": {
       "delete": {
         "tags": [

@@ -243,6 +243,33 @@ class QAService:
         ).start()
         return self._reader(handle.stream_id, handle)
 
+    def resume_stream(
+        self,
+        user_id: uuid.UUID,
+        space_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        after: int,
+    ) -> Iterator[str]:
+        """断线续流(OPT-3):回放 after 之后的存量事件;生成仍在进行则接着实时推。
+
+        不可续(进程重启/事件淘汰/该会话从未生成过)→ 404 STREAM_NOT_RESUMABLE,
+        前端回退拉 messages。会话归属校验与 messages 路由同规则(404 防枚举)。
+        """
+        self._get_conversation(user_id, space_id, conversation_id)
+        handle = self._supervisor.get(conversation_id)
+        stream_id = (
+            handle.stream_id
+            if handle is not None
+            else self._supervisor.last_stream_id(conversation_id)
+        )
+        if stream_id is None or not self._event_log.is_resumable(stream_id, after):
+            raise AppError(
+                ErrorCode.STREAM_NOT_RESUMABLE,
+                "没有可续的生成流,请改用消息历史恢复",
+                http_status=404,
+            )
+        return self._reader(stream_id, handle, after=after)
+
     # ---------------------------- 后台泵 ----------------------------
 
     def _generate(self, handle: GenerationHandle, ctx: _AskContext) -> None:
@@ -379,23 +406,28 @@ class QAService:
 
     # ---------------------------- 日志读者 ----------------------------
 
-    def _reader(self, stream_id: uuid.UUID, handle: GenerationHandle) -> Iterator[str]:
-        """日志读者:事件序列化为 SSE(载荷补 seq),空闲期发心跳注释帧。
+    def _reader(
+        self, stream_id: uuid.UUID, handle: GenerationHandle | None, *, after: int = 0
+    ) -> Iterator[str]:
+        """日志读者:事件序列化为 SSE(载荷补 type/seq),空闲期发心跳注释帧。
 
         follow 的 timeout 保证阻塞有界 —— Starlette 关闭响应生成器时,GeneratorExit
         能在 yield 点送达,finally 的 detach(宽限计时)才有机会执行。
+        handle 为 None 表示生成已结束(续流回放场景),无需宽限计时。
         """
         try:
-            handle.reader_attached()
+            if handle is not None:
+                handle.reader_attached()
             for event in self._event_log.follow(
-                stream_id, 0, timeout=self._heartbeat_seconds
+                stream_id, after, timeout=self._heartbeat_seconds
             ):
                 if event is None:
                     yield _PING_FRAME
                 else:
                     yield _sse({"type": event.type, **event.payload, "seq": event.seq})
         finally:
-            handle.reader_detached()
+            if handle is not None:
+                handle.reader_detached()
 
     # ---------------------------- 内部 ----------------------------
 

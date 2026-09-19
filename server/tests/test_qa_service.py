@@ -365,3 +365,65 @@ def test_no_heartbeat_when_generation_is_fast() -> None:
     stream = list(env.service.ask_stream(env.user.id, env.space.id, "快问题"))
     _events_out, pings = _parse_frames(stream)
     assert pings == 0
+
+
+# ---------------------------- OPT-3:断线续流 ----------------------------
+
+
+def test_resume_within_grace_replays_missed_and_completes() -> None:
+    """断线后宽限期内重连:只补播缺失事件,且重连取消宽限、生成继续到完整落库。"""
+    hits = [_hit("资料")]
+    env = build_env(
+        hits=hits,
+        chat=SlowFakeChat(["一", "二", "三"], gap_seconds=0.3),
+        heartbeat_seconds=0.05,
+        grace_seconds=0.2,
+    )
+    gen = env.service.ask_stream(env.user.id, env.space.id, "问题")
+    first = _next_event(gen)  # meta
+    conv_id = uuid.UUID(first["conversation_id"])
+    _next_event(gen)  # citations
+    seen = _next_event(gen)  # delta 一
+    gen.close()  # 断线
+
+    resumed = env.service.resume_stream(
+        env.user.id, env.space.id, conv_id, after=seen["seq"]
+    )
+    events = _events(resumed)
+    assert [e["seq"] for e in events] == [4, 5, 6]  # 只补缺的,不重不丢
+    assert [e["type"] for e in events] == ["delta", "delta", "done"]
+    assert [e["text"] for e in events[:2]] == ["二", "三"]
+
+    stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
+    assert stored[-1].content == "一二三"  # 重连取消宽限 → 完整答案落库
+
+
+def test_resume_after_completion_replays_without_live() -> None:
+    """生成已结束后续流:纯回放(含 done),无实时事件,立即收尾。"""
+    env = build_env(hits=[_hit("资料")], chat=FakeChat(["答案"]))
+    first_events = _events(env.service.ask_stream(env.user.id, env.space.id, "问题"))
+    conv_id = uuid.UUID(first_events[0]["conversation_id"])
+
+    resumed = env.service.resume_stream(env.user.id, env.space.id, conv_id, after=2)
+    events = _events(resumed)
+    assert [e["seq"] for e in events] == [3, 4]
+    assert events[-1]["type"] == "done"
+
+
+def test_resume_not_resumable_raises() -> None:
+    """该会话从未生成过流 → 404 STREAM_NOT_RESUMABLE(前端回退拉 messages)。"""
+    env = build_env(hits=[_hit("资料")], chat=FakeChat(["答案"]))
+    conv = env.service.create_conversation(env.user.id, env.space.id, "无生成的会话")
+    with pytest.raises(AppError) as exc_info:
+        env.service.resume_stream(env.user.id, env.space.id, conv.id, after=0)
+    assert exc_info.value.code_str == "STREAM_NOT_RESUMABLE"
+
+
+def test_resume_enforces_conversation_ownership() -> None:
+    """续流的校验链与 ask 一致:非成员先撞 SPACE_NOT_FOUND,创建者校验在其后。"""
+    env = build_env(hits=[_hit("资料")], chat=FakeChat(["答案"]))
+    events = _events(env.service.ask_stream(env.user.id, env.space.id, "问题"))
+    conv_id = uuid.UUID(events[0]["conversation_id"])
+    with pytest.raises(AppError) as exc_info:
+        env.service.resume_stream(uuid.uuid4(), env.space.id, conv_id, after=0)
+    assert exc_info.value.code_str == "SPACE_NOT_FOUND"

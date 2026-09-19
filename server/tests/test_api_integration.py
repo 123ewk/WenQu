@@ -1511,3 +1511,82 @@ def test_ask_emits_error_event_when_model_unconfigured(client, no_model_keys) ->
     assert "DASHSCOPE_API_KEY" in error_event["message"] or "模型" in error_event["message"]
     # 不该再发 done(本次没有成功答案)
     assert "done" not in types
+
+
+def test_resume_stream_route_replays_and_enforces_membership(client) -> None:
+    """续流路由(OPT-3):回放缺失事件;归属校验同 messages;不可续 404 STREAM_NOT_RESUMABLE。"""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+    from app.api.deps import get_chat_gateway, get_embedding_gateway
+
+    class StubEmbedder:
+        def embed(self, texts, model_id=None):
+            return [[0.0] * 1024 for _ in texts]
+
+    class StubChat:
+        def chat_stream(self, messages, model_id=None):
+            yield "不会被调用"  # 无资料路径不调模型
+
+    app = main_module.create_app()
+    app.dependency_overrides[get_embedding_gateway] = StubEmbedder
+    app.dependency_overrides[get_chat_gateway] = lambda: StubChat()
+
+    owner = _register(client, "resumeowner")
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "续流空间"}, headers=auth
+    ).json()["id"]
+
+    with TestClient(app, raise_server_exceptions=False) as qa_client:
+        # 从未生成过的会话 → 404 STREAM_NOT_RESUMABLE(不是 CONVERSATION_NOT_FOUND)
+        conv = qa_client.post(
+            f"/api/v1/spaces/{space_id}/conversations", json={}, headers=auth
+        ).json()
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conv['id']}/stream", headers=auth
+        )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "STREAM_NOT_RESUMABLE"
+
+        # 跑完一次 ask(无资料分支:meta/citations/delta/done),然后按 offset 重放
+        ask_resp = qa_client.post(
+            f"/api/v1/spaces/{space_id}/ask",
+            json={"question": "冷门问题"},
+            headers=auth,
+        )
+        assert ask_resp.status_code == 200
+        ask_events = [
+            json.loads(line[len("data: ") :])
+            for line in ask_resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        conversation_id = ask_events[0]["conversation_id"]
+        assert ask_events[-1]["type"] == "done"
+        assert ask_events[-1]["seq"] == 4
+
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream?after=2",
+            headers=auth,
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        resumed = [
+            json.loads(line[len("data: ") :])
+            for line in resp.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert [e["seq"] for e in resumed] == [3, 4]  # 只补缺的,不重不丢
+        assert resumed[-1]["type"] == "done"
+
+        # 他人(非成员)→ 404 防枚举:先撞 SPACE_NOT_FOUND,与 ask 链路一致
+        other = _register(client, "resumeother")
+        other_auth = {"Authorization": f"Bearer {other['access_token']}"}
+        resp = qa_client.get(
+            f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
+            headers=other_auth,
+        )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "SPACE_NOT_FOUND"

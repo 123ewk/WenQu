@@ -46,6 +46,7 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/conversations",
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}",
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
+    "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
     "/api/v1/spaces/{space_id}/api-keys",
     "/api/v1/spaces/{space_id}/api-keys/{key_id}",
     "/health",
@@ -70,6 +71,7 @@ REQUIRED_ERROR_CODES = {
     "FILE_TOO_LARGE",
     "CONVERSATION_NOT_FOUND",
     "MESSAGE_NOT_FOUND",
+    "STREAM_NOT_RESUMABLE",
     "MODEL_CALL_FAILED",
     "MODEL_NOT_CONFIGURED",
     "DOCUMENT_BUSY",
@@ -224,6 +226,7 @@ def test_unified_error_shell_on_protected_endpoints() -> None:
         ("GET", f"/api/v1/spaces/{space}/ingestion-progress"),
         ("POST", f"/api/v1/spaces/{space}/retrieval/search"),
         ("POST", f"/api/v1/spaces/{space}/ask"),
+        ("GET", f"/api/v1/spaces/{space}/conversations/{_uuid.uuid4()}/stream"),
         ("POST", f"/api/v1/spaces/{space}/knowledge-bases"),
         ("DELETE", f"/api/v1/spaces/{space}/api-keys/{_uuid.uuid4()}"),
     ]

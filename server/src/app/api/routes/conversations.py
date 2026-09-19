@@ -1,11 +1,16 @@
-"""会话与问答路由:会话 CRUD + SSE 流式问答(M2 核心闭环)。
+"""会话与问答路由:会话 CRUD + SSE 流式问答(M2 核心闭环;OPT-3 起支持断线续流)。
 
-SSE 事件契约(前端按 type 分派):
+SSE 事件契约(前端按 type 分派;载荷均带单调 seq,断线重连按它对齐断点):
 - meta      {conversation_id}         首帧,前端据此固定会话(新会话时用它更新路由)
 - citations {citations:[{index,chunk_id,document_id,filename,excerpt,score,...}]}
 - delta     {text}                    正文增量,累加即答案
-- done      {message_id, cited_indexes}
-- error     {message}                 上游模型失败(HTTP 仍是 200,流已开始)
+- done      {message_id, cited_indexes, partial?}   partial=true 表示宽限截止的
+            部分答案已落库(断线且无人续上),内容可能不完整
+- error     {message, code?}          检索/模型失败(HTTP 仍是 200,流已开始)
+
+断线续流:GET .../conversations/{cid}/stream?after=<最后收到的 seq> ——
+回放缺失事件后,若生成仍在进行则接着实时推;不可续返回 404 STREAM_NOT_RESUMABLE,
+前端回退拉 messages(部分答案已在其中)。
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -129,6 +134,27 @@ def list_messages(
 ) -> list[MessageOut]:
     messages = service.get_conversation_messages(user.id, space_id, conversation_id)
     return [_message_out(m) for m in messages]
+
+
+@router.get("/conversations/{conversation_id}/stream")
+def resume_stream(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    after: int = Query(default=0, ge=0),
+    caller: Caller = Depends(get_current_actor),
+    service: QAService = Depends(get_qa_service),
+) -> StreamingResponse:
+    """断线续流(OPT-3):`after` 传最后收到的事件 seq,服务端补播缺失事件。
+
+    生成仍在进行时补播后接着实时推;已结束则纯回放(含 done)。
+    不可续(重启/淘汰/无流)→ 404 STREAM_NOT_RESUMABLE,前端回退拉 messages。
+    """
+    events = service.resume_stream(caller.user.id, space_id, conversation_id, after)
+    return StreamingResponse(
+        events,
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+    )
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)
