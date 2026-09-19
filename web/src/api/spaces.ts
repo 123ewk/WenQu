@@ -1,6 +1,7 @@
 import { http } from './http'
 import type {
   AddMemberRequest,
+  AuditFilter,
   AuditPage,
   ChangeRoleRequest,
   CreateSpaceRequest,
@@ -51,8 +52,21 @@ export function apiLeaveSpace(spaceId: string): Promise<void> {
   return http.post<void>(`/spaces/${spaceId}/leave`).then((r) => r.data)
 }
 
-export function apiListAuditLogs(spaceId: string, limit: number, offset: number): Promise<AuditPage> {
+/** total 是筛选后的总数;action 非法值后端返回 422(不是静默空列表) */
+export function apiListAuditLogs(
+  spaceId: string,
+  limit: number,
+  offset: number,
+  filter?: AuditFilter,
+): Promise<AuditPage> {
   return http
-    .get<AuditPage>(`/spaces/${spaceId}/audit-logs`, { params: { limit, offset } })
+    .get<AuditPage>(`/spaces/${spaceId}/audit-logs`, {
+      params: { limit, offset, ...cleanParams(filter) },
+    })
     .then((r) => r.data)
+}
+
+function cleanParams(filter?: AuditFilter): Record<string, unknown> {
+  if (!filter) return {}
+  return Object.fromEntries(Object.entries(filter).filter(([, v]) => v !== undefined && v !== null && v !== ''))
 }

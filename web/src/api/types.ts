@@ -55,11 +55,23 @@ export interface AuditLogOut {
   detail: Record<string, unknown>
   ip: string
   created_at: string | null
+  /** 展示枚举:success | denied(denied 仅记 403 越权与登录/注册 401);筛选被拒记录用 action=access.denied */
+  result: 'success' | 'denied'
+  /** 操作人昵称冗余;账号已删除为 null */
+  actor_name: string | null
 }
 
 export interface AuditPage {
   items: AuditLogOut[]
   total: number
+}
+
+/** 审计筛选参数;since/until 为 ISO8601 闭区间 */
+export interface AuditFilter {
+  action?: string
+  actor_id?: string
+  since?: string
+  until?: string
 }
 
 /* ───── 请求体 ───── */
