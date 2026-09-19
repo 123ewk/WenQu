@@ -241,8 +241,8 @@ async function onSaveSpace() {
 }
 
 /**
- * 保存检索参数。⚠️ PATCH 字段语义:name 必填、description 省略会被清空、
- * retrieval_params 省略 = 不改动 —— 故把当前基本信息一并带上,防止清空描述。
+ * 保存检索参数。PATCH 语义:description 省略 = 不改动(`098cc68` 修复),
+ * 故只发必填的 name(取已持久化值,不夹带表单里未保存的改名)与参数本身。
  */
 async function onSaveParams() {
   if (weightSum.value > 1) {
@@ -252,8 +252,7 @@ async function onSaveParams() {
   savingParams.value = true
   try {
     space.value = await apiUpdateSpace(auth.currentSpaceId!, {
-      name: settingForm.name.trim() || space.value?.name || '',
-      description: settingForm.description.trim(),
+      name: space.value?.name ?? '',
       retrieval_params: { ...paramForm, rrf_k: Math.round(paramForm.rrf_k), default_top_k: Math.round(paramForm.default_top_k) },
     })
     Object.assign(paramForm, space.value.retrieval_params)

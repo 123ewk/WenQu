@@ -109,9 +109,11 @@ export interface CreateSpaceRequest {
 }
 
 export interface UpdateSpaceRequest {
-  name?: string
-  description?: string
-  /** 省略 = 不改动;注意 name 必填(省略 422)、description 省略会被清空 —— 建议一并提交当前表单值 */
+  /** 契约必填,省略 422 */
+  name: string
+  /** 省略或 null = 不改动(`098cc68` 修复);显式 "" = 清空 */
+  description?: string | null
+  /** 省略 = 不改动 */
   retrieval_params?: RetrievalParams
 }
 
