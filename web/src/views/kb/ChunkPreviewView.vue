@@ -83,6 +83,11 @@ function kindLabel(kind: string | undefined): string {
   return kind === 'table' ? '表格' : '段落'
 }
 
+/** tokens 优先(入库时算好,可 null);null 回退字符数 */
+function tokensLabel(chunk: ChunkOut): string {
+  return chunk.tokens != null ? `${chunk.tokens} tokens` : `${chunk.content.length} 字`
+}
+
 function preview(content: string): string {
   const flat = content.replace(/\s+/g, ' ').trim()
   return flat.length > 64 ? `${flat.slice(0, 64)}…` : flat
@@ -148,7 +153,7 @@ function onReparse() {
               <span class="kind" :class="chunk.meta?.kind === 'table' ? 'kind-table' : 'kind-text'">
                 {{ kindLabel(chunk.meta?.kind) }}
               </span>
-              <span class="chunk-tokens mono">{{ chunk.content.length }} 字</span>
+              <span class="chunk-tokens mono">{{ tokensLabel(chunk) }}</span>
             </div>
             <div class="chunk-preview">{{ preview(chunk.content) }}</div>
           </button>
@@ -187,7 +192,9 @@ function onReparse() {
               </div>
               <div>
                 <div class="meta-label">字符数 / 类型</div>
-                <div class="meta-value">{{ selected.content.length }} · {{ kindLabel(selected.meta?.kind) }}</div>
+                <div class="meta-value">
+                  <template v-if="selected.tokens != null" class="mono">{{ selected.tokens }} tokens · </template>{{ selected.content.length }} 字 · {{ kindLabel(selected.meta?.kind) }}
+                </div>
               </div>
             </div>
             <div class="detail-content">{{ selected.content }}</div>
