@@ -66,6 +66,10 @@ class FakeRetrievalRepo:
         self.fulltext_hits = fulltext_hits
         self.calls: list[tuple] = []
         self.received_tokens: str | None = None
+        self.extra_chunks: dict[uuid.UUID, Chunk] = {}
+
+    def get_many(self, chunk_ids):
+        return [self.extra_chunks[cid] for cid in chunk_ids if cid in self.extra_chunks]
 
     def vector_search(self, space_id, embedding, kb_ids, limit, min_similarity=0.0):
         self.calls.append(("vector", space_id, limit))
@@ -299,3 +303,79 @@ def test_request_level_rrf_weights_change_fusion() -> None:
         overrides={"vector_weight": 0.1, "fulltext_weight": 0.9},
     )
     assert tilted[0].content == "全文命中"
+
+
+# ---------------------------- 父子分块(OPT-4):命中子块回取父块 ----------------------------
+
+
+def _family(space_id: uuid.UUID, kb_id: uuid.UUID, child_count: int = 1):
+    """构造 1 个父块 + N 个子块(共享 document);返回 (document, parent, children)。"""
+    document = Document(
+        id=uuid.uuid4(), kb_id=kb_id, space_id=space_id, filename="f.txt", format="txt",
+        source="s", status="completed",
+    )
+    parent = Chunk(
+        id=uuid.uuid4(), document_id=document.id, space_id=space_id, seq=0,
+        content="父块完整内容",
+    )
+    parent.meta = {"breadcrumb": ["第一章"], "page": 2}
+    children = [
+        Chunk(
+            id=uuid.uuid4(), document_id=document.id, space_id=space_id,
+            parent_id=parent.id, seq=i + 1, content=f"子块窗口{i}内容",
+        )
+        for i in range(child_count)
+    ]
+    return document, parent, children
+
+
+def test_child_hit_returns_parent_chunk() -> None:
+    """命中子块 → 返回父块 id/内容/meta(对外载荷语义与 M2 一致)。"""
+    env = build_env(vector_specs=[], fulltext_specs=[])
+    document, parent, children = _family(env.space.id, env.kb_id)
+    env.repo.fulltext_hits = [(children[0], document, 0.9)]
+    env.repo.extra_chunks[parent.id] = parent
+
+    results = env.service.search(env.user.id, env.space.id, "检索测试")
+    assert len(results) == 1
+    hit = results[0]
+    assert hit.chunk_id == str(parent.id)
+    assert hit.content == "父块完整内容"
+    assert hit.meta == {"breadcrumb": ["第一章"], "page": 2}
+    assert hit.document_id == str(document.id)
+
+
+def test_children_of_same_parent_collapse_to_one_result() -> None:
+    """同一父块的多个子块都命中 → 去重成一条引用,保留融合分最高的那条。"""
+    env = build_env(vector_specs=[], fulltext_specs=[])
+    document, parent, children = _family(env.space.id, env.kb_id, child_count=2)
+    env.repo.fulltext_hits = [
+        (children[0], document, 0.9),
+        (children[1], document, 0.8),
+    ]
+    env.repo.extra_chunks[parent.id] = parent
+
+    results = env.service.search(env.user.id, env.space.id, "检索测试")
+    assert len(results) == 1
+    assert results[0].chunk_id == str(parent.id)
+
+
+def test_orphan_child_falls_back_to_itself() -> None:
+    """父块缺失(如刚被删除)时不丢结果:退回子块自身。"""
+    env = build_env(vector_specs=[], fulltext_specs=[])
+    document, _parent, children = _family(env.space.id, env.kb_id)
+    env.repo.fulltext_hits = [(children[0], document, 0.9)]
+    # extra_chunks 不放父块 → get_many 查不到
+
+    results = env.service.search(env.user.id, env.space.id, "检索测试")
+    assert len(results) == 1
+    assert results[0].chunk_id == str(children[0].id)
+    assert results[0].content == "子块窗口0内容"
+
+
+def test_parent_hit_without_children_passes_through() -> None:
+    """存量文档(父块本身在索引里,parent_id 为空)行为不变。"""
+    env = build_env(vector_specs=["存量父块内容"])
+    results = env.service.search(env.user.id, env.space.id, "检索测试")
+    assert len(results) == 1
+    assert results[0].content == "存量父块内容"

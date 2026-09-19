@@ -81,3 +81,9 @@ class RetrievalRepositoryImpl:
             stmt = stmt.where(Document.kb_id.in_(kb_ids))
         rows = self._db.execute(stmt).all()
         return [(chunk, document, float(score)) for chunk, document, score in rows]
+
+    def get_many(self, chunk_ids: list[uuid.UUID]) -> list[Chunk]:
+        """按 id 批量取块(父子分块回取父块用);入参来自本空间检索结果,免租户谓词。"""
+        if not chunk_ids:
+            return []
+        return list(self._db.scalars(select(Chunk).where(Chunk.id.in_(chunk_ids))))

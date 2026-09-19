@@ -139,6 +139,9 @@ class RetrievalRepository(Protocol):
         limit: int,
     ) -> list[tuple[Chunk, Document, float]]: ...
 
+    def get_many(self, chunk_ids: list[uuid.UUID]) -> list[Chunk]:
+        """按 id 批量取块(父子分块:检索命子块后回取父块,OPT-4)。"""
+
 
 class ConversationRepository(Protocol):
     def create(self, conversation: Conversation) -> Conversation: ...

@@ -199,20 +199,40 @@ class RetrievalService:
             vector_weight=params.vector_weight,
             fulltext_weight=params.fulltext_weight,
         )
+        # 父子分块(OPT-4):命中子块回取父块;同一父块的多个子块只保留融合分最高的一条
+        parent_ids: set[uuid.UUID] = set()
+        for chunk_id, *_ranks in fused:
+            parent_id = by_id[chunk_id][0].parent_id
+            if parent_id is not None:
+                parent_ids.add(parent_id)
+        parents = (
+            {parent.id: parent for parent in self._chunks.get_many(list(parent_ids))}
+            if parent_ids
+            else {}
+        )
         results: list[RetrievedChunk] = []
-        for chunk_id, score, v_rank, f_rank in fused[:top_k]:
+        seen_parents: set[str] = set()
+        for chunk_id, score, v_rank, f_rank in fused:
+            if len(results) == top_k:
+                break
             chunk, document = by_id[chunk_id]
+            hit_parent = chunk.parent_id
+            source = parents.get(hit_parent, chunk) if hit_parent is not None else chunk
+            key = str(source.id)
+            if key in seen_parents:
+                continue
+            seen_parents.add(key)
             results.append(
                 RetrievedChunk(
-                    chunk_id=chunk_id,
+                    chunk_id=key,
                     document_id=str(document.id),
                     kb_id=str(document.kb_id),
                     filename=document.filename,
-                    content=chunk.content,
+                    content=source.content,
                     score=round(score, 6),
                     vector_rank=v_rank,
                     fulltext_rank=f_rank,
-                    meta=chunk.meta or {},
+                    meta=source.meta or {},
                 )
             )
         return results
