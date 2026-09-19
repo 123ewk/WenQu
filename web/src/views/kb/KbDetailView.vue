@@ -7,6 +7,7 @@ import {
   apiDeleteDocument,
   apiGetKb,
   apiListDocuments,
+  apiReparseDocument,
   apiUpdateKb,
   apiUploadDocument,
 } from '@/api/knowledge'
@@ -176,6 +177,32 @@ async function onDeleteDoc(doc: DocumentOut) {
     await loadDocs()
   } catch (e) {
     ElMessage.error(errMessage(e))
+  }
+}
+
+/** 重新解析(Editor+):失败重试或重建索引;成功后回 pending,hasRunning 变化自动恢复轮询 */
+const reparseId = ref<string | null>(null)
+
+async function onReparseDoc(doc: DocumentOut) {
+  const confirmed = await ElMessageBox.confirm(
+    `重新解析「${doc.filename}」?文档将重置为待处理并重新入库(解析 → 分块 → 向量化),原始文件不变。`,
+    '重新解析',
+    { type: 'info', confirmButtonText: '重新解析', cancelButtonText: '取消' },
+  ).catch(() => false)
+  if (!confirmed) return
+  reparseId.value = doc.id
+  try {
+    const updated = await apiReparseDocument(spaceId.value, kbId.value, doc.id)
+    const index = docs.value.findIndex((d) => d.id === updated.id)
+    if (index >= 0) docs.value[index] = updated
+    expandedFail.value = null
+    ElMessage.success('已重新入队,正在后台解析')
+  } catch (e) {
+    if (e instanceof ApiError && e.code === 'DOCUMENT_BUSY') ElMessage.warning('文档正在处理中,请等待完成后再重试')
+    else if (e instanceof ApiError && e.code === 'FORBIDDEN') ElMessage.warning('当前角色无权重新解析文档')
+    else ElMessage.error(errMessage(e))
+  } finally {
+    reparseId.value = null
   }
 }
 
@@ -384,8 +411,20 @@ function openChunks(doc: DocumentOut) {
                         <div v-if="expandedFail === row.id" class="fail-body">
                           <el-icon class="fail-ic"><WarningFilled /></el-icon>
                           <div>
-                            <div class="fail-text">{{ failureReason(row.error_code) }}</div>
-                            <div class="fail-hint">契约未提供「重新解析」接口,请删除后重新上传该文件。</div>
+                            <div class="fail-text">{{ row.error_message || failureReason(row.error_code) }}</div>
+                            <div class="fail-actions">
+                              <el-button
+                                v-if="canEdit"
+                                size="small"
+                                type="primary"
+                                plain
+                                :loading="reparseId === row.id"
+                                @click="onReparseDoc(row as DocumentOut)"
+                              >
+                                重新解析
+                              </el-button>
+                              <span v-else class="fail-hint">修复原因后可由 Editor 重新解析,无需重新上传。</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -772,6 +811,11 @@ function openChunks(doc: DocumentOut) {
   margin-top: 4px;
   font-size: 12px;
   color: #9ca3af;
+}
+.fail-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
 }
 .fail-wrap {
   min-width: 0;

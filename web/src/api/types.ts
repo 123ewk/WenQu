@@ -160,6 +160,8 @@ export interface DocumentOut {
   status: DocumentStatus
   /** failed 时为 INGEST_FAILED */
   error_code: string | null
+  /** 任务侧真实失败原因(可能偏运维向);error_code 是稳定机器码,分支用它 */
+  error_message: string | null
   created_at: string | null
 }
 

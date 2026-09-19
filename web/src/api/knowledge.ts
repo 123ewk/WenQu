@@ -84,6 +84,17 @@ export function apiDeleteDocument(spaceId: string, kbId: string, docId: string):
     .then((r) => r.data)
 }
 
+/**
+ * 重新解析/重建索引(Editor+):文档重置为 pending 并重新入队,原文件不变。
+ * 只能在终结态(completed/failed)调用;处理中返回 409 DOCUMENT_BUSY。
+ * 成功后需恢复该行状态轮询(与上传后同一套)。
+ */
+export function apiReparseDocument(spaceId: string, kbId: string, docId: string): Promise<DocumentOut> {
+  return http
+    .post<DocumentOut>(`/spaces/${spaceId}/knowledge-bases/${kbId}/documents/${docId}/reparse`)
+    .then((r) => r.data)
+}
+
 export function apiListChunks(
   spaceId: string,
   kbId: string,
