@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # ---- 检索 ----
     retrieval_min_score: float = Field(0.3, validation_alias="APP_RETRIEVAL_MIN_SCORE")
 
+    # ---- 流式问答(OPT-3:断线宽限 —— 期间重连继续生成到完整,无人回来才中止) ----
+    stream_grace_seconds: float = Field(5.0, validation_alias="APP_STREAM_GRACE_SECONDS")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
     avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")

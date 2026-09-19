@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -160,11 +160,15 @@ class ApiKeyRepository(Protocol):
 
 
 class ChatGateway(Protocol):
-    """对话网关(真实实现走模型层 SSE;测试用假实现)。"""
+    """对话网关(真实实现走模型层 SSE;测试用假实现)。
+
+    返回 Generator(而非裸 Iterator)是契约的一部分:断线宽限到点时,泵线程靠
+    close() 在当前 yield 点中止生成并触发实现内部的 with 清理,释放上游连接。
+    """
 
     def chat_stream(
         self, messages: list[dict[str, str]], model_id: str | None = None
-    ) -> Iterator[str]: ...
+    ) -> Generator[str, None, None]: ...
 
 
 class ParserGateway(Protocol):

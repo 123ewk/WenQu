@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.application.service.qa import QAService
+from app.application.streaming import StreamSupervisor
 from app.core.errors import AppError
 from app.domain.enums import Role
 from app.domain.models import Conversation, Membership, Message, Space
@@ -104,7 +105,7 @@ def _hit(index_text: str):
     )
 
 
-def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0):
+def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0, grace_seconds=5.0):
     users = FakeUserRepository()
     spaces = FakeSpaceRepository(users_ref=users.users)
     user = users.create(make_user("u"))
@@ -113,12 +114,36 @@ def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0):
     svc = QAService(
         FakeConvRepo(), FakeMsgRepo(), spaces, FakeRetrieval(hits), chat or FakeChat(),
         heartbeat_seconds=heartbeat_seconds,
+        supervisor=StreamSupervisor(grace_seconds=grace_seconds),
     )
     return SimpleNamespace(service=svc, user=user, space=space, chat=chat or FakeChat())
 
 
 def _events(stream) -> list[dict]:
     return [json.loads(line[len("data: ") :]) for line in stream if line.startswith("data: ")]
+
+
+def _next_event(gen) -> dict:
+    """读下一个 data 事件,跳过心跳注释帧(OPT-3 起检索等待期也发心跳)。"""
+    while True:
+        line = next(gen)
+        if line.startswith("data: "):
+            return json.loads(line[len("data: ") :])
+
+
+def _raw_events(env, conv_id: uuid.UUID) -> list:
+    """事件日志里最近一条流的原始事件(断言 done/partial 用)。"""
+    sid = env.service._supervisor.last_stream_id(conv_id)
+    return env.service._event_log.replay_after(sid, 0)
+
+
+def _wait_until(predicate, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def test_ask_stream_event_order_and_citation_mapping() -> None:
@@ -215,7 +240,7 @@ def test_ask_empty_question_rejected() -> None:
     assert exc_info.value.code_str == "VALIDATION_ERROR"
 
 
-# ---------------------------- OPT-1/OPT-2:断线保存与心跳 ----------------------------
+# ---------------------------- OPT-1/2/3:断线宽限与心跳 ----------------------------
 
 
 class SlowFakeChat(FakeChat):
@@ -232,6 +257,24 @@ class SlowFakeChat(FakeChat):
             yield piece
 
 
+class ClosableSlowChat(SlowFakeChat):
+    """带关闭感知的假网关:close() 在 yield 点抛 GeneratorExit → 记录释放。"""
+
+    def __init__(self, pieces: list[str], gap_seconds: float) -> None:
+        super().__init__(pieces, gap_seconds)
+        self.closed = False
+
+    def chat_stream(self, messages, model_id=None):
+        self.messages.append(messages)
+        try:
+            for piece in self.pieces:
+                time.sleep(self._gap)
+                yield piece
+        except GeneratorExit:
+            self.closed = True
+            raise
+
+
 def _parse_frames(stream: list[str]) -> tuple[list[dict], int]:
     """返回 (data 事件列表, 心跳注释帧数)。"""
     events = [
@@ -241,38 +284,53 @@ def _parse_frames(stream: list[str]) -> tuple[list[dict], int]:
     return events, pings
 
 
-def test_disconnect_saves_partial_answer_with_citations() -> None:
-    """客户端断流(生成器被 close)时,已生成的部分答案必须落库,不能只留 user 消息。"""
+def test_stream_events_carry_monotonic_seq() -> None:
+    """事件载荷带单调 seq(OPT-3:断线续流按 offset 对齐的依据)。"""
+    env = build_env(hits=[_hit("资料")], chat=FakeChat(["a", "b"]))
+    events = _events(env.service.ask_stream(env.user.id, env.space.id, "问题"))
+    assert [e["seq"] for e in events] == [1, 2, 3, 4, 5]
+
+
+def test_disconnect_then_grace_expiry_saves_partial_and_releases_upstream() -> None:
+    """断线后宽限期内无人回来:生成中止、部分答案落库、上游连接被释放、done(partial)。
+
+    宽限(0.1s)< 生成间隔(0.3s)→ 泵在下一个 piece 边界被叫停,答案停在断点。
+    """
     hits = [_hit("资料")]
-    env = build_env(hits=hits, chat=FakeChat(["部分一", "部分二", "部分三"]))
+    chat = ClosableSlowChat(["部分一", "部分二", "部分三"], gap_seconds=0.3)
+    env = build_env(hits=hits, chat=chat, heartbeat_seconds=0.05, grace_seconds=0.1)
     gen = env.service.ask_stream(env.user.id, env.space.id, "断线问题")
 
-    first = json.loads(next(gen)[len("data: ") :])  # meta
+    first = _next_event(gen)  # meta
     conv_id = uuid.UUID(first["conversation_id"])
-    next(gen)  # citations
-    next(gen)  # delta 部分一
+    _next_event(gen)  # citations
+    _next_event(gen)  # delta 部分一
     gen.close()  # 模拟客户端断开
 
+    assert _wait_until(lambda: any(e.type == "done" for e in _raw_events(env, conv_id)))
     stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
-    roles = [m.role for m in stored]
-    assert roles == ["user", "assistant"]  # 不再是"问题孤零零挂着"
-    partial = stored[-1]
-    assert "部分一" in partial.content
-    assert partial.citations and partial.citations[0]["chunk_id"] == hits[0].chunk_id
+    assert [m.role for m in stored] == ["user", "assistant"]  # 部分答案已落库
+    assert stored[-1].content == "部分一"
+    assert stored[-1].citations[0]["chunk_id"] == hits[0].chunk_id
+    assert chat.closed  # 上游模型连接被主动释放
+    done = [e for e in _raw_events(env, conv_id) if e.type == "done"][-1]
+    assert done.payload["partial"] is True
 
 
 def test_disconnect_before_any_piece_saves_nothing() -> None:
     hits = [_hit("资料")]
-    env = build_env(hits=hits, chat=FakeChat(["答案"]))
+    env = build_env(
+        hits=hits, chat=SlowFakeChat(["答案"], gap_seconds=0.3), grace_seconds=0.1
+    )
     gen = env.service.ask_stream(env.user.id, env.space.id, "问题")
     next(gen)  # meta
     next(gen)  # citations
     gen.close()  # 一个 delta 都没出现
 
     conversations = list(env.service._conversations.items.values())
-    stored = env.service.get_conversation_messages(
-        env.user.id, env.space.id, conversations[-1].id
-    )
+    conv_id = conversations[-1].id
+    assert _wait_until(lambda: any(e.type == "done" for e in _raw_events(env, conv_id)))
+    stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
     assert [m.role for m in stored] == ["user"]  # 只有提问,没有半截空答案
 
 

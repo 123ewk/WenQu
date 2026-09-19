@@ -1,27 +1,46 @@
-"""带引用的流式问答(M2 核心闭环)。
+"""带引用的流式问答(M2 核心闭环;OPT-3 起生成与响应解耦)。
 
 链路:多轮历史 → 混合检索 → 组装带编号上下文的提示词 → 流式生成 → 落库(含引用)。
 
 引用溯源:M2 用编号方案(简洁且对模型友好)——上下文块标 [1][2]…,要求模型以同样
 编号标注;生成结束后把编号映射回真实 chunk_id/文件/摘录,存进 messages.citations。
 前端把 [n] 渲染为角标,点击按 citations[n-1].chunk_id 打开抽屉预览原文。
+
+流式架构(OPT-3,ADR-3 落地):ask_stream 在请求上下文完成校验与会话/提问落库,
+然后把"生成"搬进后台泵线程 —— 逐事件写入事件日志(core/event_log,带单调 seq),
+HTTP 响应只是日志的读者。断线(响应生成器被 close)只影响读者,不终止生成:
+宽限期(默认 5 秒,APP_STREAM_GRACE_SECONDS)内有人重连就继续生成到完整落库;
+耗尽仍无人回来才中止 —— 释放上游连接、落库部分答案、以 done(partial=true) 收尾。
+事件载荷带 seq,前端重连时按 seq 续流(续流路由随 OPT-3 交付)。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import queue
 import threading
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 
-from app.application.service.retrieval import RetrievalService
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.application.repository.conversations import MessageRepositoryImpl
+from app.application.repository.knowledge import (
+    DocumentRepositoryImpl,
+    KnowledgeBaseRepositoryImpl,
+)
+from app.application.repository.retrieval import RetrievalRepositoryImpl
+from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.service.retrieval import RetrievalService, RetrievedChunk
+from app.application.streaming import GenerationHandle, StreamSupervisor
 from app.core.errors import AppError, ErrorCode
+from app.core.event_log import EventLog, MemoryEventLog
 from app.domain.enums import Role
 from app.domain.interfaces import (
     ChatGateway,
     ConversationRepository,
+    EmbeddingGateway,
     MessageRepository,
     SpaceRepository,
 )
@@ -31,16 +50,8 @@ logger = logging.getLogger("app.qa")
 
 _MAX_HISTORY_MESSAGES = 10
 _NO_RESULT_ANSWER = "知识库中没有检索到与该问题相关的内容,请调整提问或先上传相关文档。"
-# SSE 心跳(OPT-2):生成间隙发注释帧,防止前置 nginx(proxy_read_timeout 60s)掐断静默流
+# SSE 心跳(OPT-2):读流空闲期发注释帧,防止前置 nginx(proxy_read_timeout 60s)掐断静默流
 _PING_FRAME = ": ping\n\n"
-
-
-class _PingSentinel:
-    """心跳标记:包装层产出它,_stream 把它翻译成注释行(避免与模型 piece 撞内容)。"""
-
-
-_PING = _PingSentinel()
-_QUEUE_END = object()  # 哨兵:上游产出完毕
 
 SYSTEM_PROMPT = (
     "你是企业知识库问答助手。规则:\n"
@@ -49,6 +60,66 @@ SYSTEM_PROMPT = (
     "3. 资料不足以回答时,直接说明资料中没有相关信息,不要猜测;\n"
     "4. 回答保持简洁,使用与提问相同的语言。"
 )
+
+
+@dataclass
+class _AskContext:
+    """一次提问的全部输入:请求上下文算好,交给后台泵使用。"""
+
+    conversation: Conversation
+    space_id: uuid.UUID
+    user_id: uuid.UUID
+    question: str
+    history: list[Message]
+    user_message_id: uuid.UUID
+    kb_ids: list[uuid.UUID] | None
+    top_k: int
+    model_id: str | None
+
+
+class BackgroundDb:
+    """泵线程的独立数据库入口。
+
+    请求会话随响应关闭(断线时更早),而泵线程在宽限期内仍要检索与落库 ——
+    必须自开会话(worker.py 同款模式);单元测试传 None,泵直接用注入的仓储。
+    """
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        embedder: EmbeddingGateway,
+        min_vector_score: float,
+    ) -> None:
+        self._session_factory = session_factory
+        self._embedder = embedder
+        self._min_vector_score = min_vector_score
+
+    def search(self, ctx: _AskContext) -> list[RetrievedChunk]:
+        with self._session_factory() as db:
+            retrieval = RetrievalService(
+                RetrievalRepositoryImpl(db),
+                KnowledgeBaseRepositoryImpl(db),
+                DocumentRepositoryImpl(db),
+                SpaceRepositoryImpl(db),
+                self._embedder,
+                min_vector_score=self._min_vector_score,
+            )
+            return retrieval.search(
+                ctx.user_id,
+                ctx.space_id,
+                ctx.question,
+                top_k=ctx.top_k,
+                kb_ids=ctx.kb_ids,
+                model_id=ctx.model_id,
+            )
+
+    def save_message(self, message: Message) -> Message:
+        with self._session_factory() as db:
+            messages = MessageRepositoryImpl(db)
+            message.seq = messages.next_seq(message.conversation_id)
+            messages.add(message)
+            db.commit()
+            return message
 
 
 class QAService:
@@ -60,6 +131,10 @@ class QAService:
         retrieval: RetrievalService,
         chat: ChatGateway,
         heartbeat_seconds: float = 15.0,
+        event_log: EventLog | None = None,
+        supervisor: StreamSupervisor | None = None,
+        background_db: BackgroundDb | None = None,
+        db: Session | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -67,6 +142,11 @@ class QAService:
         self._retrieval = retrieval
         self._chat = chat
         self._heartbeat_seconds = heartbeat_seconds
+        self._db = db  # 请求会话:ask_stream 用它提前提交会话/提问,供泵线程可见
+        # 进程级单例由 deps 注入;单测不传则各自独立(互不串话)
+        self._event_log = event_log if event_log is not None else MemoryEventLog()
+        self._supervisor = supervisor if supervisor is not None else StreamSupervisor()
+        self._background_db = background_db
 
     def create_conversation(
         self, user_id: uuid.UUID, space_id: uuid.UUID, title: str
@@ -113,10 +193,12 @@ class QAService:
         top_k: int = 6,
         model_id: str | None = None,
     ) -> Iterator[str]:
-        """前置于生成器执行入参/权限校验,再把流交出。
+        """校验与会话/提问落库在请求上下文完成,然后把生成搬进后台泵,返回日志读流。
 
-        生成器函数体的代码在首次迭代才跑:若校验写在里面,HTTP 层拿不到 400/403/404
-        (流已开始),所以这里用"外层立即校验 + 内层生成"的分段结构。
+        校验必须发生在返回之前:生成器体的代码在首次迭代才跑,若校验写在里面,
+        HTTP 层拿不到 400/403/404(流已开始)。会话与 user 消息也在这里落库 ——
+        泵线程的生命周期可能超出请求会话(断线宽限),它只依赖 BackgroundDb
+        自开的会话,不碰请求会话。
         """
         question = question.strip()
         if not question:
@@ -125,24 +207,10 @@ class QAService:
         conversation = (
             self._get_conversation(user_id, space_id, conversation_id)
             if conversation_id is not None
-            else None
-        )
-        return self._stream(user_id, space_id, question, conversation, kb_ids, top_k, model_id)
-
-    def _stream(
-        self,
-        user_id: uuid.UUID,
-        space_id: uuid.UUID,
-        question: str,
-        conversation: Conversation | None,
-        kb_ids: list[uuid.UUID] | None,
-        top_k: int,
-        model_id: str | None,
-    ) -> Iterator[str]:
-        if conversation is None:
-            conversation = self._conversations.create(
+            else self._conversations.create(
                 Conversation(space_id=space_id, user_id=user_id, title=question[:30])
             )
+        )
         history = self._messages.list_for_conversation(conversation.id)
         user_message = self._messages.add(
             Message(
@@ -153,130 +221,183 @@ class QAService:
                 seq=self._messages.next_seq(conversation.id),
             )
         )
+        ctx = _AskContext(
+            conversation=conversation,
+            space_id=space_id,
+            user_id=user_id,
+            question=question,
+            history=history,
+            user_message_id=user_message.id,
+            kb_ids=kb_ids,
+            top_k=top_k,
+            model_id=model_id,
+        )
+        # 泵线程用自己的会话检索/落库,必须先提交请求事务让它看得见这批写入
+        # (get_db 在响应结束才提交,而泵在响应存续期间就要读);
+        # 事务里此刻只有本次写入,提前提交无副作用。
+        if self._db is not None:
+            self._db.commit()
+        handle = self._supervisor.start(conversation.id)
+        threading.Thread(
+            target=self._generate, args=(handle, ctx), daemon=True, name="qa-generate"
+        ).start()
+        return self._reader(handle.stream_id, handle)
 
-        yield _sse({"type": "meta", "conversation_id": str(conversation.id)})
+    # ---------------------------- 后台泵 ----------------------------
 
-        # 检索(含查询向量化)可能因模型未配置/上游失败而中断。此时 HTTP 200 与 meta
-        # 事件已发出,状态码改不了,只能靠 error 事件告知 —— 否则前端只看到流突然结束。
+    def _generate(self, handle: GenerationHandle, ctx: _AskContext) -> None:
+        """后台泵:把生成过程逐事件写入日志;宽限到期无人回来则中止并落库部分答案。"""
+        cid = ctx.conversation.id
+        sid = handle.stream_id  # 事件日志的键:一次生成一条流
+        log = self._event_log
         try:
-            hits = self._retrieval.search(
-                user_id, space_id, question, top_k=top_k, kb_ids=kb_ids, model_id=model_id
-            )
-        except AppError as exc:
-            logger.warning("retrieval failed in ask: %s", exc.message)
-            yield _sse({"type": "error", "message": exc.message, "code": exc.code_str})
-            return
-        except Exception:  # noqa: BLE001 — 兜底,不让流静默截断
-            logger.exception("retrieval crashed in ask")
-            yield _sse({"type": "error", "message": "检索失败,请稍后重试"})
-            return
-        citations = [
-            {
-                "index": position,
-                "chunk_id": hit.chunk_id,
-                "document_id": hit.document_id,
-                "kb_id": hit.kb_id,
-                "filename": hit.filename,
-                "excerpt": hit.content[:300],
-                "score": hit.score,
-                "breadcrumb": hit.meta.get("breadcrumb", []),
-                "page": hit.meta.get("page"),
-            }
-            for position, hit in enumerate(hits, start=1)
-        ]
-        yield _sse({"type": "citations", "citations": citations})
+            log.append(sid, "meta", {"conversation_id": str(cid)})
 
-        if not hits:
-            self._messages.add(
-                Message(
-                    conversation_id=conversation.id,
-                    space_id=space_id,
-                    role="assistant",
-                    content=_NO_RESULT_ANSWER,
-                    seq=self._messages.next_seq(conversation.id),
-                    citations=[],
-                    model_id=None,
+            # 检索(含查询向量化)可能因模型未配置/上游失败而中断:HTTP 200 与 meta
+            # 已发出,状态码改不了,只能靠 error 事件告知 —— 否则前端只看到流突然结束。
+            try:
+                hits = self._search(ctx)
+            except AppError as exc:
+                logger.warning("retrieval failed in ask: %s", exc.message)
+                log.append(sid, "error", {"message": exc.message, "code": exc.code_str})
+                return
+            except Exception:  # noqa: BLE001 — 兜底,不让流静默截断
+                logger.exception("retrieval crashed in ask")
+                log.append(sid, "error", {"message": "检索失败,请稍后重试"})
+                return
+            citations = [
+                {
+                    "index": position,
+                    "chunk_id": hit.chunk_id,
+                    "document_id": hit.document_id,
+                    "kb_id": hit.kb_id,
+                    "filename": hit.filename,
+                    "excerpt": hit.content[:300],
+                    "score": hit.score,
+                    "breadcrumb": hit.meta.get("breadcrumb", []),
+                    "page": hit.meta.get("page"),
+                }
+                for position, hit in enumerate(hits, start=1)
+            ]
+            log.append(sid, "citations", {"citations": citations})
+
+            if not hits:
+                self._persist_assistant(ctx, _NO_RESULT_ANSWER, [], None)
+                log.append(sid, "delta", {"text": _NO_RESULT_ANSWER})
+                log.append(sid, "done", {"message_id": str(ctx.user_message_id)})
+                return
+
+            prompt = _build_messages(ctx.history, ctx.question, citations)
+            pieces: list[str] = []
+            interrupted = False
+            try:
+                upstream = self._chat.chat_stream(prompt, ctx.model_id)
+                try:
+                    for frame in upstream:
+                        if handle.stop_requested.is_set():
+                            interrupted = True
+                            break
+                        pieces.append(frame)
+                        log.append(sid, "delta", {"text": frame})
+                finally:
+                    if interrupted:
+                        # 宽限耗尽仍无人回来:立即释放上游模型连接
+                        # (close 在当前 yield 点触发实现内部的 with 清理)
+                        upstream.close()
+            except Exception as exc:  # noqa: BLE001 — 上游失败要作为事件告知而非断流
+                logger.warning("chat stream failed: %s", exc)
+                log.append(sid, "error", {"message": "模型调用失败,请稍后重试"})
+                return
+
+            if interrupted:
+                content = "".join(pieces)
+                # 与完整答案不同:部分答案空内容不落库(没有半截空消息)
+                saved = (
+                    self._persist_assistant(ctx, content, citations, ctx.model_id)
+                    if content.strip()
+                    else None
                 )
-            )
-            yield _sse({"type": "delta", "text": _NO_RESULT_ANSWER})
-            yield _sse({"type": "done", "message_id": str(user_message.id)})
-            return
+                log.append(
+                    sid,
+                    "done",
+                    {"partial": True, "message_id": str(saved.id) if saved else None},
+                )
+                return
 
-        messages = _build_messages(history, question, citations)
-        pieces: list[str] = []
+            answer = "".join(pieces)
+            saved = self._persist_assistant(ctx, answer, citations, ctx.model_id)
+            log.append(
+                sid,
+                "done",
+                {
+                    "message_id": str(saved.id),
+                    "cited_indexes": _cited_indexes(answer, len(citations)),
+                },
+            )
+        except Exception:  # noqa: BLE001 — 泵兜底:绝不让流无声卡死
+            logger.exception("ask generation crashed conv=%s", cid)
+            try:
+                log.append(sid, "error", {"message": "生成失败,请稍后重试"})
+            except Exception:  # noqa: BLE001 — 日志已被新请求作废等场景,只能记日志
+                logger.exception("failed to append error event conv=%s", cid)
+        finally:
+            log.mark_finished(sid)
+            self._supervisor.finish(cid)
+
+    def _search(self, ctx: _AskContext) -> list[RetrievedChunk]:
+        if self._background_db is not None:
+            return self._background_db.search(ctx)
+        return self._retrieval.search(
+            ctx.user_id,
+            ctx.space_id,
+            ctx.question,
+            top_k=ctx.top_k,
+            kb_ids=ctx.kb_ids,
+            model_id=ctx.model_id,
+        )
+
+    def _persist_assistant(
+        self,
+        ctx: _AskContext,
+        content: str,
+        citations: list[dict],
+        model_id: str | None,
+    ) -> Message:
+        """落库 assistant 消息(完整答案或宽限截止的部分答案)。"""
+        message = Message(
+            conversation_id=ctx.conversation.id,
+            space_id=ctx.space_id,
+            role="assistant",
+            content=content,
+            citations=citations,
+            model_id=model_id,
+        )
+        if self._background_db is not None:
+            return self._background_db.save_message(message)
+        message.seq = self._messages.next_seq(ctx.conversation.id)
+        return self._messages.add(message)
+
+    # ---------------------------- 日志读者 ----------------------------
+
+    def _reader(self, stream_id: uuid.UUID, handle: GenerationHandle) -> Iterator[str]:
+        """日志读者:事件序列化为 SSE(载荷补 seq),空闲期发心跳注释帧。
+
+        follow 的 timeout 保证阻塞有界 —— Starlette 关闭响应生成器时,GeneratorExit
+        能在 yield 点送达,finally 的 detach(宽限计时)才有机会执行。
+        """
         try:
-            for frame in _with_heartbeat(
-                self._chat.chat_stream(messages, model_id), self._heartbeat_seconds
+            handle.reader_attached()
+            for event in self._event_log.follow(
+                stream_id, 0, timeout=self._heartbeat_seconds
             ):
-                if isinstance(frame, _PingSentinel):
+                if event is None:
                     yield _PING_FRAME
-                    continue
-                pieces.append(frame)
-                yield _sse({"type": "delta", "text": frame})
-        except GeneratorExit:
-            # OPT-1:客户端断流(Starlette close 生成器)→ 已生成的部分答案落库,
-            # 否则库里只剩 user 消息,用户重连后看到"问题孤零零挂着"。
-            # 注意:GeneratorExit 处理中禁止 yield(会 RuntimeError),只做落库后 re-raise。
-            self._save_partial_answer(conversation, space_id, citations, pieces, model_id)
-            raise
-        except Exception as exc:  # noqa: BLE001 — 上游失败要作为事件告知前端而非断流
-            logger.warning("chat stream failed: %s", exc)
-            yield _sse({"type": "error", "message": "模型调用失败,请稍后重试"})
-            return
-
-        answer = "".join(pieces)
-        assistant_message = self._messages.add(
-            Message(
-                conversation_id=conversation.id,
-                space_id=space_id,
-                role="assistant",
-                content=answer,
-                seq=self._messages.next_seq(conversation.id),
-                citations=citations,
-                model_id=model_id,
-            )
-        )
-        yield _sse(
-            {
-                "type": "done",
-                "message_id": str(assistant_message.id),
-                "cited_indexes": _cited_indexes(answer, len(citations)),
-            }
-        )
+                else:
+                    yield _sse({"type": event.type, **event.payload, "seq": event.seq})
+        finally:
+            handle.reader_detached()
 
     # ---------------------------- 内部 ----------------------------
-
-    def _save_partial_answer(
-        self,
-        conversation: Conversation,
-        space_id: uuid.UUID,
-        citations: list[dict],
-        pieces: list[str],
-        model_id: str | None,
-    ) -> None:
-        """断流时保存已生成的部分答案(带引用,与完整答案同构);无产出时不落库。"""
-        content = "".join(pieces)
-        if not content.strip():
-            return
-        try:
-            self._messages.add(
-                Message(
-                    conversation_id=conversation.id,
-                    space_id=space_id,
-                    role="assistant",
-                    content=content,
-                    seq=self._messages.next_seq(conversation.id),
-                    citations=citations,
-                    model_id=model_id,
-                )
-            )
-            logger.info(
-                "client disconnected, partial answer saved conv=%s chars=%d",
-                conversation.id,
-                len(content),
-            )
-        except Exception:  # noqa: BLE001 — 清理路径的失败只记日志,不影响断开流程
-            logger.exception("failed to save partial answer conv=%s", conversation.id)
 
     def _require_member(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
         membership = self._spaces.get_membership(space_id, user_id)
@@ -299,51 +420,6 @@ class QAService:
         ):
             raise AppError(ErrorCode.CONVERSATION_NOT_FOUND, "会话不存在", http_status=404)
         return conversation
-
-
-def _with_heartbeat(
-    upstream: Iterator[str], interval_seconds: float
-) -> Iterator[str | _PingSentinel]:
-    """给阻塞的上游迭代包一层心跳(OPT-2)。
-
-    上游(模型 SSE)在没有新 token 的等待期会让整条流静默,前置 nginx 默认
-    `proxy_read_timeout 60s` 会掐断静默连接。本包装用泵线程把上游搬进队列,
-    主循环 `get(timeout=interval)`,超时就发 `: ping` 注释帧(EventSource 客户端
-    自动忽略注释行)。
-
-    - **队列 maxsize=1**:泵线程最多比消费端超前一个 piece —— 断线时最多丢
-      最后一个增量,而不是把剩余整段答案提前吸进内存后全部丢失;
-    - 上游异常经队列原样 re-raise,交给调用方的 except 分支;
-    - 已知限制(登记在优化台账 OPT-3):断线后泵线程会继续把上游读完才退出,
-      上游模型连接是否及时释放留待事件日志方案一并验证。
-    """
-    if interval_seconds <= 0:
-        yield from upstream
-        return
-
-    q: queue.Queue = queue.Queue(maxsize=1)
-
-    def _pump() -> None:
-        try:
-            for item in upstream:
-                q.put(item)  # 队列满时阻塞 → 天然背压,不提前吸干上游
-            q.put(_QUEUE_END)
-        except BaseException as exc:  # noqa: BLE001 — 异常也要交给消费端
-            q.put(exc)
-
-    threading.Thread(target=_pump, daemon=True, name="qa-heartbeat-pump").start()
-
-    while True:
-        try:
-            item = q.get(timeout=interval_seconds)
-        except queue.Empty:
-            yield _PING
-            continue
-        if item is _QUEUE_END:
-            return
-        if isinstance(item, BaseException):
-            raise item
-        yield item
 
 
 def _build_messages(

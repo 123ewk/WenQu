@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -31,12 +32,14 @@ from app.application.service.api_keys import ApiKeyService
 from app.application.service.auth import AuthService
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.profile import ProfileService
-from app.application.service.qa import QAService
+from app.application.service.qa import BackgroundDb, QAService
 from app.application.service.retrieval import RetrievalService
 from app.application.service.spaces import SpaceService
+from app.application.streaming import StreamSupervisor
 from app.core.config import get_settings
-from app.core.db import get_db
+from app.core.db import get_db, get_session_factory
 from app.core.errors import AppError, ErrorCode
+from app.core.event_log import EventLog, MemoryEventLog
 from app.core.model_catalog import ModelCatalog
 from app.core.model_client import ChatClient, EmbeddingClient
 from app.core.security import decode_access_token
@@ -247,14 +250,42 @@ def get_chat_gateway() -> ChatGateway:
     return ChatClient(ModelCatalog.load(), settings)
 
 
+@lru_cache
+def get_event_log() -> EventLog:
+    """进程级单例(OPT-3):后台泵写入,ask 响应与续流路由读取共用一本日志。"""
+    return MemoryEventLog()
+
+
+@lru_cache
+def get_stream_supervisor() -> StreamSupervisor:
+    """进程级单例:登记进行中的生成,执行断线宽限策略(宽限秒数可配)。"""
+    return StreamSupervisor(grace_seconds=get_settings().stream_grace_seconds)
+
+
 def get_qa_service(
+    db: Session = Depends(get_db),
     conversations: ConversationRepository = Depends(get_conversation_repository),
     messages: MessageRepository = Depends(get_message_repository),
     spaces: SpaceRepository = Depends(get_space_repository),
     retrieval: RetrievalService = Depends(get_retrieval_service),
     chat: ChatGateway = Depends(get_chat_gateway),
+    embedder: EmbeddingGateway = Depends(get_embedding_gateway),
 ) -> QAService:
-    return QAService(conversations, messages, spaces, retrieval, chat)
+    return QAService(
+        conversations,
+        messages,
+        spaces,
+        retrieval,
+        chat,
+        event_log=get_event_log(),
+        supervisor=get_stream_supervisor(),
+        background_db=BackgroundDb(
+            get_session_factory(),
+            embedder,
+            get_settings().retrieval_min_score,
+        ),
+        db=db,
+    )
 
 
 def get_current_space_id(

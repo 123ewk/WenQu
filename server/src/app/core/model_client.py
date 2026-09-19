@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import httpx
@@ -149,7 +149,9 @@ class ChatClient:
         messages: list[dict[str, str]],
         model_id: str | None = None,
         temperature: float = 0.7,
-    ) -> Iterator[str]:
+    ) -> Generator[str, None, None]:
+        """返回 Generator 是契约的一部分:断线宽限到点时,泵线程靠 close()
+        在当前 yield 点中止生成并触发 with 清理,释放上游连接。"""
         model = (
             self._catalog.get_model(model_id)
             if model_id
