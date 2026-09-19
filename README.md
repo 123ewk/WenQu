@@ -59,7 +59,7 @@ make db-migrate  # alembic upgrade head
 |---|---|
 | 模型错误码 | ✅ 已修:`MODEL_NOT_CONFIGURED` 503 / `MODEL_CALL_FAILED` 502(走统一错误壳) |
 | SSE 流内失败 | ✅ 已修:检索失败发 `error` 事件,不再静默截断 |
-| 断线续流(resume) | ❌ 未实现(ADR-3 已设计,随多副本一起上)→ 前端不得依赖,断线回退拉历史 |
+| 断线续流(resume) | ✅ 已实现(OPT-3:`GET .../conversations/{cid}/stream?after=<seq>`;断线 5 秒宽限后落库部分答案并发 `done(partial=true)`)。可选增强,不接则回退拉历史照旧 |
 | Agent 工具调用事件 | ❌ 未实现(M4)→ 对话页工具卡不得伪装真实数据 |
 | 审计日志导出 / 邮箱体系 | ❌ 明确不做(见对接标准 §3.4) |
 
