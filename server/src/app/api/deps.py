@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.api.api_key_auth import build_api_key_service, get_api_key_principal
+from app.application.agent.loop import ToolCallingChat
 from app.application.repository.audit import AuditRepositoryImpl
 from app.application.repository.conversations import (
     ConversationRepositoryImpl,
@@ -46,7 +47,6 @@ from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
     AuditRepository,
-    ChatGateway,
     ChunkQueryRepository,
     ChunkRepository,
     ConversationRepository,
@@ -244,8 +244,9 @@ def get_api_key_service(db: Session = Depends(get_db)) -> ApiKeyService:
     return build_api_key_service(db)
 
 
-def get_chat_gateway() -> ChatGateway:
-    """对话网关:检索与流水线共用模型层;测试用 dependency_overrides 换假实现。"""
+def get_chat_gateway() -> ToolCallingChat:
+    """对话网关:问答直检走 chat_stream,Agent 模式(OPT-10)走 chat_stream_tools;
+    测试用 dependency_overrides 换假实现。"""
     settings = get_settings()
     return ChatClient(ModelCatalog.load(), settings)
 
@@ -268,7 +269,7 @@ def get_qa_service(
     messages: MessageRepository = Depends(get_message_repository),
     spaces: SpaceRepository = Depends(get_space_repository),
     retrieval: RetrievalService = Depends(get_retrieval_service),
-    chat: ChatGateway = Depends(get_chat_gateway),
+    chat: ToolCallingChat = Depends(get_chat_gateway),
     embedder: EmbeddingGateway = Depends(get_embedding_gateway),
 ) -> QAService:
     return QAService(
@@ -287,6 +288,7 @@ def get_qa_service(
         db=db,
         # 流水线阶段序由配置决定(OPT-5);未知名在 build_stages 启动即失败
         pipeline=[name.strip() for name in get_settings().qa_pipeline.split(",") if name.strip()],
+        agent_max_rounds=get_settings().agent_max_rounds,
     )
 
 

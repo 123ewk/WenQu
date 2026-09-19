@@ -305,7 +305,11 @@ class Conversation(Base):
 
 
 class Message(Base):
-    """消息:assistant 消息存引用 JSONB(chunk_id + 摘录 + 分数),支撑引用溯源回链。"""
+    """消息:assistant 消息存引用 JSONB(chunk_id + 摘录 + 分数),支撑引用溯源回链。
+
+    agent_steps 存 Agent 模式(OPT-10)的工具调用轨迹(轮次/思考/调用/结果摘要),
+    直检模式恒为 NULL。
+    """
 
     __tablename__ = "messages"
     __table_args__ = (Index("ix_messages_conversation_seq", "conversation_id", "seq"),)
@@ -322,6 +326,7 @@ class Message(Base):
     seq: Mapped[int] = mapped_column(Integer)
     citations: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    agent_steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

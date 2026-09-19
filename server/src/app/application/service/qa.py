@@ -26,6 +26,8 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.application.agent.loop import AgentRunner, ToolCallingChat
+from app.application.agent.tools import SearchFn, ToolContext
 from app.application.repository.conversations import MessageRepositoryImpl
 from app.application.repository.knowledge import (
     DocumentRepositoryImpl,
@@ -37,6 +39,7 @@ from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
     GenerationState,
     Pipeline,
+    _cited_indexes,
     build_stages,
 )
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
@@ -45,7 +48,6 @@ from app.core.errors import AppError, ErrorCode
 from app.core.event_log import EventLog, MemoryEventLog
 from app.domain.enums import Role
 from app.domain.interfaces import (
-    ChatGateway,
     ConversationRepository,
     EmbeddingGateway,
     MessageRepository,
@@ -72,6 +74,7 @@ class _AskContext:
     kb_ids: list[uuid.UUID] | None
     top_k: int
     model_id: str | None
+    agent: bool = False  # OPT-10:true = ReAct 工具循环(检索成为模型可调用的工具)
 
 
 class BackgroundDb:
@@ -91,23 +94,37 @@ class BackgroundDb:
         self._embedder = embedder
         self._min_vector_score = min_vector_score
 
+    def _retrieval(self, db: Session) -> RetrievalService:
+        return RetrievalService(
+            RetrievalRepositoryImpl(db),
+            KnowledgeBaseRepositoryImpl(db),
+            DocumentRepositoryImpl(db),
+            SpaceRepositoryImpl(db),
+            self._embedder,
+            min_vector_score=self._min_vector_score,
+        )
+
     def search(self, ctx: _AskContext) -> list[RetrievedChunk]:
         with self._session_factory() as db:
-            retrieval = RetrievalService(
-                RetrievalRepositoryImpl(db),
-                KnowledgeBaseRepositoryImpl(db),
-                DocumentRepositoryImpl(db),
-                SpaceRepositoryImpl(db),
-                self._embedder,
-                min_vector_score=self._min_vector_score,
-            )
-            return retrieval.search(
+            return self._retrieval(db).search(
                 ctx.user_id,
                 ctx.space_id,
                 ctx.question,
                 top_k=ctx.top_k,
                 kb_ids=ctx.kb_ids,
                 model_id=ctx.model_id,
+            )
+
+    def search_query(self, ctx: ToolContext, query: str, top_k: int) -> list[RetrievedChunk]:
+        """Agent 工具检索入口(AgentRunner 的 SearchFn):查询词由模型给出,
+        范围仍锁定本次提问的 user/space/kb_ids —— 模型没有扩权通道(§8.3-3)。"""
+        with self._session_factory() as db:
+            return self._retrieval(db).search(
+                ctx.user_id,
+                ctx.space_id,
+                query,
+                top_k=top_k,
+                kb_ids=ctx.kb_ids,
             )
 
     def save_message(self, message: Message) -> Message:
@@ -126,13 +143,14 @@ class QAService:
         messages: MessageRepository,
         spaces: SpaceRepository,
         retrieval: RetrievalService,
-        chat: ChatGateway,
+        chat: ToolCallingChat,
         heartbeat_seconds: float = 15.0,
         event_log: EventLog | None = None,
         supervisor: StreamSupervisor | None = None,
         background_db: BackgroundDb | None = None,
         db: Session | None = None,
         pipeline: Sequence[str] | None = None,
+        agent_max_rounds: int = 20,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -154,6 +172,7 @@ class QAService:
                 chat=chat,
             )
         )
+        self._agent_max_rounds = agent_max_rounds  # Agent 工具循环轮数上限(OPT-10)
 
     def create_conversation(
         self, user_id: uuid.UUID, space_id: uuid.UUID, title: str
@@ -199,6 +218,7 @@ class QAService:
         kb_ids: list[uuid.UUID] | None = None,
         top_k: int = 6,
         model_id: str | None = None,
+        agent: bool = False,
     ) -> Iterator[str]:
         """校验与会话/提问落库在请求上下文完成,然后把生成搬进后台泵,返回日志读流。
 
@@ -238,6 +258,7 @@ class QAService:
             kb_ids=kb_ids,
             top_k=top_k,
             model_id=model_id,
+            agent=agent,
         )
         # 泵线程用自己的会话检索/落库,必须先提交请求事务让它看得见这批写入
         # (get_db 在响应结束才提交,而泵在响应存续期间就要读);
@@ -280,13 +301,16 @@ class QAService:
     # ---------------------------- 后台泵 ----------------------------
 
     def _generate(self, handle: GenerationHandle, ctx: _AskContext) -> None:
-        """后台泵:跑流水线插件链,把生成过程逐事件写入日志;收尾固定在此兜底。"""
+        """后台泵:Agent 模式跑 ReAct 循环,否则跑流水线插件链;收尾固定在此兜底。"""
         cid = ctx.conversation.id
         sid = handle.stream_id  # 事件日志的键:一次生成一条流
         state = GenerationState(ctx=ctx, handle=handle, stream_id=sid, log=self._event_log)
         try:
             state.emit("meta", conversation_id=str(cid))
-            self._pipeline.run(state)
+            if ctx.agent:
+                self._run_agent(handle, ctx)
+            else:
+                self._pipeline.run(state)
         except Exception:  # noqa: BLE001 — 泵兜底:绝不让流无声卡死
             logger.exception("ask generation crashed conv=%s", cid)
             try:
@@ -296,6 +320,67 @@ class QAService:
         finally:
             self._event_log.mark_finished(sid)
             self._supervisor.finish(cid)
+
+    def _run_agent(self, handle: GenerationHandle, ctx: _AskContext) -> None:
+        """Agent 模式(OPT-10):AgentRunner 发工具/正文事件,这里负责落库与 done 收尾。
+
+        done 语义与直检路径一致:部分/空答案不落完整消息,partial 标记如实。
+        """
+        sid = handle.stream_id
+
+        def emit(event_type: str, payload: dict) -> None:
+            self._event_log.append(sid, event_type, payload)
+
+        outcome = AgentRunner(
+            chat=self._chat,
+            search=self._agent_search(ctx),
+            emit=emit,
+            stop_requested=handle.stop_requested,
+            model_id=ctx.model_id,
+            top_k_default=ctx.top_k,
+            max_rounds=self._agent_max_rounds,
+        ).run(
+            ToolContext(user_id=ctx.user_id, space_id=ctx.space_id, kb_ids=ctx.kb_ids),
+            ctx.question,
+            ctx.history,
+        )
+        if outcome.error is not None:
+            self._event_log.append(sid, "error", {"message": outcome.error})
+            return
+        if not outcome.answer.strip():
+            # 中断无正文 / 模型空答:没有可保存的内容(与直检路径的空部分答案同口径)
+            self._event_log.append(sid, "done", {"partial": True, "message_id": None})
+            return
+        saved = self._persist_assistant(
+            ctx, outcome.answer, outcome.citations, ctx.model_id, agent_steps=outcome.steps
+        )
+        if outcome.interrupted:
+            self._event_log.append(sid, "done", {"partial": True, "message_id": str(saved.id)})
+            return
+        self._event_log.append(
+            sid,
+            "done",
+            {
+                "message_id": str(saved.id),
+                "cited_indexes": _cited_indexes(outcome.answer, len(outcome.citations)),
+            },
+        )
+
+    def _agent_search(self, ctx: _AskContext) -> SearchFn:
+        """工具检索协作者:范围锁定本次提问,查询词来自模型参数。"""
+        if self._background_db is not None:
+            return self._background_db.search_query
+
+        def search(ctx: ToolContext, query: str, top_k: int) -> list[RetrievedChunk]:
+            return self._retrieval.search(
+                ctx.user_id,
+                ctx.space_id,
+                query,
+                top_k=top_k,
+                kb_ids=ctx.kb_ids,
+            )
+
+        return search
 
     def _search(self, ctx: _AskContext) -> list[RetrievedChunk]:
         if self._background_db is not None:
@@ -315,8 +400,9 @@ class QAService:
         content: str,
         citations: list[dict],
         model_id: str | None,
+        agent_steps: list[dict] | None = None,
     ) -> Message:
-        """落库 assistant 消息(完整答案或宽限截止的部分答案)。"""
+        """落库 assistant 消息(完整答案或宽限截止的部分答案;agent 模式附工具轨迹)。"""
         message = Message(
             conversation_id=ctx.conversation.id,
             space_id=ctx.space_id,
@@ -324,6 +410,7 @@ class QAService:
             content=content,
             citations=citations,
             model_id=model_id,
+            agent_steps=agent_steps,
         )
         if self._background_db is not None:
             return self._background_db.save_message(message)

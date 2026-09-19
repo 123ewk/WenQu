@@ -2899,6 +2899,11 @@
               }
             ],
             "title": "Model Id"
+          },
+          "agent": {
+            "type": "boolean",
+            "title": "Agent",
+            "default": false
           }
         },
         "type": "object",
@@ -3871,6 +3876,21 @@
               }
             ],
             "title": "Model Id"
+          },
+          "agent_steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Steps"
           },
           "created_at": {
             "anyOf": [

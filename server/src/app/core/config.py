@@ -56,6 +56,8 @@ class Settings(BaseSettings):
         "retrieve,cite,fallback,compose,generate,persist",
         validation_alias="APP_QA_PIPELINE",
     )
+    # Agent 工具循环轮数上限(OPT-10);复读/预算护栏另在循环内固定
+    agent_max_rounds: int = Field(20, validation_alias="APP_AGENT_MAX_ITERATIONS")
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

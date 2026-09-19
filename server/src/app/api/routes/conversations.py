@@ -47,6 +47,8 @@ class AskRequest(BaseModel):
     kb_ids: list[uuid.UUID] | None = None
     top_k: int = Field(default=6, ge=1, le=20)
     model_id: str | None = None
+    # OPT-10:true 走 Agent 工具循环(ReAct);默认 false = 直检管线,行为与从前一致
+    agent: bool = False
 
 
 class RenameConversationRequest(BaseModel):
@@ -80,6 +82,8 @@ class MessageOut(BaseModel):
     seq: int
     citations: list[CitationOut] = []
     model_id: str | None = None
+    # Agent 模式(OPT-10)的工具调用轨迹;直检消息恒为 None,前端判空回退
+    agent_steps: list[dict] | None = None
     created_at: datetime | None = None
 
 
@@ -102,6 +106,7 @@ def _message_out(message: Message) -> MessageOut:
         seq=message.seq,
         citations=citations,
         model_id=message.model_id,
+        agent_steps=message.agent_steps,
         created_at=message.created_at,
     )
 
@@ -189,6 +194,7 @@ def ask(
         kb_ids=kb_ids,
         top_k=body.top_k,
         model_id=body.model_id,
+        agent=body.agent,
     )
     return StreamingResponse(
         events,
