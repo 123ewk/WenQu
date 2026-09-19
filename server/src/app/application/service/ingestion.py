@@ -108,6 +108,7 @@ class IngestionService:
                         "breadcrumb": draft.breadcrumb,
                         "page": draft.page,
                         "kind": draft.kind,
+                        "tokens": draft.tokens,  # ChunkOut.tokens 展示用(前端缺口台账 §11.2-4)
                     },
                 )
                 for seq, draft in enumerate(drafts)

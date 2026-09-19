@@ -111,7 +111,8 @@ class ProfileService:
                 image.verify()  # 结构校验(不解码像素)
                 detected = (image.format or "").upper()
                 width, height = image.size
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+        # SyntaxError:PIL 个别损坏图片会抛它(前端缺口台账 §11.2-2 实测),不接就漏成 500
+        except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
             raise AppError(
                 ErrorCode.UNSUPPORTED_FORMAT, "仅支持 PNG/JPEG/WEBP 图片", http_status=415
             ) from exc

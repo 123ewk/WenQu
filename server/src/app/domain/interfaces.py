@@ -97,7 +97,7 @@ class ChunkRepository(Protocol):
         document: Document,
         drafts: list[tuple[int, str, list[float] | None, dict]],
     ) -> None:
-        """幂等重建:先删后插。drafts = [(seq, content, embedding, meta)]。"""
+        """幂等重建:先删后插。drafts = [(seq, content, embedding, meta)];meta 含 tokens。"""
 
 
 class TaskRepository(Protocol):

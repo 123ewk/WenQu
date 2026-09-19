@@ -103,6 +103,7 @@ def test_happy_path_status_flow_and_chunks() -> None:
     seq, content, embedding, meta = stored[0]
     assert (seq, embedding) == (0, [0.5, 0.5])
     assert "breadcrumb" in meta and "kind" in meta
+    assert meta["tokens"] > 0  # 分块 token 数随 meta 落库(前端缺口台账 §11.2-4)
 
 
 def test_completed_document_is_idempotent() -> None:

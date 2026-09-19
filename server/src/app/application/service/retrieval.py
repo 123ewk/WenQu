@@ -165,6 +165,8 @@ class RetrievalService:
         space_ids: list[uuid.UUID] | None = None,
         top_k: int | None = None,
         kb_ids: list[uuid.UUID] | None = None,
+        # 已废弃(OPT-3 收尾):检索向量取 KB 的 embedding_model,此参数不再使用,
+        # 保留仅为契约兼容(SearchRequest.model_id)
         model_id: str | None = None,
         overrides: SearchOverrides | dict[str, float | int] | None = None,
     ) -> list[RetrievedChunk]:
@@ -177,7 +179,9 @@ class RetrievalService:
         params = self._effective_params(scoped, top_k, overrides)
         top_k = params.top_k
         candidates = max(top_k * self._candidate_multiplier, top_k)
-        embedding = self._embedder.embed([query], model_id)[0]
+        embedding = self._embedder.embed(
+            [query], self._resolve_embedding_model(scoped, kb_ids)
+        )[0]
         vector_hits = self._chunks.vector_search(
             scoped, embedding, kb_ids, candidates, min_similarity=params.min_score
         )
@@ -246,6 +250,24 @@ class RetrievalService:
         return _apply_overrides(params, overrides)
 
     # ---------------------------- 内部 ----------------------------
+
+    def _resolve_embedding_model(
+        self, space_id: uuid.UUID, kb_ids: list[uuid.UUID] | None
+    ) -> str | None:
+        """查询向量必须与库内向量的嵌入模型一致:取目标 KB 的 embedding_model。
+
+        - 指定 kb_ids → 用第一个 KB 的模型(检索范围内所有 KB 应同源;V1 不支持
+          一个空间混用多种嵌入模型,见优化台账 OPT-23);
+        - 未指定 → 用空间内第一个 KB 的模型;空间还没有 KB → None(网关回退目录
+          默认 embedding 模型,保持"未配密钥 → 503"的可观测语义)。
+        请求里的 `model_id`(回答模型)不参与检索 —— 此前把 /ask 的对话模型 id
+        喂给查询向量化,导致显式选任何对话模型检索必 503(前端缺口台账 §11.2-1)。
+        """
+        if kb_ids:
+            kb = self._kbs.get(kb_ids[0])
+            return kb.embedding_model if kb is not None else None
+        kbs = self._kbs.list_for_space(space_id)
+        return kbs[0].embedding_model if kbs else None
 
     def _resolve_scope(
         self, space_id: uuid.UUID, space_ids: list[uuid.UUID] | None

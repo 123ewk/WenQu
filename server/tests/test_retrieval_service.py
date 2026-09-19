@@ -17,8 +17,13 @@ from app.application.service.retrieval import (
 )
 from app.core.errors import AppError
 from app.domain.enums import Role
-from app.domain.models import Chunk, Document, Membership, Space
-from tests.fakes import FakeSpaceRepository, FakeUserRepository, make_user
+from app.domain.models import Chunk, Document, KnowledgeBase, Membership, Space
+from tests.fakes import (
+    FakeKnowledgeBaseRepository,
+    FakeSpaceRepository,
+    FakeUserRepository,
+    make_user,
+)
 
 
 def test_rrf_fuse_ranks_top_of_both_paths_first() -> None:
@@ -76,9 +81,11 @@ class FakeRetrievalRepo:
 class FakeEmbedder:
     def __init__(self) -> None:
         self.inputs: list[list[str]] = []
+        self.model_ids: list[str | None] = []
 
     def embed(self, texts, model_id=None):
         self.inputs.append(texts)
+        self.model_ids.append(model_id)
         return [[0.1, 0.2, 0.3]]
 
 
@@ -116,10 +123,34 @@ def build_env(
 
     repo = FakeRetrievalRepo(hits(vector_specs, "向量命中内容"), hits(fulltext_specs, None))
     embedder = FakeEmbedder()
-    service = RetrievalService(repo, None, None, spaces, embedder)  # type: ignore[arg-type]
-    return SimpleNamespace(
-        service=service, repo=repo, embedder=embedder, user=user, space=space
+    kbs = FakeKnowledgeBaseRepository()
+    kb = KnowledgeBase(
+        space_id=space.id, name="默认库", embedding_model="test-embedding-model"
     )
+    kbs.create(kb)
+    service = RetrievalService(repo, kbs, None, spaces, embedder)  # type: ignore[arg-type]
+    return SimpleNamespace(
+        service=service, repo=repo, embedder=embedder, user=user, space=space,
+        kbs=kbs, kb=kb, kb_id=kb.id,
+    )
+
+
+def test_search_embeds_query_with_kb_embedding_model() -> None:
+    """/ask 传来的对话模型 id 不参与检索:查询向量取 KB 的 embedding_model(§11.2-1)。"""
+    env = build_env()
+    env.service.search(
+        env.user.id, env.space.id, "检索测试",
+        kb_ids=[env.kb.id], model_id="deepseek/deepseek-chat",
+    )
+    assert env.embedder.model_ids == ["test-embedding-model"]
+
+
+def test_search_without_kbs_falls_back_to_catalog_default() -> None:
+    """空间还没有 KB → None(目录默认 embedding 模型),保持未配密钥 503 语义。"""
+    env = build_env()
+    env.kbs.delete(env.kb)
+    env.service.search(env.user.id, env.space.id, "检索测试")
+    assert env.embedder.model_ids == [None]
 
 
 def test_search_returns_fused_results_with_metadata() -> None:

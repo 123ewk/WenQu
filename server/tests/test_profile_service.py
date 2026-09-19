@@ -68,3 +68,19 @@ def test_update_profile_rejects_blank() -> None:
     with pytest.raises(AppError) as exc:
         svc.update_profile(user, "   ")
     assert exc.value.http_status == 422
+
+
+def test_corrupt_image_syntax_error_returns_415(monkeypatch) -> None:
+    """损坏图片触发 PIL SyntaxError 时也必须归一为 415,不能漏成 500(§11.2-2)。"""
+    from PIL import Image
+
+    svc, user, _audit = build_service()
+
+    def _boom(*_args, **_kwargs):
+        raise SyntaxError("corrupt image")
+
+    monkeypatch.setattr(Image, "open", _boom)
+    with pytest.raises(AppError) as exc:
+        svc.set_avatar(user, _png_bytes(), "image/png")
+    assert exc.value.http_status == 415
+    assert exc.value.code_str == "UNSUPPORTED_FORMAT"
