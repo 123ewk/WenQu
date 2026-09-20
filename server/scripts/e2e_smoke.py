@@ -125,9 +125,12 @@ def main() -> int:
     document = up.json()
     check("文档初始状态 pending", document["status"] == "pending", document["status"])
 
-    # 4) 校验对象存储真的落位(MinIO)
+    # 4) 校验对象存储真的落位(MinIO;连接参数一律取 settings,兼容 dev/prod 形态)
+    from app.core.config import get_settings
+
+    st = get_settings()
     storage = MinioStorage(
-        "localhost:9000", "wenqu", "wenqu_dev_only", "wenqu-docs"
+        st.minio_endpoint, st.minio_access_key, st.minio_secret_key, st.minio_bucket
     )
     with get_session_factory()() as db:
         from app.domain.models import Document as DocModel
