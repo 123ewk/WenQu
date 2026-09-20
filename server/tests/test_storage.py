@@ -79,9 +79,13 @@ def test_minio_put_is_lazy_and_delete_prefix_drains(monkeypatch) -> None:
     client.put_object.assert_called_once()
 
     storage.delete_prefix("sp/kb/doc/")
-    client.remove_objects.assert_called_once_with(
-        "bucket", ["sp/kb/doc/f1", "sp/kb/doc/f2"]
-    )
+    # minio.remove_objects 只接受 DeleteObject(真实客户端会做 XML 序列化;mock 传字符串也能过,
+    # 正是这里放过过 delete_prefix 线上 500)——必须钉住元素类型
+    from minio.deleteobjects import DeleteObject
+
+    sent = client.remove_objects.call_args.args[1]
+    assert all(isinstance(o, DeleteObject) for o in sent)
+    assert [o.name for o in sent] == ["sp/kb/doc/f1", "sp/kb/doc/f2"]
 
 
 def test_minio_delete_swallows_nosuchkey(monkeypatch) -> None:

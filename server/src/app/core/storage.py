@@ -103,8 +103,11 @@ class MinioStorage:
             raise
 
     def delete_prefix(self, prefix: str) -> None:
+        from minio.deleteobjects import DeleteObject
+
+        # 必须是 DeleteObject:传裸字符串会在 remove_objects 的 XML 序列化处 AttributeError(演练实测)
         objects = [
-            obj.object_name
+            DeleteObject(obj.object_name)
             for obj in self._client.list_objects(self._bucket, prefix=prefix, recursive=True)
         ]
         if not objects:
