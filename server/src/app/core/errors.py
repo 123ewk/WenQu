@@ -60,6 +60,9 @@ class ErrorCode:
     # 6xxx 模型调用
     MODEL_NOT_CONFIGURED = (6001, "MODEL_NOT_CONFIGURED")
     MODEL_CALL_FAILED = (6000, "MODEL_CALL_FAILED")
+    # 6xxx 模型管理(OPT-25):重名冲突 409,由管理端接口返回
+    MODEL_PROVIDER_NAME_TAKEN = (6002, "MODEL_PROVIDER_NAME_TAKEN")
+    MODEL_ID_TAKEN = (6003, "MODEL_ID_TAKEN")
 
 
 class AppError(Exception):

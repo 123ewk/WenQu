@@ -226,13 +226,13 @@ def test_kb_and_document_api_flow(client) -> None:
     # 未登录 401
     assert client.get(base).status_code == 401
 
-    # 创建 KB(默认 embedding 模型来自 models.yaml 默认值)
+    # 创建 KB(库内尚无默认 embedding 模型 → 固化空串,入库时退回目录默认)
     resp = client.post(
         base, json={"name": "产品文档库", "description": "d"}, headers=auth
     )
     assert resp.status_code == 201, resp.text
     kb = resp.json()
-    assert kb["embedding_model"] == "dashscope/text-embedding-v3"
+    assert kb["embedding_model"] == ""
     assert kb["embedding_dim"] == 1024
 
     # 同名 409;列表可见
@@ -1361,7 +1361,18 @@ def test_avatar_upload_validate_and_fetch(client) -> None:
 
 
 def test_models_endpoint_lists_only_enabled(client) -> None:
-    """模型清单:只列已启用模型(含 provider 显示名),带各类默认值。"""
+    """模型清单(OPT-25):空目录 → 空清单;入库的自定义模型只列已启用项,带默认值。
+
+    直接 ORM 造数(与 admin API 无关),结束后清理 —— 共用 session 库,
+    不能把"已配置模型"的状态泄漏给后面的 503 用例。
+    """
+    import uuid as uuid_mod
+
+    from sqlalchemy import delete
+
+    from app.core.db import get_session_factory
+    from app.domain.models import CustomModel, ModelProvider
+
     user = _register(client, "modeluser")
     auth = {"Authorization": f"Bearer {user['access_token']}"}
     assert client.get("/api/v1/models").status_code == 401  # 需登录
@@ -1369,20 +1380,87 @@ def test_models_endpoint_lists_only_enabled(client) -> None:
     resp = client.get("/api/v1/models", headers=auth)
     assert resp.status_code == 200
     data = resp.json()
+    # 内置清单已下线:库内未配置 → 空目录是合法状态(fail-closed,不做兜底)
+    assert data["chat"] == [] and data["embedding"] == [] and data["rerank"] == []
+    assert data["defaults"] == {}
 
-    chat_ids = {m["id"] for m in data["chat"]}
-    assert "deepseek/deepseek-chat" in chat_ids
-    assert all(m["id"] for m in data["chat"])
-    # 未启用条目不得出现(ollama/minimax 等在 models.yaml 里 enabled: false)
-    assert not any(m["id"].startswith("ollama/") for m in data["chat"])
-    # 供应商是显示名,不是 key
-    deepseek = next(m for m in data["chat"] if m["id"] == "deepseek/deepseek-chat")
-    assert deepseek["provider"] == "DeepSeek" and deepseek["provider_key"] == "deepseek"
-    # embedding 带维度
-    assert all(m["dims"] for m in data["embedding"])
-    assert data["defaults"]["chat"] == "deepseek/deepseek-chat"
-    # 不泄漏密钥信息
-    assert "api_key" not in resp.text.lower() or "api_key_env" not in resp.text
+    ds_id = uuid_mod.uuid4()
+    off_id = uuid_mod.uuid4()
+    with get_session_factory()() as db:
+        db.add_all(
+            [
+                ModelProvider(
+                    id=ds_id,
+                    name="DeepSeek",
+                    protocol="openai_compatible",
+                    base_url="https://api.deepseek.com/v1",
+                    api_key_encrypted="enc:v1:fake-ciphertext-not-used",
+                    key_hint="sk-f****-test",
+                ),
+                ModelProvider(
+                    id=off_id,
+                    name="禁用厂",
+                    protocol="openai_compatible",
+                    base_url="https://off.example/v1",
+                    enabled=False,
+                ),
+            ]
+        )
+        db.flush()
+        db.add_all(
+            [
+                CustomModel(
+                    provider_id=ds_id,
+                    model_id="DeepSeek/chat-v1",
+                    kind="chat",
+                    model_name="chat-v1",
+                    context_tokens=64000,
+                    is_default=True,
+                ),
+                CustomModel(
+                    provider_id=ds_id,
+                    model_id="DeepSeek/chat-off",
+                    kind="chat",
+                    model_name="chat-off",
+                    enabled=False,
+                ),
+                CustomModel(  # 供应商被禁 → 同样不可选
+                    provider_id=off_id,
+                    model_id="禁用厂/chat",
+                    kind="chat",
+                    model_name="chat",
+                ),
+                CustomModel(
+                    provider_id=ds_id,
+                    model_id="DeepSeek/emb-v3",
+                    kind="embedding",
+                    model_name="emb-v3",
+                    dims=1024,
+                    is_default=True,
+                ),
+            ]
+        )
+        db.commit()
+
+    try:
+        resp = client.get("/api/v1/models", headers=auth)
+        data = resp.json()
+        chat_ids = {m["id"] for m in data["chat"]}
+        assert chat_ids == {"DeepSeek/chat-v1"}  # 未启用/禁用供应商条目不出现
+        item = data["chat"][0]
+        assert item["provider"] == "DeepSeek" and item["provider_key"] == "DeepSeek"
+        assert item["context_tokens"] == 64000
+        assert [m["dims"] for m in data["embedding"]] == [1024]
+        assert data["defaults"] == {"chat": "DeepSeek/chat-v1", "embedding": "DeepSeek/emb-v3"}
+        # 不泄漏密钥信息(密文与 hint 都不出场)
+        body = resp.text
+        assert "api_key" not in body.lower() and "enc:v1" not in body and "fake" not in body
+    finally:
+        with get_session_factory()() as db:
+            db.execute(delete(CustomModel).where(CustomModel.provider_id.in_([ds_id, off_id])))
+            db.execute(delete(ModelProvider).where(ModelProvider.id.in_([ds_id, off_id])))
+            db.commit()
+        assert client.get("/api/v1/models", headers=auth).json()["chat"] == []
 
 
 def test_retrieval_search_request_level_overrides(client) -> None:
@@ -1692,12 +1770,13 @@ def test_avatar_url_usable_with_api_base(client) -> None:
     assert client.get("/api/v1/users/me", headers=auth).json()["avatar_url"] == avatar_url
 
 
-def test_model_errors_return_branchable_codes(client, no_model_keys) -> None:
+def test_model_errors_return_branchable_codes(client) -> None:
     """模型侧异常必须走统一错误壳并给稳定 code(标准 §5.4),不能是 500 INTERNAL_ERROR。
 
     实测背景:此前「未配 Key」返回 500 INTERNAL_ERROR,前端无法分支;
     文档却写 502 MODEL_NOT_CONFIGURED。两边都不对 —— 现按语义修正:
     未配置(服务端缺配置,用户无法自救)→ 503;上游调用失败 → 502。
+    OPT-25 后触发方式更直接:内置模型下线,库内未配模型即天然 503。
     """
     owner = _register(client, "modelerr")
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -1705,8 +1784,6 @@ def test_model_errors_return_branchable_codes(client, no_model_keys) -> None:
         "/api/v1/spaces", json={"name": "模型错误空间"}, headers=auth
     ).json()["id"]
 
-    # no_model_keys 夹具把环境变量与 .env 两条密钥渠道都切断(OPT-21;
-    # 旧写法 os.environ.pop 拦不住 .env 回落,本地有真实密钥时会误打真模型)
     resp = client.post(
         f"/api/v1/spaces/{space_id}/retrieval/search",
         json={"query": "任意查询"},
@@ -1716,11 +1793,12 @@ def test_model_errors_return_branchable_codes(client, no_model_keys) -> None:
     body = resp.json()
     assert body["success"] is False
     assert body["error"]["code"] == "MODEL_NOT_CONFIGURED"
-    # 可读信息里要指出缺哪个变量名(便于运维定位),但不得包含密钥值
-    assert "DASHSCOPE_API_KEY" in body["error"]["message"]
+    # 可读信息里要指出缺哪类模型(便于运维定位),但不得包含密钥值
+    assert "embedding" in body["error"]["message"]
+    assert "密钥" not in body["error"]["message"]
 
 
-def test_ask_emits_error_event_when_model_unconfigured(client, no_model_keys) -> None:
+def test_ask_emits_error_event_when_model_unconfigured(client) -> None:
     """SSE 流内失败必须发 error 事件 —— 不能静默截断。
 
     实测背景:未配 Key 时流只发 meta 就结束(HTTP 200),前端既拿不到 citations
@@ -1735,7 +1813,7 @@ def test_ask_emits_error_event_when_model_unconfigured(client, no_model_keys) ->
         "/api/v1/spaces", json={"name": "SSE 错误空间"}, headers=auth
     ).json()["id"]
 
-    # no_model_keys 夹具切断环境变量与 .env 两条渠道(OPT-21,替代 os.environ.pop)
+    # 库内无任何模型(OPT-25 默认形态)→ 检索段 embed 即 ModelNotConfigured
     resp = client.post(
         f"/api/v1/spaces/{space_id}/ask", json={"question": "任意问题"}, headers=auth
     )
@@ -1749,7 +1827,7 @@ def test_ask_emits_error_event_when_model_unconfigured(client, no_model_keys) ->
     assert "error" in types, f"流内失败必须发 error 事件,实际事件序列: {types}"
     error_event = next(e for e in events if e["type"] == "error")
     # 人话可读,且能指出缺什么(运维可定位)
-    assert "DASHSCOPE_API_KEY" in error_event["message"] or "模型" in error_event["message"]
+    assert "模型" in error_event["message"]
     # 不该再发 done(本次没有成功答案)
     assert "done" not in types
 

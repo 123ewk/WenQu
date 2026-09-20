@@ -14,6 +14,7 @@ from fastapi.responses import Response
 
 from app.api.denied_audit import record_denied
 from app.api.deps import get_event_log, get_stream_supervisor
+from app.api.routes import admin_models as admin_model_routes
 from app.api.routes import api_keys as api_key_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(conversation_routes.router)
     app.include_router(model_routes.router)
     app.include_router(api_key_routes.router)
+    app.include_router(admin_model_routes.router)
     return app
 
 

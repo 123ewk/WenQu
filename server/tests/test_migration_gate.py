@@ -15,10 +15,10 @@ def _clear_caches() -> None:
     get_session_factory.cache_clear()
 
 
-def test_script_head_is_0011() -> None:
+def test_script_head_is_0012() -> None:
     from alembic.script import ScriptDirectory
 
-    assert ScriptDirectory(SCRIPT_LOCATION).get_heads() == ["0011"]
+    assert ScriptDirectory(SCRIPT_LOCATION).get_heads() == ["0012"]
 
 
 def test_dirty_semantics() -> None:
@@ -35,7 +35,7 @@ def test_db_unreachable_reports_dirty_with_head(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.core.migrations.get_session_factory", _boom)
     status = migration_status()
     assert status.current is None
-    assert status.head == "0011"
+    assert status.head == "0012"
     assert status.dirty is True
 
 

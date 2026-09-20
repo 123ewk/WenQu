@@ -1,7 +1,8 @@
 """后台 worker 入口:python -m app.worker(M2-4)。
 
 循环:陈旧 claim 回收(每 30s)→ SKIP LOCKED 认领 → 处理 → 空转 sleep。
-网关(解析/向量化/对象存储)进程级复用;仓储按会话绑定。
+网关(解析/对象存储)进程级复用;向量化网关按轮构建(模型目录库内可改,OPT-25);
+仓储按会话绑定。
 优雅停机:M4 随部署翻转接 SIGTERM;当前 Ctrl+C 退出,任务有回收兜底。
 """
 
@@ -37,13 +38,10 @@ _MAINTENANCE_INTERVAL_SECONDS = 3600.0  # 清理任务每小时一轮
 class Worker:
     def __init__(self) -> None:
         settings = get_settings()
-        catalog = ModelCatalog.load()
         self._parser = ParserClient(settings.parser_grpc_addr, settings.parser_grpc_token)
-        self._embedder = EmbeddingClient(
-            catalog,
-            settings,
-            background_semaphore=threading.Semaphore(settings.model_bg_concurrency),
-        )
+        # 信号量刻意进程级:它是全 worker 的后台向量化并发上限;
+        # 目录则每轮重建 —— 自定义模型(OPT-25)运行期可增删,不能进程级缓存
+        self._bg_semaphore = threading.Semaphore(settings.model_bg_concurrency)
         self._storage = MinioStorage(
             settings.minio_endpoint,
             settings.minio_access_key,
@@ -69,6 +67,9 @@ class Worker:
         """回收陈旧 claim(限频)→ 认领处理一条;队列空返回 None。"""
         session_factory = get_session_factory()
         with session_factory() as db:
+            embedder = EmbeddingClient(
+                ModelCatalog.load_from_db(db), background_semaphore=self._bg_semaphore
+            )
             service = IngestionService(
                 documents=DocumentRepositoryImpl(db),
                 kbs=KnowledgeBaseRepositoryImpl(db),
@@ -76,7 +77,7 @@ class Worker:
                 chunks=ChunkRepositoryImpl(db),
                 storage=self._storage,
                 parser=self._parser,
-                embedder=self._embedder,
+                embedder=embedder,
             )
             now = time.monotonic()
             if now - self._last_maintenance > _MAINTENANCE_INTERVAL_SECONDS:

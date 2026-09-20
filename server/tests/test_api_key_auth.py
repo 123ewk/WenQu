@@ -99,6 +99,17 @@ def test_missing_segment_not_matched() -> None:
     )
 
 
+def test_admin_model_routes_never_grantable() -> None:
+    """OPT-25:模型管理端点不进授权表 —— Key 一律 403,管理只认 JWT+superuser。"""
+    for path, verb in [
+        ("/api/v1/admin/models", "GET"),
+        ("/api/v1/admin/models", "POST"),
+        ("/api/v1/admin/model-providers", "POST"),
+        (f"/api/v1/admin/model-providers/{_KB}", "DELETE"),
+    ]:
+        assert resolve_route_capability(path, verb) is None, f"{verb} {path}"
+
+
 def test_granted_routes_all_exist_in_contract() -> None:
     """授权表自检:表里每条路由都必须真实注册在 OpenAPI 契约里。
 

@@ -74,13 +74,25 @@ class KnowledgeService:
     # ---------------------------- 知识库 CRUD ----------------------------
 
     def create_kb(
-        self, user: User, space_id: uuid.UUID, name: str, description: str, ip: str = ""
+        self,
+        user: User,
+        space_id: uuid.UUID,
+        name: str,
+        description: str,
+        ip: str = "",
+        embedding_model: str = "",
     ) -> KnowledgeBase:
         self._require_role(space_id, user.id, Role.EDITOR)
         if self._kbs.get_by_name(space_id, name) is not None:
             raise AppError(ErrorCode.KB_NAME_TAKEN, "同名知识库已存在", http_status=409)
         kb = self._kbs.create(
-            KnowledgeBase(space_id=space_id, name=name, description=description, created_by=user.id)
+            KnowledgeBase(
+                space_id=space_id,
+                name=name,
+                description=description,
+                created_by=user.id,
+                embedding_model=embedding_model,
+            )
         )
         self._log(user.id, space_id, AuditAction.KB_CREATED, name, ip, kb_id=str(kb.id))
         return kb

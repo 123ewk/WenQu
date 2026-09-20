@@ -1,6 +1,7 @@
 """模型清单端点:供前端渲染模型选择器(对话选模型 / 知识库换嵌入模型)。
 
-只列**已启用**的模型:不可选的条目不该出现在下拉里。
+数据源为库内自定义模型(OPT-25,内置 YAML 已下线);响应形状与旧版完全一致,
+前端零改动。只列**已启用**的模型:不可选的条目不该出现在下拉里。
 不返回密钥,也不返回"密钥是否已配置" —— 可选清单与服务端能否真正调用是两件事,
 前端选中后仍可能在调用时拿到 MODEL_NOT_CONFIGURED,需要能展示该错误。
 """
@@ -10,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_model_catalog
 from app.api.routing import CommitBeforeSendRoute
 from app.core.model_catalog import ModelCatalog
 from app.domain.models import User
@@ -35,9 +36,11 @@ class ModelCatalogOut(BaseModel):
 
 
 @router.get("", response_model=ModelCatalogOut)
-def list_models(user: User = Depends(get_current_user)) -> ModelCatalogOut:
+def list_models(
+    user: User = Depends(get_current_user),
+    catalog: ModelCatalog = Depends(get_model_catalog),
+) -> ModelCatalogOut:
     """登录即可读;列出已启用模型与各类默认值。"""
-    catalog = ModelCatalog.load()
     grouped: dict[str, list[ModelItem]] = {"chat": [], "embedding": [], "rerank": []}
     for kind, entries in catalog.enabled_models_by_kind().items():
         for entry in entries:

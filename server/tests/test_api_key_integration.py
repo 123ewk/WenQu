@@ -1,7 +1,8 @@
-"""API Key 集成测试(真 Postgres,OPT-6):对应 Go-Live 冒烟第 5 条。
+"""API Key 集成测试(真 Postgres,OPT-6/OPT-26):对应 Go-Live 冒烟第 5 条。
 
 「建 API Key → KB 范围限定生效 → 范围外被拒 → 审计有记录」的完整 HTTP 链路:
-签发只回显一次明文、能力级授权、范围收窄、吊销即失效、创建者移除即失效、审计留痕。
+签发只回显一次明文、能力级授权、范围收窄、吊销即失效、绑定成员移出即失效、审计留痕。
+OPT-26:Key 必须绑定空间成员,创建/吊销门槛 Admin+,运行时以绑定成员身份鉴权。
 """
 
 from __future__ import annotations
@@ -41,7 +42,11 @@ def _create_key(
     capabilities: list[str],
     kb_ids: list[str] | None = None,
     name: str = "ci-key",
+    member_user_id: str | None = None,
 ) -> dict:
+    """建 Key。默认绑定到创建者本人(/users/me);OPT-26 起 member_user_id 必填。"""
+    if member_user_id is None:
+        member_user_id = client.get("/api/v1/users/me", headers=auth).json()["id"]
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
         json={
@@ -49,6 +54,7 @@ def _create_key(
             "description": "",
             "capabilities": capabilities,
             "kb_ids": kb_ids or [],
+            "member_user_id": member_user_id,
         },
         headers=auth,
     )
@@ -79,13 +85,18 @@ def test_key_lifecycle_plaintext_shown_once(client) -> None:
     # 未知能力名 → 422
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
-        json={"name": "bad", "capabilities": ["root"]},
+        json={
+            "name": "bad",
+            "capabilities": ["root"],
+            "member_user_id": client.get("/api/v1/users/me", headers=auth).json()["id"],
+        },
         headers=auth,
     )
     assert resp.status_code == 422
 
 
-def test_key_requires_editor(client) -> None:
+def test_key_create_requires_admin(client) -> None:
+    """OPT-26:建 Key 门槛抬到 Admin+(与拉成员同闸);Viewer/Editor 403,Admin 201。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
     viewer_name = _uname("keyviewer")
@@ -98,12 +109,49 @@ def test_key_requires_editor(client) -> None:
     )
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
-        json={"name": "v", "capabilities": ["chat"]},
+        json={
+            "name": "v",
+            "capabilities": ["chat"],
+            "member_user_id": viewer["user"]["id"],
+        },
         headers=viewer_auth,
     )
     assert resp.status_code == 403
     # Viewer 可以列表(Viewer+)
     assert client.get(f"/api/v1/spaces/{space_id}/api-keys", headers=viewer_auth).status_code == 200
+
+    # Editor(20)仍不够:与"能拉成员"对齐,必须 Admin(30)+
+    editor_name = _uname("keyeditor20")
+    editor = _register(client, editor_name)
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": editor_name, "role": 20},
+        headers=auth,
+    )
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/api-keys",
+        json={"name": "e", "capabilities": ["chat"], "member_user_id": editor["user"]["id"]},
+        headers=editor_auth,
+    )
+    assert resp.status_code == 403
+
+    # Admin 成员可以建
+    admin_name = _uname("keyadmin30")
+    admin = _register(client, admin_name)
+    admin_auth = {"Authorization": f"Bearer {admin['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": admin_name, "role": 30},
+        headers=auth,
+    )
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/api-keys",
+        json={"name": "a", "capabilities": ["chat"], "member_user_id": admin["user"]["id"]},
+        headers=admin_auth,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["member_user_id"] == admin["user"]["id"]
 
 
 def test_unauthenticated_and_invalid_keys(client) -> None:
@@ -134,7 +182,7 @@ def test_key_on_jwt_only_route_denied(client) -> None:
     assert resp.json()["error"]["code"] == "AUTH_REQUIRED"
 
 
-def test_search_capability_and_scope(client, no_model_keys) -> None:
+def test_search_capability_and_scope(client) -> None:
     """chat 能力:/search 范围内放行;范围外 403;未授 chat 能力 → 403。"""
     owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -291,7 +339,7 @@ def test_documents_capability_flow(client) -> None:
     assert any(item["action"] == "document.uploaded" for item in logs)
 
 
-def test_ask_with_key_scope(client, no_model_keys) -> None:
+def test_ask_with_key_scope(client) -> None:
     """/ask:范围内放行进入 SSE(模型未配置 → 流内 error 事件);范围外 403。"""
     owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -311,18 +359,18 @@ def test_ask_with_key_scope(client, no_model_keys) -> None:
     assert '"type": "error"' in resp.text or '"type":"error"' in resp.text
 
 
-def test_revoke_and_creator_removal_kill_key(client) -> None:
-    """吊销即 401;创建者被移出空间即 401;审计有 api_key.revoked 与拒绝记录。"""
+def test_revoke_and_member_removal_kill_key(client) -> None:
+    """吊销即 401;绑定成员被移出空间即 401(OPT-26 双校验);审计有 api_key.revoked 与拒绝记录。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
 
-    # editor 建 Key,随后被移出空间
+    # admin 成员建 Key(绑定本人),随后被移出空间
     editor_name = _uname("keyeditor")
     editor = _register(client, editor_name)
     editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
     client.post(
         f"/api/v1/spaces/{space_id}/members",
-        json={"username": editor_name, "role": 20},
+        json={"username": editor_name, "role": 30},
         headers=auth,
     )
     editor_key = _create_key(client, editor_auth, space_id, ["chat"])
@@ -390,3 +438,126 @@ def test_create_key_validation_missing_name(client) -> None:
         headers=auth,
     )
     assert resp.status_code == 422
+
+    # OPT-26:member_user_id 同为必填
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/api-keys",
+        json={"name": "k", "capabilities": ["chat"]},
+        headers=auth,
+    )
+    assert resp.status_code == 422
+
+
+def test_create_key_target_must_be_member(client) -> None:
+    """绑定目标不是本空间成员 → 404 MEMBER_NOT_FOUND。"""
+    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    stranger = _register(client, _uname("keystranger"))
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/api-keys",
+        json={
+            "name": "k",
+            "capabilities": ["chat"],
+            "member_user_id": stranger["user"]["id"],
+        },
+        headers=auth,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "MEMBER_NOT_FOUND"
+
+
+def test_key_acts_as_bound_member_role(client) -> None:
+    """OPT-26 核心:Key 认证通过后,运行时权限 = 绑定成员自己的角色。
+
+    Admin 把 Key 绑给 Viewer:chat 能力+范围内上传(写)要 Editor,成员角色不够
+    → 服务层 FORBIDDEN(而不是 API_KEY_*);读检索则放行到模型闸。
+    """
+    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    viewer_name = _uname("keybindviewer")
+    viewer = _register(client, viewer_name)
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": viewer_name, "role": 10},
+        headers=auth,
+    )
+    key = _create_key(
+        client, auth, space_id, ["chat", "documents"], member_user_id=viewer["user"]["id"]
+    )
+    assert key["member_role"] == 10
+    assert key["member_username"] == viewer_name
+
+    # 上传被拒:能力有了,但绑定成员只是 Viewer → 服务层角色闸 403 FORBIDDEN
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/knowledge-bases/{kb_a}/documents",
+        files={"file": ("x.md", b"x")},
+        headers=_key_header(key["plaintext"]),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+    # 读检索放行(Viewer 足够),到模型闸 → 503
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "q", "kb_ids": [kb_a]},
+        headers=_key_header(key["plaintext"]),
+    )
+    assert resp.status_code == 503
+
+
+def test_key_survives_creator_removal_dies_with_bound_member(client) -> None:
+    """认证只校验绑定成员:创建者(Admin)被移出空间,只要绑定成员还在,Key 仍可用。"""
+    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    admin_name = _uname("keycreatoradmin")
+    admin = _register(client, admin_name)
+    admin_auth = {"Authorization": f"Bearer {admin['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": admin_name, "role": 30},
+        headers=auth,
+    )
+    target_name = _uname("keytarget")
+    target = _register(client, target_name)
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": target_name, "role": 20},
+        headers=auth,
+    )
+    key = _create_key(
+        client, admin_auth, space_id, ["chat"], member_user_id=target["user"]["id"]
+    )
+    url = f"/api/v1/spaces/{space_id}/retrieval/search"
+    headers = _key_header(key["plaintext"])
+    assert client.post(url, json={"query": "q"}, headers=headers).status_code in (200, 503)
+
+    # 移出创建者 → Key 仍可用(绑定成员还在)
+    client.delete(f"/api/v1/spaces/{space_id}/members/{admin['user']['id']}", headers=auth)
+    assert client.post(url, json={"query": "q"}, headers=headers).status_code in (200, 503)
+
+    # 移出绑定成员 → 立即 401
+    client.delete(f"/api/v1/spaces/{space_id}/members/{target['user']['id']}", headers=auth)
+    resp = client.post(url, json={"query": "q"}, headers=headers)
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "API_KEY_INVALID"
+
+
+def test_revoke_requires_admin(client) -> None:
+    """吊销与创建同闸:Editor 吊销 → 403,Admin/Owner 吊销 → 204。"""
+    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    editor_name = _uname("keyrevoker")
+    editor = _register(client, editor_name)
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": editor_name, "role": 20},
+        headers=auth,
+    )
+    key = _create_key(client, auth, space_id, ["chat"])
+    resp = client.delete(
+        f"/api/v1/spaces/{space_id}/api-keys/{key['id']}", headers=editor_auth
+    )
+    assert resp.status_code == 403
+    resp = client.delete(f"/api/v1/spaces/{space_id}/api-keys/{key['id']}", headers=auth)
+    assert resp.status_code == 204

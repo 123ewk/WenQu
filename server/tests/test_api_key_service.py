@@ -1,11 +1,12 @@
-"""API Key 服务单测(OPT-6):生成/哈希查找/能力级授权/范围收窄/吊销。
+"""API Key 服务单测(OPT-6 / OPT-26):签发绑成员/认证双校验/能力授权/范围收窄/吊销。
 
 测试意图(安全语义为主,不测实现细节):
 - 明文只在创建时出现一次,入库只有哈希 —— 库被读走也不能反推 Key;
-- 认证只按哈希等值查找,不比对明文;
+- OPT-26:签发必须绑定空间成员,操作者门槛 Admin+(与"拉成员"同闸);
+  认证 = Key 有效 + 绑定成员仍是成员 双重校验,不留"孤儿凭据";
 - 未声明的能力一律拒绝(fail-closed),空能力清单不等于"放行";
 - KB 范围是"二次收窄":范围外的 KB 即使 Key 有 retrieval 能力也拒绝;
-- 吊销、创建者退出空间都要立刻失效,不留"孤儿凭据"。
+- 吊销、绑定成员被移出都要立刻失效;创建者(签发人)被移出不影响 Key。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ _NOT_FOUND = ErrorCode.NOT_FOUND[1]
 _SPACE_NOT_FOUND = ErrorCode.SPACE_NOT_FOUND[1]
 _VALIDATION = ErrorCode.VALIDATION[1]
 _KB_NOT_FOUND = ErrorCode.KB_NOT_FOUND[1]
+_MEMBER_NOT_FOUND = ErrorCode.MEMBER_NOT_FOUND[1]
 _CAPABILITY_DENIED = ErrorCode.API_KEY_CAPABILITY_DENIED[1]
 _SCOPE_DENIED = ErrorCode.API_KEY_SCOPE_DENIED[1]
 
@@ -58,21 +60,24 @@ class FakeApiKeyRepository:
 
 
 def make_api_env() -> SimpleNamespace:
-    """owner 建空间 + editor 加为成员;返回 API Key 服务与底层 fake。"""
+    """owner 建空间;admin(Editor 之上)与 editor 与 viewer 入空间;返回服务与底层 fake。"""
     env = make_services()
     owner = env.auth.register("owner", "所有者", "secret-pass-1")
-    editor = env.auth.register("editor", "编辑者", "secret-pass-2")
+    admin = env.auth.register("admin", "管理员", "secret-pass-2")
+    editor = env.auth.register("editor", "编辑者", "secret-pass-3")
     space, _ = env.space_svc.create(owner.user, "研发空间", "")
+    env.space_svc.add_member(space.id, owner.user, "admin", Role.ADMIN)
     env.space_svc.add_member(space.id, owner.user, "editor", Role.EDITOR)
     api_keys = FakeApiKeyRepository()
     kbs = FakeKnowledgeBaseRepository()
-    svc = ApiKeyService(api_keys, env.spaces, kbs, env.audit)
+    svc = ApiKeyService(api_keys, env.spaces, kbs, env.audit, env.users)
     return SimpleNamespace(
         env=env,
         svc=svc,
         api_keys=api_keys,
         kbs=kbs,
         owner=owner.user,
+        admin=admin.user,
         editor=editor.user,
         space_id=space.id,
     )
@@ -86,6 +91,7 @@ def _add_kb(scene: SimpleNamespace, name: str) -> uuid.UUID:
 
 def _create(scene: SimpleNamespace, **overrides):
     params = {
+        "member_user_id": scene.owner.id,  # 默认绑到签发人自己
         "name": "ci-pipeline",
         "description": "",
         "capabilities": [ApiCapability.CHAT],
@@ -104,6 +110,7 @@ def test_created_key_has_sk_prefix_and_full_plaintext_returned_once() -> None:
     assert created.plaintext.startswith("sk-")
     assert len(created.plaintext) > 20
     assert created.api_key.key_hint.startswith("sk-")
+    assert created.api_key.member_user_id == scene.owner.id
 
 
 def test_hint_is_not_the_full_key() -> None:
@@ -139,24 +146,50 @@ def test_two_keys_are_unique() -> None:
     assert first.api_key.key_hash != second.api_key.key_hash
 
 
-def test_create_requires_editor_or_higher() -> None:
-    """Viewer 不能建 Key(建 Key 属治理动作)。"""
+def test_create_requires_admin_or_higher() -> None:
+    """OPT-26:建 Key 与"拉成员"同闸 —— Viewer/Editor 都不行,Admin/Owner 可以。"""
     scene = make_api_env()
-    viewer = scene.env.auth.register("viewer", "只读者", "secret-pass-3")
+    viewer = scene.env.auth.register("viewer", "只读者", "secret-pass-4")
     scene.env.space_svc.add_member(scene.space_id, scene.owner, "viewer", Role.VIEWER)
+    for actor in (viewer.user, scene.editor):
+        with pytest.raises(AppError) as exc:
+            scene.svc.create(
+                scene.space_id, actor, actor.id, "n", "", [ApiCapability.CHAT], []
+            )
+        assert exc.value.code_str == _FORBIDDEN
+    # Admin 成员可以替自己签
+    created = scene.svc.create(
+        scene.space_id, scene.admin, scene.admin.id, "n", "", [ApiCapability.CHAT], []
+    )
+    assert created.api_key.created_by == scene.admin.id
+    # Admin 也可以替别人签(绑定目标是成员即可)
+    created = scene.svc.create(
+        scene.space_id, scene.admin, scene.editor.id, "n2", "", [ApiCapability.CHAT], []
+    )
+    assert created.api_key.member_user_id == scene.editor.id
+
+
+def test_create_target_must_be_member() -> None:
+    """绑定目标不是本空间成员 → 404 MEMBER_NOT_FOUND。"""
+    scene = make_api_env()
+    outsider = scene.env.auth.register("outsider", "路人", "secret-pass-5")
     with pytest.raises(AppError) as exc:
         scene.svc.create(
-            scene.space_id, viewer.user, "n", "", [ApiCapability.CHAT], []
+            scene.space_id, scene.owner, outsider.user.id, "n", "", [ApiCapability.CHAT], []
         )
-    assert exc.value.code_str == _FORBIDDEN
+    assert exc.value.code_str == _MEMBER_NOT_FOUND
 
 
-def test_create_writes_audit() -> None:
+def test_create_writes_audit_with_member() -> None:
     scene = make_api_env()
-    _create(scene, name="audited")
-    assert str(AuditAction.API_KEY_CREATED) in [
-        str(log.action) for log in scene.env.audit.logs
+    _create(scene, name="audited", member_user_id=scene.admin.id)
+    logs = [
+        log
+        for log in scene.env.audit.logs
+        if str(log.action) == str(AuditAction.API_KEY_CREATED)
     ]
+    assert logs
+    assert logs[-1].detail["member_user_id"] == str(scene.admin.id)
 
 
 def test_unknown_capability_rejected() -> None:
@@ -174,7 +207,7 @@ def test_kb_ids_must_belong_to_space() -> None:
     assert exc.value.code_str == _KB_NOT_FOUND
 
 
-# ---------------------------- 认证 ----------------------------
+# ---------------------------- 认证(双重校验) ----------------------------
 
 
 def test_authenticate_returns_key_for_valid_plaintext() -> None:
@@ -206,14 +239,67 @@ def test_authenticate_updates_last_used() -> None:
     assert scene.api_keys.get(created.api_key.id).last_used_at is not None
 
 
-def test_creator_leaving_space_invalidates_key() -> None:
-    """创建者被移出空间后其 Key 立刻失效 —— 不留"孤儿凭据"。"""
+def test_bound_member_removal_invalidates_key() -> None:
+    """绑定成员被移出 → Key 立刻失效;签发人(创建者)被移出不影响。"""
     scene = make_api_env()
     created = scene.svc.create(
-        scene.space_id, scene.editor, "editor-key", "", [ApiCapability.CHAT], []
+        scene.space_id, scene.owner, scene.admin.id, "admin-key", "", [ApiCapability.CHAT], []
     )
-    scene.env.space_svc.remove_member(scene.space_id, scene.owner, scene.editor.id)
+    # 移出绑定成员(admin)→ Key 立即失效;签发人 owner 的身份无关紧要
+    scene.env.space_svc.remove_member(scene.space_id, scene.owner, scene.admin.id)
     assert scene.svc.authenticate(created.plaintext) is None
+
+
+def test_key_survives_creator_removal() -> None:
+    """OPT-26 核心:认证只校验绑定成员;签发 Admin 被移出,Key(绑 Editor)仍有效。"""
+    scene = make_api_env()
+    created = scene.svc.create(
+        scene.space_id,
+        scene.admin,
+        scene.editor.id,
+        "k",
+        "",
+        [ApiCapability.CHAT],
+        [],
+    )
+    scene.env.space_svc.remove_member(scene.space_id, scene.owner, scene.admin.id)
+    found = scene.svc.authenticate(created.plaintext)
+    assert found is not None and found.id == created.api_key.id
+
+
+def test_legacy_key_falls_back_to_creator() -> None:
+    """存量旧 Key(无 member_user_id)回退 created_by 判定,迁移双保险。"""
+    scene = make_api_env()
+    created = scene.svc.create(
+        scene.space_id, scene.admin, scene.admin.id, "k", "", [ApiCapability.CHAT], []
+    )
+    stored = scene.api_keys.get(created.api_key.id)
+    stored.member_user_id = None  # 模拟 0012 回填前的旧行:身份回到签发人 admin
+    assert scene.svc.authenticate(created.plaintext) is not None
+    scene.env.space_svc.remove_member(scene.space_id, scene.owner, scene.admin.id)
+    assert scene.svc.authenticate(created.plaintext) is None
+
+
+def test_member_of_reports_current_role() -> None:
+    scene = make_api_env()
+    created = scene.svc.create(
+        scene.space_id,
+        scene.owner,
+        scene.editor.id,
+        "k",
+        "",
+        [ApiCapability.CHAT],
+        [],
+    )
+    member, role = scene.svc.member_of(created.api_key)
+    assert member is not None and member.id == scene.editor.id
+    assert role == int(Role.EDITOR)
+    # 降级后角色实时变化(路由层 403 的依据)
+    scene.env.space_svc.change_role(
+        scene.space_id, scene.owner, scene.editor.id, int(Role.VIEWER)
+    )
+    _, role = scene.svc.member_of(created.api_key)
+    assert role == int(Role.VIEWER)
 
 
 # ---------------------------- 能力级授权(fail-closed) ----------------------------
@@ -286,6 +372,16 @@ def test_revoke_sets_revoked_at_and_writes_audit() -> None:
     ]
 
 
+def test_revoke_requires_admin() -> None:
+    """OPT-26:吊销与签发同闸,Editor 403。"""
+    scene = make_api_env()
+    created = _create(scene)
+    with pytest.raises(AppError) as exc:
+        scene.svc.revoke(scene.space_id, scene.editor, created.api_key.id)
+    assert exc.value.code_str == _FORBIDDEN
+    assert created.api_key.revoked_at is None
+
+
 def test_revoke_unknown_key_is_404() -> None:
     scene = make_api_env()
     with pytest.raises(AppError) as exc:
@@ -298,22 +394,25 @@ def test_revoke_cross_space_key_not_found() -> None:
     scene = make_api_env()
     other_space, _ = scene.env.space_svc.create(scene.owner, "另一空间", "")
     created = scene.svc.create(
-        other_space.id, scene.owner, "n", "", [ApiCapability.CHAT], []
+        other_space.id, scene.owner, scene.owner.id, "n", "", [ApiCapability.CHAT], []
     )
     with pytest.raises(AppError) as exc:
         scene.svc.revoke(scene.space_id, scene.owner, created.api_key.id)
     assert exc.value.code_str == _NOT_FOUND
 
 
-def test_list_carries_no_plaintext() -> None:
-    """服务返回实体(含哈希,供内部使用);响应脱敏是路由 DTO 的职责,见路由测试。"""
+def test_list_carries_no_plaintext_and_member_view() -> None:
+    """服务返回 ApiKeyWithMember 视图;响应脱敏是路由 DTO 的职责,见路由测试。"""
     scene = make_api_env()
-    created = _create(scene)
+    created = _create(scene, member_user_id=scene.admin.id)
     rows = scene.svc.list_for_space(scene.space_id, scene.owner)
     assert rows
     for row in rows:
+        assert row.member is not None and row.member.id == scene.admin.id
+        assert row.member_role == int(Role.ADMIN)
+        assert row.created_by_name == "owner"
         for field in ("name", "description", "key_hint", "key_hash"):
-            assert created.plaintext != str(getattr(row, field, ""))
+            assert created.plaintext != str(getattr(row.api_key, field, ""))
 
 
 def test_list_includes_revoked_for_audit_trail() -> None:
@@ -321,8 +420,26 @@ def test_list_includes_revoked_for_audit_trail() -> None:
     created = _create(scene)
     scene.svc.revoke(scene.space_id, scene.owner, created.api_key.id)
     rows = scene.svc.list_for_space(scene.space_id, scene.owner)
-    assert [row.id for row in rows] == [created.api_key.id]
-    assert rows[0].revoked_at is not None
+    assert [row.api_key.id for row in rows] == [created.api_key.id]
+    assert rows[0].api_key.revoked_at is not None
+
+
+def test_list_marks_removed_member_as_none() -> None:
+    """绑定成员被移出后列表仍可查(Viewer+ 可读),成员置灰展示不炸。"""
+    scene = make_api_env()
+    created = scene.svc.create(
+        scene.space_id,
+        scene.owner,
+        scene.editor.id,
+        "k",
+        "",
+        [ApiCapability.CHAT],
+        [],
+    )
+    scene.env.space_svc.remove_member(scene.space_id, scene.owner, scene.editor.id)
+    rows = scene.svc.list_for_space(scene.space_id, scene.owner)
+    view = next(r for r in rows if r.api_key.id == created.api_key.id)
+    assert view.member is None and view.member_role is None
 
 
 def test_non_member_gets_404_on_list() -> None:

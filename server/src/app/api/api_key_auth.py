@@ -1,10 +1,11 @@
-"""API Key 的认证与路由授权表(OPT-6)。
+"""API Key 的认证与路由授权表(OPT-6;OPT-26 起 Key 以绑定成员身份行事)。
 
 设计要点(与 `docs/架构设计.md` §8 对齐):
 
 1. **两个认证入口并存**:JWT(人用)与 API Key(程序用,`X-API-Key` 头)。
-   Key 以**创建者身份**行事 —— 空间成员校验、消息归属、审计 actor 都落到创建者;
-   创建者被移出空间,Key 在认证阶段即失效(见 ApiKeyService.authenticate)。
+   Key 以**绑定成员身份**行事(OPT-26)—— 空间成员校验、消息归属、审计 actor
+   都落到绑定成员;成员被移出空间,Key 在认证阶段即失效(见 ApiKeyService.authenticate),
+   成员被降级则高权限路由被服务层的角色检查实时拦下;
 2. **授权表 fail-closed**:`_ROUTE_CAPABILITIES` 是"能力 → 允许的路由"白名单。
    用 Key 访问**表里没有的路由**一律 403 —— 新增路由不会自动对 Key 开放,
    必须显式登记。"漏登记"与"误放开"之间刻意选了前一个失败方向。
@@ -26,6 +27,7 @@ from app.application.repository.api_keys import ApiKeyRepositoryImpl
 from app.application.repository.audit import AuditRepositoryImpl
 from app.application.repository.knowledge import KnowledgeBaseRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.repository.users import UserRepositoryImpl
 from app.application.service.api_keys import ApiKeyService
 from app.core.db import get_db
 from app.core.errors import AppError, ErrorCode
@@ -113,7 +115,7 @@ def _template_matches(template: str, actual: str) -> bool:
 
 @dataclass(frozen=True)
 class ApiKeyPrincipal:
-    """以 API Key 身份发起的调用主体(Key 以创建者身份行事)。"""
+    """以 API Key 身份发起的调用主体(Key 以绑定成员身份行事,OPT-26)。"""
 
     api_key: ApiKey
     space_id: uuid.UUID
@@ -127,6 +129,7 @@ def build_api_key_service(db: Session) -> ApiKeyService:
         SpaceRepositoryImpl(db),
         KnowledgeBaseRepositoryImpl(db),
         AuditRepositoryImpl(db),
+        UserRepositoryImpl(db),
     )
 
 
@@ -158,8 +161,8 @@ def get_api_key_principal(
         )
     service.require_capability(api_key, required)
 
-    if api_key.created_by is None:  # authenticate 已保证非空,这里收紧类型
+    # 主体 = 绑定成员(存量旧 Key 回退 created_by,authenticate 已保证非空)
+    actor_id = api_key.member_user_id or api_key.created_by
+    if actor_id is None:
         raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
-    return ApiKeyPrincipal(
-        api_key=api_key, space_id=api_key.space_id, actor_id=api_key.created_by
-    )
+    return ApiKeyPrincipal(api_key=api_key, space_id=api_key.space_id, actor_id=actor_id)

@@ -1,15 +1,26 @@
-"""模型接入层测试(ADR-4):httpx MockTransport 假上游,密钥/网络全不真连。"""
+"""模型接入层测试(ADR-4 / OPT-25):httpx MockTransport 假上游,密钥/网络全不真连。
+
+目录不再来自 YAML:测试直接用 ProviderEntry/ModelEntry 组装 ModelCatalog 快照,
+密钥走库内 enc:v1: 密文 + CredentialCipher 解密(主密钥用测试专用值)。
+"""
 
 from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 
 import httpx
 import pytest
 
-from app.core.config import Settings
-from app.core.model_catalog import ModelCatalog, ModelNotConfigured
+from app.core.crypto import CredentialCipher
+from app.core.errors import AppError, ErrorCode
+from app.core.model_catalog import (
+    ModelCatalog,
+    ModelEntry,
+    ModelNotConfigured,
+    ProviderEntry,
+)
 from app.core.model_client import (
     ChatClient,
     EmbeddingClient,
@@ -17,22 +28,55 @@ from app.core.model_client import (
     ToolCallRequest,
     resolve_api_key,
 )
+from app.core.model_protocols import get_protocol, registered_protocols
+
+_CIPHER = CredentialCipher("unit-test-master-key")
+
+
+def _enc(plaintext: str) -> str:
+    return _CIPHER.encrypt(plaintext)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_model_env(tmp_path, monkeypatch):
-    """隔离真实 server/.env 与环境变量:模型层测试只认测试自己布置的密钥。"""
-    monkeypatch.chdir(tmp_path)
-    for name in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
+def _cipher(monkeypatch):
+    """解密路径只认测试主密钥,不依赖进程环境里的 APP_MASTER_KEY。"""
+    monkeypatch.setattr("app.core.model_client.get_credential_cipher", lambda: _CIPHER)
 
 
-def _catalog() -> ModelCatalog:
-    return ModelCatalog.load()
-
-
-def _settings(**kwargs: str) -> Settings:
-    return Settings(_env_file=None, **kwargs)
+def _catalog(
+    *, with_chat: bool = True, with_embed: bool = True, api_key: str = "sk-test"
+) -> ModelCatalog:
+    providers: dict[str, ProviderEntry] = {}
+    models: dict[str, ModelEntry] = {}
+    defaults: dict[str, str] = {}
+    if with_embed:
+        providers["dash"] = ProviderEntry(
+            key="dash",
+            protocol="openai_compatible",
+            base_url="https://fake.example/v1",
+            api_key_encrypted=_enc(api_key),
+            enabled=True,
+        )
+        models["dash/emb"] = ModelEntry(
+            id="dash/emb", kind="embedding", provider_key="dash", model="emb-v3", dims=1024
+        )
+        defaults["embedding"] = "dash/emb"
+    if with_chat:
+        providers["ds"] = ProviderEntry(
+            key="ds",
+            protocol="openai_compatible",
+            base_url="https://chat.example/v1",
+            api_key_encrypted=_enc(api_key),
+            enabled=True,
+        )
+        models["ds/chat"] = ModelEntry(
+            id="ds/chat", kind="chat", provider_key="ds", model="chat-v1", context_tokens=64000
+        )
+        models["ds/off"] = ModelEntry(
+            id="ds/off", kind="chat", provider_key="ds", model="off", enabled=False
+        )
+        defaults["chat"] = "ds/chat"
+    return ModelCatalog(providers=providers, models=models, _defaults=defaults)
 
 
 def _embed_response(vectors: list[list[float]], status: int = 200) -> httpx.Response:
@@ -43,8 +87,7 @@ def _embed_response(vectors: list[list[float]], status: int = 200) -> httpx.Resp
     )
 
 
-def test_embed_batches_and_preserves_order(monkeypatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+def test_embed_batches_and_preserves_order() -> None:
     calls: list[list[str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -53,64 +96,93 @@ def test_embed_batches_and_preserves_order(monkeypatch) -> None:
         vectors = [[0.1, 0.2] for _ in body["input"]]
         return _embed_response(vectors)
 
-    client = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
-    result = client.embed([str(i) for i in range(12)], "dashscope/text-embedding-v3")
+    client = EmbeddingClient(_catalog(), transport=httpx.MockTransport(handler))
+    result = client.embed([str(i) for i in range(12)], "dash/emb")
 
     assert len(result) == 12
     assert result[0] == [0.1, 0.2]
     assert [len(batch) for batch in calls] == [10, 2]  # 每批 ≤10
-    assert all(requests[0] == batch[0] for requests, batch in zip(calls, calls, strict=True))
+    assert calls[0][:3] == ["0", "1", "2"]
+    assert calls[1] == ["10", "11"]  # 批次顺序即输入顺序
 
 
-def test_embed_uses_default_model_when_unspecified(monkeypatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+def test_embed_uses_default_model_when_unspecified() -> None:
     seen_models: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen_models.append(json.loads(request.content)["model"])
         return _embed_response([[0.0]])
 
-    client = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = EmbeddingClient(_catalog(), transport=httpx.MockTransport(handler))
     client.embed(["文本"])
-    assert seen_models == ["text-embedding-v3"]  # defaults.embedding
+    assert seen_models == ["emb-v3"]  # defaults.embedding → 上游真实模型名
 
 
-def test_embed_missing_key_raises_model_not_configured(monkeypatch) -> None:
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    transport = httpx.MockTransport(_embed_response([[0.0]]))
-    client = EmbeddingClient(_catalog(), _settings(), transport=transport)
-    with pytest.raises(ModelNotConfigured, match="DASHSCOPE_API_KEY"):
-        client.embed(["文本"])
-
-
-def test_embed_key_resolved_from_env_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text("DASHSCOPE_API_KEY=sk-from-dotenv\n", encoding="utf-8")
-
+def test_embed_decrypts_provider_key_for_auth_header() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer sk-from-dotenv"
+        assert request.headers["authorization"] == "Bearer sk-test"
         return _embed_response([[0.0]])
 
-    client = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = EmbeddingClient(_catalog(), transport=httpx.MockTransport(handler))
     assert client.embed(["文本"]) == [[0.0]]
 
 
-def test_embed_upstream_error_raises_model_call_error(monkeypatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+def test_local_provider_needs_no_key() -> None:
+    catalog = _catalog()
+    catalog.providers["ollama"] = ProviderEntry(
+        key="ollama",
+        protocol="openai_compatible",
+        base_url="http://localhost:11434/v1",
+        api_key_encrypted="",  # 空密文 = 本地免密钥端点
+        enabled=True,
+    )
+    assert resolve_api_key(catalog.providers["ollama"]) == "local-no-key"
 
+
+def test_corrupted_key_raises_decrypt_error() -> None:
+    broken = ModelCatalog(
+        providers={
+            "dash": ProviderEntry(
+                key="dash",
+                protocol="openai_compatible",
+                base_url="https://fake.example/v1",
+                api_key_encrypted="enc:v1:!!!not-base64!!!",
+                enabled=True,
+            )
+        },
+        models={
+            "dash/emb": ModelEntry(
+                id="dash/emb", kind="embedding", provider_key="dash", model="emb-v3"
+            )
+        },
+        _defaults={"embedding": "dash/emb"},
+    )
+    client = EmbeddingClient(broken, transport=httpx.MockTransport(_embed_response([[0.0]])))
+    with pytest.raises(AppError) as exc_info:
+        client.embed(["文本"])
+    assert exc_info.value.code_str == ErrorCode.CREDENTIAL_DECRYPT_FAILED[1]
+
+
+def test_no_embedding_configured_raises_model_not_configured() -> None:
+    client = EmbeddingClient(
+        _catalog(with_embed=False), transport=httpx.MockTransport(_embed_response([[0.0]]))
+    )
+    with pytest.raises(ModelNotConfigured, match="embedding"):
+        client.embed(["文本"])
+
+
+def test_embed_upstream_error_raises_model_call_error() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"error": "rate limited"})
 
-    client = EmbeddingClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = EmbeddingClient(_catalog(), transport=httpx.MockTransport(handler))
     with pytest.raises(ModelCallError) as exc_info:
         client.embed(["文本"])
     assert exc_info.value.status == 429
-    assert "DASHSCOPE" not in str(exc_info.value)  # 密钥绝不入消息
+    assert "sk-test" not in str(exc_info.value)  # 密钥绝不入消息
 
 
-def test_background_semaphore_limits_concurrency(monkeypatch) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+def test_background_semaphore_limits_concurrency() -> None:
     active, peak = 0, 0
     lock = threading.Lock()
 
@@ -126,7 +198,7 @@ def test_background_semaphore_limits_concurrency(monkeypatch) -> None:
 
     semaphore = threading.Semaphore(1)  # 后台预算=1:同刻最多 1 个在途请求
     client = EmbeddingClient(
-        _catalog(), _settings(), background_semaphore=semaphore,
+        _catalog(), background_semaphore=semaphore,
         transport=httpx.MockTransport(handler),
     )
     threads = [
@@ -149,58 +221,102 @@ def _sse_response(chunks: list[str]) -> httpx.Response:
     return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
 
-def test_chat_stream_yields_deltas_in_order(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-
+def test_chat_stream_yields_deltas_in_order() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert body["stream"] is True
-        assert body["model"] == "deepseek-chat"
+        assert body["model"] == "chat-v1"
         return _sse_response(["你好", "，", "世界"])
 
-    client = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
     assert list(client.chat_stream([{"role": "user", "content": "hi"}])) == ["你好", "，", "世界"]
 
 
-def test_chat_concatenates_stream(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+def test_chat_concatenates_stream() -> None:
     client = ChatClient(
-        _catalog(), _settings(),
+        _catalog(),
         transport=httpx.MockTransport(lambda req: _sse_response(["A", "B", "C"])),
     )
     assert client.chat([{"role": "user", "content": "hi"}]) == "ABC"
 
 
-def test_chat_upstream_error_raises(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-
+def test_chat_upstream_error_raises() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
 
-    client = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
     with pytest.raises(ModelCallError) as exc_info:
         list(client.chat_stream([{"role": "user", "content": "hi"}]))
     assert exc_info.value.status == 500
 
 
-def test_disabled_or_unknown_model_rejected(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
-    chat = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(_sse_response(["x"])))
-    embed_transport = httpx.MockTransport(_embed_response([[0.0]]))
-    embed = EmbeddingClient(_catalog(), _settings(), transport=embed_transport)
+def test_disabled_or_unknown_model_rejected() -> None:
+    chat = ChatClient(_catalog(), transport=httpx.MockTransport(_sse_response(["x"])))
+    embed = EmbeddingClient(_catalog(), transport=httpx.MockTransport(_embed_response([[0.0]])))
     with pytest.raises(ModelNotConfigured):
-        chat.chat([{"role": "user", "content": "hi"}], "ollama/qwen3")  # enabled: false
+        chat.chat([{"role": "user", "content": "hi"}], "ds/off")  # enabled=False
     with pytest.raises(ModelNotConfigured):
         chat.chat([{"role": "user", "content": "hi"}], "no-such/model")
     with pytest.raises(ModelNotConfigured):
-        embed.embed(["x"], "deepseek/deepseek-chat")  # 类型不符
+        embed.embed(["x"], "ds/chat")  # 类型不符
 
 
-def test_resolve_api_key_local_provider_needs_no_key() -> None:
+def test_disabled_provider_hides_its_models() -> None:
     catalog = _catalog()
-    provider = catalog.get_provider("ollama")  # 免密钥本地供应商
-    assert resolve_api_key(provider, _settings()) == "local-no-key"
+    catalog.providers["ds"] = replace(catalog.providers["ds"], enabled=False)
+    chat = ChatClient(catalog, transport=httpx.MockTransport(_sse_response(["x"])))
+    with pytest.raises(ModelNotConfigured, match="供应商"):
+        chat.chat([{"role": "user", "content": "hi"}])  # 默认 chat 模型随供应商失效
+
+
+# ---------------------------- 协议注册表 ----------------------------
+
+
+def test_registry_dispatch_and_failclosed() -> None:
+    assert "openai_compatible" in registered_protocols()
+    assert get_protocol("openai_compatible").__class__.__name__ == "OpenAICompatible"
+    with pytest.raises(AppError) as exc_info:
+        get_protocol("no_such_protocol")
+    assert exc_info.value.code_str == ErrorCode.MODEL_NOT_CONFIGURED[1]
+    assert "no_such_protocol" in exc_info.value.message
+
+
+def test_registry_custom_adapter_is_dispatched() -> None:
+    """新增适配器 = @register_protocol 即接入,调用方零改动(注册表模式核心卖点)。"""
+    from app.core.model_protocols import register_protocol
+
+    @register_protocol("fake_unit_adapter")
+    class FakeAdapter:
+        def embed(self, provider, model, api_key, texts, *, semaphore=None, transport=None):
+            return [[float(len(t))] for t in texts]
+
+        def chat_stream(self, provider, model, api_key, messages, temperature, *, transport=None):
+            yield "fake"
+
+        def chat_stream_tools(
+            self, provider, model, api_key, messages, tools, temperature, *, transport=None
+        ):
+            yield "fake"
+
+    try:
+        catalog = _catalog()
+        catalog.providers["dash"] = replace(
+            catalog.providers["dash"], protocol="fake_unit_adapter"
+        )
+        catalog.providers["ds"] = replace(
+            catalog.providers["ds"], protocol="fake_unit_adapter"
+        )
+        client = EmbeddingClient(catalog)
+        assert client.embed(["ab"], "dash/emb") == [[2.0]]
+        chat = ChatClient(catalog)
+        assert list(chat.chat_stream([{"role": "user", "content": "hi"}], "ds/chat")) == ["fake"]
+    finally:
+        import app.core.model_protocols as mp
+
+        mp._REGISTRY.pop("fake_unit_adapter", None)
+
+
+# ---------------------------- function calling 流 ----------------------------
 
 
 def _sse_tools_response(
@@ -227,9 +343,8 @@ _TOOLS = [
 ]
 
 
-def test_chat_stream_tools_aggregates_fragmented_call(monkeypatch) -> None:
+def test_chat_stream_tools_aggregates_fragmented_call() -> None:
     """function calling 流式分片跨 chunk 聚合:文本先发,意图在流末完整给出。"""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     fragments = [
         {
             "index": 0,
@@ -244,7 +359,7 @@ def test_chat_stream_tools_aggregates_fragmented_call(monkeypatch) -> None:
         assert body["tools"] == _TOOLS  # 工具 Schema 随请求发出
         return _sse_tools_response(["先查一下。"], fragments)
 
-    client = ChatClient(_catalog(), _settings(), transport=httpx.MockTransport(handler))
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
     frames = list(
         client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS)
     )
@@ -255,14 +370,13 @@ def test_chat_stream_tools_aggregates_fragmented_call(monkeypatch) -> None:
     assert json.loads(call.arguments) == {"query": "报销"}
 
 
-def test_chat_stream_tools_multiple_calls_in_index_order(monkeypatch) -> None:
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+def test_chat_stream_tools_multiple_calls_in_index_order() -> None:
     fragments = [
         {"index": 1, "id": "call_b", "function": {"name": "t2", "arguments": "{}"}},
         {"index": 0, "function": {"name": "t1", "arguments": "{\"a\":1}"}},  # 无 id,按 index 兜底
     ]
     client = ChatClient(
-        _catalog(), _settings(),
+        _catalog(),
         transport=httpx.MockTransport(lambda req: _sse_tools_response([], fragments)),
     )
     frames = list(client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS))

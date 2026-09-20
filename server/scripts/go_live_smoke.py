@@ -9,7 +9,9 @@
 tasks 表无 processing 残留 + /health 通过。
 
 运行(演练栈容器内):docker compose exec server python scripts/go_live_smoke.py
-环境变量:WENQU_BASE_URL,必填模型 Key 已在 .env(DeepSeek/DashScope)。
+环境变量:WENQU_BASE_URL;真实模型 Key(DASHSCOPE_API_KEY/DEEPSEEK_API_KEY)。
+OPT-25 起内置模型下线:冒烟要求库内已配 chat+embedding 默认模型;
+未配置时可用 WENQU_ADMIN_TOKEN(superuser JWT)让本脚本经管理端 API 自动配置。
 """
 
 from __future__ import annotations
@@ -106,6 +108,66 @@ def make_files() -> dict[str, tuple[str, bytes]]:
     }
 
 
+def ensure_models(client: httpx.Client, auth: dict, tag: str) -> tuple[bool, str]:
+    """OPT-25:内置模型下线,冒烟链路要先有 chat+embedding 默认模型。
+
+    已配置 → 直接过;未配置且有 WENQU_ADMIN_TOKEN → 经管理端 API 现配
+    (供应商/模型 id 带 tag,重复运行互不冲突);都没有 → 判失败。
+    """
+    catalog = client.get("/api/v1/models", headers=auth).json()
+    if catalog["defaults"].get("chat") and catalog["defaults"].get("embedding"):
+        return True, f"已配置:{catalog['defaults']}"
+    token = os.environ.get("WENQU_ADMIN_TOKEN", "")
+    dash_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    ds_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not token or not dash_key or not ds_key:
+        return False, (
+            "库内无默认模型,且缺 WENQU_ADMIN_TOKEN/DASHSCOPE_API_KEY/DEEPSEEK_API_KEY,无法自动配置"
+        )
+    ahdr = {"Authorization": f"Bearer {token}"}
+    plans = [
+        (
+            {
+                "name": f"smoke-dashscope-{tag}",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "api_key": dash_key,
+            },
+            {
+                "model_id": f"smoke-dashscope/text-embedding-v3-{tag}",
+                "kind": "embedding",
+                "model_name": "text-embedding-v3",
+                "dims": 1024,
+                "is_default": True,
+            },
+        ),
+        (
+            {
+                "name": f"smoke-deepseek-{tag}",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key": ds_key,
+            },
+            {
+                "model_id": f"smoke-deepseek/deepseek-chat-{tag}",
+                "kind": "chat",
+                "model_name": "deepseek-chat",
+                "is_default": True,
+            },
+        ),
+    ]
+    for provider_in, model_in in plans:
+        pr = client.post("/api/v1/admin/model-providers", json=provider_in, headers=ahdr)
+        if pr.status_code != 201:
+            return False, f"建供应商失败 HTTP {pr.status_code} {pr.text[:120]}"
+        mr = client.post(
+            "/api/v1/admin/models",
+            json={**model_in, "provider_id": pr.json()["id"]},
+            headers=ahdr,
+        )
+        if mr.status_code != 201:
+            return False, f"建模型失败 HTTP {mr.status_code} {mr.text[:120]}"
+    return True, f"经管理端 API 配置完成:{tag}"
+
+
 def main() -> int:
     print(f"=== WenQu 冒烟七条(prod 形态,HTTP 真实链路)@ {BASE} ===")
     tag = uuid.uuid4().hex[:6]
@@ -119,6 +181,12 @@ def main() -> int:
     )
     check("注册用户", r.status_code == 201, f"HTTP {r.status_code}")
     auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me_id = r.json()["user"]["id"]
+    mk_ok, mk_detail = ensure_models(client, auth, tag)
+    check("前置:库内 chat+embedding 默认模型可用(OPT-25)", mk_ok, mk_detail)
+    if not mk_ok:
+        print("模型未就绪,后续条目必挂,提前退出。")
+        return 1
     space = ok_req(
         client, "POST", "/api/v1/spaces", json={"name": f"冒烟空间{tag}"}, headers=auth
     ).json()["id"]
@@ -321,12 +389,17 @@ def main() -> int:
         "条4 续播全文与落库一致", full == persisted, f"流 {len(full)} 字 vs 库 {len(persisted)} 字"
     )
 
-    # ---- 条 5:KB 范围受限 API Key ----
+    # ---- 条 5:KB 范围受限 API Key(OPT-26:绑定成员 = 本人,门槛 Admin+) ----
     key_r = ok_req(
         client,
         "POST",
         f"/api/v1/spaces/{space}/api-keys",
-        json={"name": f"仅C库{tag}", "capabilities": ["chat"], "kb_ids": [kb_c]},
+        json={
+            "name": f"仅C库{tag}",
+            "capabilities": ["chat"],
+            "kb_ids": [kb_c],
+            "member_user_id": me_id,
+        },
         headers=auth,
     )
     plain = key_r.json()["plaintext"]
@@ -390,6 +463,20 @@ def main() -> int:
         "条6 Viewer 建库 403",
         mk.status_code == 403 and "FORBIDDEN" in mk.text,
         f"HTTP {mk.status_code}",
+    )
+    kv = client.post(
+        f"/api/v1/spaces/{space}/api-keys",
+        json={
+            "name": "越权key",
+            "capabilities": ["chat"],
+            "member_user_id": viewer.json()["user"]["id"],
+        },
+        headers=v_auth,
+    )
+    check(
+        "条6 Viewer 建 Key 403(OPT-26 Admin+ 门槛)",
+        kv.status_code == 403 and "FORBIDDEN" in kv.text,
+        f"HTTP {kv.status_code}",
     )
     outsider = ok_req(
         client,

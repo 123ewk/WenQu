@@ -32,6 +32,7 @@ from app.application.repository.users import UserRepositoryImpl
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.auth import AuthService
 from app.application.service.knowledge import KnowledgeService
+from app.application.service.model_admin import ModelAdminService
 from app.application.service.profile import ProfileService
 from app.application.service.qa import BackgroundDb, QAService
 from app.application.service.retrieval import RetrievalService
@@ -81,6 +82,13 @@ def get_current_user(
     user = db.get(User, uuid.UUID(str(payload["sub"])))
     if user is None:
         raise AppError(ErrorCode.AUTH_REQUIRED, "登录状态已失效", http_status=401)
+    return user
+
+
+def get_current_superuser(user: User = Depends(get_current_user)) -> User:
+    """平台管理员守卫(OPT-25):模型管理是全局配置,只认 is_superuser 的 JWT 身份。"""
+    if not user.is_superuser:
+        raise AppError(ErrorCode.FORBIDDEN, "仅平台管理员可管理模型", http_status=403)
     return user
 
 
@@ -214,10 +222,9 @@ def get_retrieval_repository(db: Session = Depends(get_db)) -> RetrievalReposito
     return RetrievalRepositoryImpl(db)
 
 
-def get_embedding_gateway() -> EmbeddingGateway:
-    """向量化网关:检索与流水线共用模型层;测试用 dependency_overrides 换假实现。"""
-    settings = get_settings()
-    return EmbeddingClient(ModelCatalog.load(), settings)
+def get_embedding_gateway(db: Session = Depends(get_db)) -> EmbeddingGateway:
+    """向量化网关:目录每请求从库读(自定义模型即时生效);测试用 dependency_overrides 换假实现。"""
+    return EmbeddingClient(ModelCatalog.load_from_db(db))
 
 
 def get_retrieval_service(
@@ -245,11 +252,19 @@ def get_api_key_service(db: Session = Depends(get_db)) -> ApiKeyService:
     return build_api_key_service(db)
 
 
-def get_chat_gateway() -> ToolCallingChat:
+def get_model_catalog(db: Session = Depends(get_db)) -> ModelCatalog:
+    """模型目录只读快照:公开清单、建 KB 解析默认嵌入模型、管理端共用。"""
+    return ModelCatalog.load_from_db(db)
+
+
+def get_model_admin_service(db: Session = Depends(get_db)) -> ModelAdminService:
+    return ModelAdminService(db)
+
+
+def get_chat_gateway(db: Session = Depends(get_db)) -> ToolCallingChat:
     """对话网关:问答直检走 chat_stream,Agent 模式(OPT-10)走 chat_stream_tools;
-    测试用 dependency_overrides 换假实现。"""
-    settings = get_settings()
-    return ChatClient(ModelCatalog.load(), settings)
+    目录每请求从库读(OPT-25);测试用 dependency_overrides 换假实现。"""
+    return ChatClient(ModelCatalog.load_from_db(db))
 
 
 @lru_cache

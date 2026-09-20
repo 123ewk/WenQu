@@ -19,11 +19,13 @@ from app.api.deps import (
     get_current_actor,
     get_current_user,
     get_knowledge_service,
+    get_model_catalog,
 )
 from app.api.routing import CommitBeforeSendRoute
 from app.application.repository.knowledge import KbStats
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.knowledge import KnowledgeService
+from app.core.model_catalog import ModelCatalog
 from app.domain.models import ApiKey, Document, KnowledgeBase, User
 
 router = APIRouter(
@@ -166,9 +168,18 @@ def create_kb(
     body: CreateKBRequest,
     user: User = Depends(get_current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
+    catalog: ModelCatalog = Depends(get_model_catalog),
     ip: str = Depends(get_client_ip),
 ) -> KnowledgeBaseOut:
-    kb = service.create_kb(user, space_id, body.name, body.description, ip)
+    # 建库即固化当前默认嵌入模型 id;库里还没配默认时落空串,入库时才 fail-closed(503)
+    kb = service.create_kb(
+        user,
+        space_id,
+        body.name,
+        body.description,
+        ip,
+        embedding_model=catalog.default_id("embedding") or "",
+    )
     return _kb_out(kb)
 
 

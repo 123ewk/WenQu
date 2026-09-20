@@ -159,11 +159,8 @@ class KnowledgeBase(Base):
     )
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
-    embedding_model: Mapped[str] = mapped_column(
-        String(128),
-        default="dashscope/text-embedding-v3",
-        server_default="dashscope/text-embedding-v3",
-    )
+    # 建库时固化的嵌入模型 id(对外 model_id);空串 = 建库时尚无默认模型,入库时退回目录默认
+    embedding_model: Mapped[str] = mapped_column(String(128), default="", server_default="")
     embedding_dim: Mapped[int] = mapped_column(Integer, default=1024, server_default="1024")
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -333,11 +330,16 @@ class Message(Base):
 
 
 class ApiKey(Base):
-    """程序化接入凭据(OPT-6):只存 SHA-256 哈希,明文仅创建时回显一次。
+    """程序化接入凭据(OPT-6,OPT-26 起绑定成员):只存 SHA-256 哈希,明文仅创建时回显一次。
 
     - `key_hash` 唯一索引:认证时按哈希等值查找,不需要遍历解密;
+    - `member_user_id`:Key 以**该成员**身份行事(OPT-26)。签发者须有拉成员权限
+      (Admin+);校验 = Key 本身有效 ∧ 绑定成员仍在空间,路由权限随成员角色实时变化
+      (被移出 = Key 失效,降级 = 高权限路由被服务层拦下)。
+      旧数据/旧语义回退 `created_by`(迁移 0012 已回填,列可空仅因 users SET NULL);
+    - `created_by`:签发操作者(审计 actor),不再参与运行时身份;
     - `capabilities`:能力级授权(路由授权表 fail-closed),空数组 = 无任何能力;
-    - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受创建者成员身份约束);
+    - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受绑定成员身份约束);
     - 吊销 = 置 `revoked_at`(保留行,审计与"最近使用"仍有据可查)。
     """
 
@@ -349,6 +351,9 @@ class ApiKey(Base):
         Uuid, ForeignKey("spaces.id", ondelete="CASCADE")
     )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    member_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(64))
@@ -363,6 +368,65 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ModelProvider(Base):
+    """自定义模型供应商(OPT-25):替代随包 YAML,库内可管理。
+
+    - `protocol` 是协议注册表键(core/model_protocols 注册),调用时按其分发;
+    - `api_key_encrypted` 为 AES-GCM 密文(enc:v1:…),明文只在写入瞬间经过内存;
+      空串 = 免密钥本地端点;`key_hint` 只供管理端辨识,任何接口不回显明文;
+    - `enabled=false` 的供应商,其下模型一律不出现在可选清单(与旧 provider 语义一致)。
+    """
+
+    __tablename__ = "model_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    protocol: Mapped[str] = mapped_column(
+        String(32), default="openai_compatible", server_default="openai_compatible"
+    )
+    base_url: Mapped[str] = mapped_column(String(512))
+    api_key_encrypted: Mapped[str] = mapped_column(Text, default="", server_default="")
+    key_hint: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CustomModel(Base):
+    """自定义模型条目(OPT-25):kind 三分类与契约 ModelCatalogOut 一致。
+
+    - `model_id` 是契约里的对外模型 id(如 "custom/qwen-plus"),String(128) 与
+      messages.model_id / knowledge_bases.embedding_model 对齐;
+    - 默认模型按 kind 唯一(partial unique index);全库无默认时该 kind 调用
+      MODEL_NOT_CONFIGURED 503(fail-closed,上线手册要求配置后冒烟)。
+    """
+
+    __tablename__ = "custom_models"
+    __table_args__ = (Index("ix_custom_models_kind_enabled", "kind", "enabled"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    model_id: Mapped[str] = mapped_column(String(128), unique=True)
+    provider_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("model_providers.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    model_name: Mapped[str] = mapped_column(String(128))
+    dims: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

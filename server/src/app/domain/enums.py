@@ -53,6 +53,13 @@ class AuditAction(StrEnum):
     DOCUMENT_REPARSED = "document.reparsed"
     API_KEY_CREATED = "api_key.created"
     API_KEY_REVOKED = "api_key.revoked"
+    # OPT-25 自定义模型管理(superuser 操作,全部留痕)
+    MODEL_PROVIDER_CREATED = "model_provider.created"
+    MODEL_PROVIDER_UPDATED = "model_provider.updated"
+    MODEL_PROVIDER_DELETED = "model_provider.deleted"
+    MODEL_CREATED = "model.created"
+    MODEL_UPDATED = "model.updated"
+    MODEL_DELETED = "model.deleted"
     ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
 
 
