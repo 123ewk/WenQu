@@ -20,13 +20,14 @@ from app.api.deps import (
     get_space_service,
     get_user_repository,
 )
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.spaces import SpaceService
 from app.domain.enums import AuditAction
 from app.domain.interfaces import UserRepository
 from app.domain.models import AuditLog, Membership, Space, User
 
-router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"])
+router = APIRouter(prefix="/api/v1/spaces", tags=["spaces"], route_class=CommitBeforeSendRoute)
 
 
 # ---------------------------- 模型 ----------------------------

@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
+from app.api.routing import CommitBeforeSendRoute
 from app.core.model_catalog import ModelCatalog
 from app.domain.models import User
 
-router = APIRouter(prefix="/api/v1/models", tags=["models"])
+router = APIRouter(prefix="/api/v1/models", tags=["models"], route_class=CommitBeforeSendRoute)
 
 
 class ModelItem(BaseModel):

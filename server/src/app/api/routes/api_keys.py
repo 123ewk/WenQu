@@ -16,10 +16,16 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_api_key_service, get_client_ip, get_current_user
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.api_keys import ApiKeyService
 from app.domain.models import ApiKey, User
 
-router = APIRouter(prefix="/api/v1/spaces/{space_id}/api-keys", tags=["api-keys"])
+router = APIRouter(
+    prefix="/api/v1/spaces/{space_id}/api-keys",
+    tags=["api-keys"],
+    route_class=CommitBeforeSendRoute,
+)
+
 
 
 class CreateApiKeyRequest(BaseModel):

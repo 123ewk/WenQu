@@ -20,12 +20,18 @@ from app.api.deps import (
     get_current_user,
     get_knowledge_service,
 )
+from app.api.routing import CommitBeforeSendRoute
 from app.application.repository.knowledge import KbStats
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.knowledge import KnowledgeService
 from app.domain.models import ApiKey, Document, KnowledgeBase, User
 
-router = APIRouter(prefix="/api/v1/spaces/{space_id}/knowledge-bases", tags=["knowledge"])
+router = APIRouter(
+    prefix="/api/v1/spaces/{space_id}/knowledge-bases",
+    tags=["knowledge"],
+    route_class=CommitBeforeSendRoute,
+)
+
 
 
 class CreateKBRequest(BaseModel):

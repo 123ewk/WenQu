@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user
+from app.api.routing import CommitBeforeSendRoute
 from app.application.chunking import blocks_from_text, parent_child_chunks
 from app.domain.models import User
 
-router = APIRouter(prefix="/api/v1/chunks", tags=["chunking"])
+router = APIRouter(prefix="/api/v1/chunks", tags=["chunking"], route_class=CommitBeforeSendRoute)
 
 
 class ChunkPreviewRequest(BaseModel):

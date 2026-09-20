@@ -30,11 +30,17 @@ from app.api.deps import (
     get_current_user,
     get_qa_service,
 )
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.qa import QAService
 from app.domain.models import Conversation, Message, User
 
-router = APIRouter(prefix="/api/v1/spaces/{space_id}", tags=["conversations"])
+router = APIRouter(
+    prefix="/api/v1/spaces/{space_id}",
+    tags=["conversations"],
+    route_class=CommitBeforeSendRoute,
+)
+
 
 
 class CreateConversationRequest(BaseModel):

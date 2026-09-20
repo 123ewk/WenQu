@@ -16,10 +16,16 @@ from app.api.deps import (
     get_current_actor,
     get_retrieval_service,
 )
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
 
-router = APIRouter(prefix="/api/v1/spaces/{space_id}/retrieval", tags=["retrieval"])
+router = APIRouter(
+    prefix="/api/v1/spaces/{space_id}/retrieval",
+    tags=["retrieval"],
+    route_class=CommitBeforeSendRoute,
+)
+
 
 
 class SearchRequest(BaseModel):

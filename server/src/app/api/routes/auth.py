@@ -14,10 +14,11 @@ from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.deps import get_auth_service, get_client_ip, get_current_user
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.auth import AuthService, AuthSession, TokenPair
 from app.domain.models import Space, User
 
-router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"], route_class=CommitBeforeSendRoute)
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{3,32}$")
 

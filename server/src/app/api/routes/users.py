@@ -16,11 +16,12 @@ from app.api.deps import (
     get_profile_service,
 )
 from app.api.routes.auth import UserOut
+from app.api.routing import CommitBeforeSendRoute
 from app.application.service.auth import AuthService
 from app.application.service.profile import ProfileService
 from app.domain.models import User
 
-router = APIRouter(prefix="/api/v1/users", tags=["users"])
+router = APIRouter(prefix="/api/v1/users", tags=["users"], route_class=CommitBeforeSendRoute)
 
 
 class UpdateProfileRequest(BaseModel):
