@@ -29,3 +29,6 @@ Thumbs.db
 # 构建产物
 dist/
 build/
+
+# 备份产物(pg_dump/对象镜像,绝不出库)
+backups/

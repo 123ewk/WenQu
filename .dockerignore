@@ -1,0 +1,16 @@
+# server/parser 镜像共享仓库根上下文:排除本地虚绿与密钥,防止污染镜像层。
+# .env 必须排除 —— compose env_file 在运行期注入,构建期不需要也不允许。
+.git
+**/.venv
+**/__pycache__
+# dockerignore 的 ".env" 只匹配上下文根:必须 "**/.env" 才盖住 server/.env 这类嵌套真实配置
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+backups
+docs
+web
+parser/tests
+server/tests
