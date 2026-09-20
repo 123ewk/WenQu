@@ -16,6 +16,8 @@ import uuid
 
 from fastapi import Request
 
+from app.core.client_ip import resolve_client_ip
+from app.core.config import get_settings
 from app.core.errors import AppError
 from app.core.security import decode_access_token
 from app.domain.enums import AuditAction, AuditResult
@@ -73,7 +75,11 @@ def record_denied(request: Request, exc: AppError) -> None:
                 target=f"{request.method} {request.url.path}"[:128],
                 result=AuditResult.DENIED,
                 detail=detail,
-                ip=request.client.host if request.client else "",
+                ip=resolve_client_ip(
+                    request.client.host if request.client else "",
+                    request.headers,
+                    get_settings().trusted_proxies,
+                ),
             )
         )
         db.commit()
