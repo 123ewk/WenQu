@@ -348,6 +348,39 @@ export interface ModelTestResultOut {
   ok: boolean
 }
 
+/* ───── OPT-28:Token 用量(挂空间) ─────
+ * 同 OPT-27:类型按对接说明 §2 手工定义,openapi 重导后核对。 */
+
+/** 时间窗取值;"all" 的字面量待契约核对(文档只示例了 period=30d) */
+export type UsagePeriod = '7d' | '30d' | 'all'
+
+/** 用量口径:upstream = 供应商回传的精确值;estimated = 后端估算(展示打 ≈ 角标) */
+export type UsageSource = 'upstream' | 'estimated'
+
+export interface TokenUsageTotals {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  chat_calls?: number
+  embedding_calls?: number
+  source?: UsageSource
+}
+
+/** 按成员汇总行(Admin+ 汇总表) */
+export interface MemberTokenUsage extends TokenUsageTotals {
+  user_id: string
+  username: string
+  nickname: string
+  role: number
+}
+
+export interface TokenUsageOut {
+  period: string
+  generated_at: string | null
+  space_total: TokenUsageTotals
+  members: MemberTokenUsage[]
+}
+
 /* ───── M2:检索 ───── */
 
 export interface SearchRequest {

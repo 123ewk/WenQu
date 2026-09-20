@@ -72,6 +72,12 @@ const router = createRouter({
           meta: { title: '模型配置', desc: '本空间向量化/对话/重排模型配置 · 写操作需 Admin 及以上' },
         },
         {
+          path: 'settings/usage',
+          name: 'settings-usage',
+          component: () => import('@/views/settings/TokenUsageView.vue'),
+          meta: { title: 'Token 用量', desc: '对话与向量化的 token 消耗统计 · 按成员汇总需 Admin 及以上' },
+        },
+        {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/audit/AuditView.vue'),
