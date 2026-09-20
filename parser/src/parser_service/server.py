@@ -86,7 +86,8 @@ def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
     arg_parser = argparse.ArgumentParser(description="WenQu 文档解析服务")
-    arg_parser.add_argument("--addr", default=os.environ.get("PARSER_LISTEN_ADDR", ":50051"))
+    # 注意:gRPC Python 拒绝裸 ":50051"(host must not be empty),必须显式写绑定地址
+    arg_parser.add_argument("--addr", default=os.environ.get("PARSER_LISTEN_ADDR", "0.0.0.0:50051"))
     args = arg_parser.parse_args()
 
     token = os.environ.get("PARSER_GRPC_TOKEN", "")
