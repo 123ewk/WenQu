@@ -1122,6 +1122,71 @@ def test_last_login_recorded_on_login_only(client) -> None:
     assert third["user"]["last_login_at"] >= me_after_first["last_login_at"]
 
 
+def test_trusted_proxy_resolves_client_ip_end_to_end(client, monkeypatch) -> None:
+    """OPT-12 集成:配置可信代理后,登录 IP 与被拒审计 IP 都取 XFF 剥链结果;
+
+    对端不可信时伪造 XFF 不采 —— 收口点(deps.get_client_ip 与 denied_audit)共用同一实现。
+    """
+    from fastapi.testclient import TestClient
+
+    from app.api import denied_audit as denied_audit_module
+    from app.api import deps as deps_module
+    from app.core.config import Settings
+    from app.main import create_app
+
+    proxy_settings = lambda: Settings(trusted_proxies="127.0.0.0/8,10.0.0.0/8")  # noqa: E731
+    monkeypatch.setattr(deps_module, "get_settings", proxy_settings)
+    monkeypatch.setattr(denied_audit_module, "get_settings", proxy_settings)
+
+    app = create_app()
+    with TestClient(app, client=("127.0.0.1", 1234)) as tc:
+        headers = {"X-Forwarded-For": "203.0.113.9, 10.1.1.1"}
+        # 注册即登录;conftest 的 _register 不带自定义头,这里内联发请求以携带 XFF
+        resp = tc.post(
+            "/api/v1/auth/register",
+            json={"username": "xff-owner", "nickname": "xff", "password": "secret-pass-1"},
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        owner = resp.json()
+        owner_auth = {"Authorization": f"Bearer {owner['access_token']}", **headers}
+        me = tc.get("/api/v1/users/me", headers=owner_auth).json()
+        assert me["last_login_ip"] == "203.0.113.9"  # XFF 右起第一个不可信跳
+
+        space_id = tc.post(
+            "/api/v1/spaces", json={"name": "xff 空间"}, headers=owner_auth
+        ).json()["id"]
+        member = _register(client, "xff-editor")  # 经 session 夹具注册(直连,testclient 对端)
+        tc.post(
+            f"/api/v1/spaces/{space_id}/members",
+            json={"username": "xff-editor", "role": 20},
+            headers=owner_auth,
+        )
+        # Editor 读审计 → 403,denied_audit 独立会话写 IP 同样走可信解析
+        tc.get(
+            f"/api/v1/spaces/{space_id}/audit-logs",
+            headers={"Authorization": f"Bearer {member['access_token']}", **headers},
+        )
+        logs = tc.get(
+            f"/api/v1/spaces/{space_id}/audit-logs",
+            params={"action": "access.denied"},
+            headers=owner_auth,
+        ).json()
+        target = f"GET /api/v1/spaces/{space_id}/audit-logs"
+        mine = [item for item in logs["items"] if item["target"] == target]
+        assert mine, logs  # 本空间下 Editor 越权读审计的 denied 记录
+        assert mine[0]["ip"] == "203.0.113.9"
+
+    # 对端(198.51.100.7)不在可信网段:同一伪造头必须不被采,回落直连地址
+    with TestClient(app, client=("198.51.100.7", 4321)) as tc:
+        login = tc.post(
+            "/api/v1/auth/login",
+            json={"username": "xff-owner", "password": "secret-pass-1"},
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        )
+        assert login.json()["user"]["last_login_ip"] == "198.51.100.7"
+
+
 
 def test_space_retrieval_params_persist_and_validate(client) -> None:
     """缺口 #5:空间级检索参数。要点:

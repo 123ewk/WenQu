@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
     otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")
 
+    # ---- 网络身份(OPT-12/翻转项 #8):可信代理 CIDR 逗号分隔,如 "127.0.0.1,10.0.0.0/8" ----
+    # 留空 = 不信任任何代理,XFF 完全不参与取值(fail-closed);非法网段在启动/测试期即报错
+    trusted_proxies: str = Field("", validation_alias="APP_TRUSTED_PROXIES")
+
     @model_validator(mode="after")
     def _prod_must_be_explicit(self) -> Settings:
         if self.env == "prod":

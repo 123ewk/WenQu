@@ -37,6 +37,7 @@ from app.application.service.qa import BackgroundDb, QAService
 from app.application.service.retrieval import RetrievalService
 from app.application.service.spaces import SpaceService
 from app.application.streaming import StreamSupervisor
+from app.core.client_ip import resolve_client_ip
 from app.core.config import get_settings
 from app.core.db import get_db, get_session_factory
 from app.core.errors import AppError, ErrorCode
@@ -323,6 +324,5 @@ def get_profile_service(
 
 
 def get_client_ip(request: Request) -> str:
-    # M2 起:配置 trusted proxies 显式网段后再解析 X-Forwarded-For(翻转项 #8);
-    # 当前直接取直连地址,防 XFF 伪造绕过审计与限流
-    return request.client.host if request.client else ""
+    peer = request.client.host if request.client else ""
+    return resolve_client_ip(peer, request.headers, get_settings().trusted_proxies)
