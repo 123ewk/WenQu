@@ -67,19 +67,22 @@ function kbScopeLabel(key: ApiKeyOut): string {
 const activeKeys = computed(() => items.value.filter((k) => !k.revoked_at))
 const revokedKeys = computed(() => items.value.filter((k) => k.revoked_at))
 
-/** 绑定成员已注销(或存量 Key 无法回填):整行置灰,与"已吊销"同样式 */
+/**
+ * 绑定成员已失效(注销/被移出,实测后端把 member_username 置 null)或已吊销:整行置灰。
+ * 注意别用 member_user_id 判 —— 被移出时 id 仍在,只有 username/nickname 变 null。
+ */
 function isDeadKey(key: ApiKeyOut): boolean {
-  return !!key.revoked_at || !key.member_user_id
+  return !!key.revoked_at || !key.member_username
 }
 
 function rowClass({ row }: { row: ApiKeyOut }): string {
   return isDeadKey(row) ? 'ak-row-dead' : ''
 }
 
-/** 列"绑定成员":昵称(用户名);注销后 member_* 为 null,显示"已注销" */
+/** 列"绑定成员":昵称(用户名);member_username 为 null(注销/被移出)显示"已注销" */
 function memberLabel(key: ApiKeyOut): string {
-  if (!key.member_user_id) return '已注销'
-  return key.member_nickname ? `${key.member_nickname}(${key.member_username})` : (key.member_username ?? '已注销')
+  if (!key.member_username) return '已注销'
+  return key.member_nickname ? `${key.member_nickname}(${key.member_username})` : key.member_username
 }
 
 /* ───── 数据加载 ───── */
@@ -293,7 +296,7 @@ async function onRevoke(key: ApiKeyOut) {
           </el-table-column>
           <el-table-column label="绑定成员" min-width="170">
             <template #default="{ row }">
-              <span v-if="!row.member_user_id" class="ak-revoked">已注销</span>
+              <span v-if="!row.member_username" class="ak-revoked">已注销</span>
               <span v-else>
                 <span class="ak-member">{{ memberLabel(row as ApiKeyOut) }}</span>
                 <span v-if="row.member_role != null" class="ak-member-role">{{ roleLabel(row.member_role) }}</span>

@@ -318,8 +318,9 @@ export interface ApiKeyOut {
   /** 形如 sk-live-****ab12;完整明文只在创建响应里出现一次 */
   key_hint: string
   /* ───── OPT-26:Key 绑定空间成员,以下字段随列表/创建响应返回 ───── */
-  /** 绑定成员 id;存量旧 Key 回退签发者,成员注销后为 null */
+  /** 绑定成员 id;存量旧 Key 回退签发者,账号注销后为 null(实测:被移出空间时 id 仍在) */
   member_user_id: string | null
+  /** 成员注销或被移出空间后为 null —— 前端以"username 为 null"判定"已注销"并置灰 */
   member_username: string | null
   member_nickname: string | null
   /** 绑定时点的空间角色数值(40/30/20/10),与成员页同一口径 */
