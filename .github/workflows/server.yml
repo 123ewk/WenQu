@@ -52,3 +52,18 @@ jobs:
         env:
           APP_DATABASE_URL: postgresql+psycopg://wenqu:ci@localhost:5432/wenqu
         run: uv run pytest
+
+  # Go-Live 翻转项 #14:依赖漏洞审计(对 uv.lock 全量解析,不受私有路径包影响)
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit(uv.lock)
+        working-directory: server
+        run: |
+          # 去掉自引用的 editable 行(-e .):pip-audit 无法对目录做哈希安装
+          uv export --locked --quiet | grep -v '^-e ' > /tmp/reqs.txt
+          pipx run pip-audit --strict -r /tmp/reqs.txt

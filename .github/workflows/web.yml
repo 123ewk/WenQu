@@ -26,3 +26,17 @@ jobs:
       - name: 类型检查 + 构建
         working-directory: web
         run: npm run build
+
+  # Go-Live 翻转项 #14:依赖漏洞审计(security-only 策略:high/critical 阻断,dev 依赖不计)
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm audit
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
