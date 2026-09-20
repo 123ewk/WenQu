@@ -46,9 +46,21 @@ const createForm = reactive({
   /** OPT-26 必填:绑定的空间成员 user_id,默认选中当前用户 */
   memberUserId: '',
   capabilities: ['chat'] as string[],
-  allKbs: true,
   kbIds: [] as string[],
 })
+
+/**
+ * 「全部」与条目双向联动(原型 07 toggleAllKeyKb/syncKbAll 口径):
+ * 全勾 = 全部;提交时全勾折算成空数组(契约:空 = 不限库)。
+ * ⚠️ 绝不能让"零勾选"落到 kb_ids=[] —— 那在契约里等于"全部",会出现"什么都不选=全放行"的反向语义,
+ * 故 canSubmit 要求至少勾一个。
+ */
+const allKbs = computed(() => kbs.value.length > 0 && createForm.kbIds.length === kbs.value.length)
+const someKbs = computed(() => createForm.kbIds.length > 0 && !allKbs.value)
+
+function toggleAllKbs(value: boolean) {
+  createForm.kbIds = value ? kbs.value.map((k) => k.id) : []
+}
 
 /** 未映射的能力值原样展示,不隐藏(后端新增能力时不至于渲染成空白) */
 function capabilityLabel(value: string): string {
@@ -149,7 +161,12 @@ const created = ref<ApiKeyCreatedOut | null>(null)
 const createError = ref('')
 
 const canSubmit = computed(
-  () => createForm.name.trim().length > 0 && !!createForm.memberUserId && !creating.value,
+  () =>
+    createForm.name.trim().length > 0 &&
+    !!createForm.memberUserId &&
+    // 有库时必须至少勾一个:零勾选折算成 kb_ids=[] 会被契约解释成「全部」(反向语义),须挡在提交前
+    (kbs.value.length === 0 || createForm.kbIds.length > 0) &&
+    !creating.value,
 )
 
 function openCreate() {
@@ -158,16 +175,10 @@ function openCreate() {
   // 默认选中当前用户(必为本空间成员,Admin+ 才能进到这里)
   createForm.memberUserId = auth.user?.id ?? ''
   createForm.capabilities = ['chat']
-  createForm.allKbs = true
   createForm.kbIds = kbs.value.map((k) => k.id)
   createError.value = ''
   created.value = null
   createOpen.value = true
-}
-
-function toggleAllKbs(value: boolean) {
-  createForm.allKbs = value
-  if (value) createForm.kbIds = kbs.value.map((k) => k.id)
 }
 
 async function onCreate() {
@@ -181,8 +192,8 @@ async function onCreate() {
       description: createForm.description.trim(),
       member_user_id: createForm.memberUserId,
       capabilities: createForm.capabilities,
-      // 勾选「全部」时提交空数组(契约语义:不限制);否则提交选中的库
-      kb_ids: createForm.allKbs ? [] : createForm.kbIds,
+      // 全选折算成空数组(契约语义:不限制);部分选中提交其 id;零勾选已被 canSubmit 挡住
+      kb_ids: allKbs.value ? [] : createForm.kbIds,
     }
     created.value = await apiCreateApiKey(spaceId, body)
     await load()
@@ -394,24 +405,24 @@ async function onRevoke(key: ApiKeyOut) {
               <div class="ak-scope-head">
                 <span>允许的知识库</span>
                 <el-checkbox
-                  :model-value="createForm.allKbs"
+                  :model-value="allKbs"
+                  :indeterminate="someKbs"
                   @update:model-value="(v: any) => toggleAllKbs(Boolean(v))"
                 >
                   全部
                 </el-checkbox>
               </div>
             </template>
-            <el-checkbox-group
-              v-model="createForm.kbIds"
-              :disabled="createForm.allKbs"
-              class="ak-kb-grid"
-            >
+            <el-checkbox-group v-model="createForm.kbIds" class="ak-kb-grid">
               <label v-for="kb in kbs" :key="kb.id" class="ak-kb-opt">
                 <el-checkbox :value="kb.id" />
                 <span class="truncate">{{ kb.name }}</span>
               </label>
               <div v-if="!kbs.length" class="cell-dim">当前空间还没有知识库</div>
             </el-checkbox-group>
+            <div v-if="kbs.length && !createForm.kbIds.length" class="ak-err ak-scope-err">
+              至少选择一个知识库(全不选会被视为"全部知识库",与预期相反)
+            </div>
           </el-form-item>
         </el-form>
         <div v-if="createError" class="ak-err">{{ createError }}</div>
