@@ -257,6 +257,97 @@ export interface ModelCatalogOut {
   defaults: Record<string, string>
 }
 
+/* ───── OPT-27:空间模型配置(挂空间) ─────
+ * 后端分批合并中,本组类型按《给前端的对接说明-OPT27…》§1 手工定义;
+ * 每批 openapi 重导后须逐字段核对勘误。 */
+
+export interface EmbeddingConfigOut {
+  /** 内置锁死模型(text-embedding-v3),页面不可改 */
+  model_name: string
+  /** 固定 1024;换模型会使已入库向量失效 */
+  dims: number
+  /** 引导用户去建 API Key 的官网地址 */
+  doc_url: string
+  key_configured: boolean
+  /** 只回显掩码(如 `sk-1...9b`),明文永不回传 */
+  key_hint: string | null
+}
+
+export interface SpaceModelConfigOut {
+  embedding: EmbeddingConfigOut
+  /** true = 本空间未配 Key、开发环境静默回落运维全局 Key(生产恒 false,须空间自配) */
+  fallback_active: boolean
+  rerank: { enabled: boolean }
+}
+
+/** GET .../model-config/types 下拉项:key 即提交的 provider_type,base_url 用它预填 */
+export interface ModelTypeOption {
+  key: string
+  display_name: string
+  default_base_url: string
+}
+
+export interface ModelProviderOut {
+  id: string
+  /** chat | rerank(§1.5:rerank 复用同一套 providers/models 端点,靠 kind 区分) */
+  kind: string
+  provider_type: string
+  /** 空间内唯一,列表展示名 */
+  name: string
+  base_url: string
+  key_hint: string | null
+}
+
+export interface ModelProviderCreateRequest {
+  kind?: string
+  provider_type: string
+  name: string
+  base_url: string
+  /** 必填;明文只在这一跳出现,落库即加密 */
+  api_key: string
+}
+
+export interface ModelProviderUpdateRequest {
+  name?: string
+  base_url?: string
+  /** 不传 = 不修改已存 Key */
+  api_key?: string
+}
+
+export interface SpaceModelOut {
+  id: string
+  kind: string
+  provider_id: string
+  provider_name: string
+  /** 空间内唯一,展示名 */
+  model_id: string
+  /** 实际调上游用的模型名,如 deepseek-chat */
+  model_name: string
+  /** chat 新建必填,OPT-29 进度条分母;rerank 无此字段 */
+  context_tokens: number | null
+  /** 同空间同 kind 仅一个默认(后端互斥自动顶替);问答未指定模型时用它 */
+  is_default: boolean
+}
+
+export interface SpaceModelCreateRequest {
+  kind?: string
+  provider_id: string
+  model_name: string
+  context_tokens?: number | null
+  is_default?: boolean
+}
+
+export interface SpaceModelUpdateRequest {
+  model_name?: string
+  context_tokens?: number | null
+  is_default?: boolean
+}
+
+/** 测试类端点成功回包;失败走 424 UPSTREAM_MODEL_ERROR(details.reason ∈ auth|network|model_name) */
+export interface ModelTestResultOut {
+  ok: boolean
+}
+
 /* ───── M2:检索 ───── */
 
 export interface SearchRequest {

@@ -65,6 +65,13 @@ const router = createRouter({
           meta: { title: 'API Key', desc: '空间内程序化接入凭证管理' },
         },
         {
+          // OPT-27:文档建议 /space/:sid/settings/models,本前端空间上下文统一走侧栏切换器,故用扁平路由
+          path: 'settings/models',
+          name: 'settings-models',
+          component: () => import('@/views/settings/ModelConfigView.vue'),
+          meta: { title: '模型配置', desc: '本空间向量化/对话/重排模型配置 · 写操作需 Admin 及以上' },
+        },
+        {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/audit/AuditView.vue'),

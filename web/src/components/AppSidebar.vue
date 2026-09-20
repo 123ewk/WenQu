@@ -4,6 +4,7 @@ import {
   ChatLineRound,
   Check,
   Collection,
+  Cpu,
   DCaret,
   Document,
   Expand,
@@ -129,6 +130,9 @@ async function onLogout() {
       </router-link>
       <router-link to="/api-keys" class="nav-item" active-class="nav-active">
         <el-icon><Key /></el-icon><span class="sb-text">API Key</span>
+      </router-link>
+      <router-link to="/settings/models" class="nav-item" active-class="nav-active">
+        <el-icon><Cpu /></el-icon><span class="sb-text">模型配置</span>
       </router-link>
       <router-link v-if="auth.isAdmin" to="/audit" class="nav-item" active-class="nav-active">
         <el-icon><Document /></el-icon><span class="sb-text">审计日志</span>
