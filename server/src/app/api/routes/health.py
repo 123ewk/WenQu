@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.core.config import get_settings
+from app.core.migrations import migration_status
 
 router = APIRouter(tags=["system"])
 
@@ -19,13 +20,15 @@ async def health() -> dict[str, str]:
 
 @router.get("/system/info")
 async def system_info() -> dict[str, Any]:
-    """版本 + 迁移状态等排障信息;M2 起接入真实迁移版本(alembic current)与构建 commit。"""
+    """版本 + 真实迁移状态(上线七步:迁移后确认非 dirty);DB 不可达时 current=null 且 dirty=true。"""
     settings = get_settings()
+    status = migration_status()
     return {
         "name": "wenqu-server",
         "version": settings.version,
         "env": settings.env,
-        "migration_version": None,  # M2 接入
-        "migration_dirty": False,
-        "commit": None,  # 构建时注入,M2 起 CI 写入
+        "migration_version": status.current,
+        "migration_head": status.head,
+        "migration_dirty": status.dirty,
+        "commit": None,  # 构建时注入(WEB_COMMIT 构建参数),镜像未注入则为 null
     }

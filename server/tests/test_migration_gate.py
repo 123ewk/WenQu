@@ -1,0 +1,66 @@
+"""迁移状态检查与 prod 启动阻断(Go-Live 翻转项 #12)单测(不依赖真库)。"""
+
+from __future__ import annotations
+
+import pytest
+
+import app.main as main_module
+from app.core.config import Settings
+from app.core.db import get_engine, get_session_factory
+from app.core.migrations import SCRIPT_LOCATION, MigrationStatus, migration_status
+
+
+def _clear_caches() -> None:
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+
+def test_script_head_is_0011() -> None:
+    from alembic.script import ScriptDirectory
+
+    assert ScriptDirectory(SCRIPT_LOCATION).get_heads() == ["0011"]
+
+
+def test_dirty_semantics() -> None:
+    assert MigrationStatus(current="0011", head="0011").dirty is False
+    assert MigrationStatus(current="0010", head="0011").dirty is True
+    assert MigrationStatus(current=None, head="0011").dirty is True
+    assert MigrationStatus(current="0011", head=None).dirty is True  # 多 head 也算
+
+
+def test_db_unreachable_reports_dirty_with_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom() -> object:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.core.migrations.get_session_factory", _boom)
+    status = migration_status()
+    assert status.current is None
+    assert status.head == "0011"
+    assert status.dirty is True
+
+
+def _lifespan(monkeypatch: pytest.MonkeyPatch, status: MigrationStatus):
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(env="prod"))
+    monkeypatch.setattr(main_module, "migration_status", lambda: status)
+    return main_module.stream_lifespan(main_module.app)
+
+
+def _enter_lifespan(cm: object) -> None:
+    import asyncio
+
+    async def _run() -> None:
+        await cm.__aenter__()  # type: ignore[attr-defined]
+        await cm.__aexit__(None, None, None)  # type: ignore[attr-defined]
+
+    asyncio.run(_run())
+
+
+def test_prod_startup_blocked_when_dirty(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_caches()
+    with pytest.raises(RuntimeError, match="prod 启动阻断"):
+        _enter_lifespan(_lifespan(monkeypatch, MigrationStatus(current="0010", head="0011")))
+
+
+def test_prod_startup_passes_when_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_caches()
+    _enter_lifespan(_lifespan(monkeypatch, MigrationStatus(current="0011", head="0011")))

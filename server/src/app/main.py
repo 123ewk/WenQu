@@ -34,14 +34,26 @@ from app.core.errors import (
     validation_error_handler,
 )
 from app.core.logging import request_id_var, setup_logging
+from app.core.migrations import migration_status
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def stream_lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def stream_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """OPT-3 流式资源的生命周期(事件日志为 API 进程内单例,治理只能在同进程):
-    启动清道夫(TTL 回收已完成流);关停时通知进行中的生成落库部分答案。"""
+    启动清道夫(TTL 回收已完成流);关停时通知进行中的生成落库部分答案。
+    prod 额外做迁移状态 fail-closed 自检(Go-Live 翻转项 #12)。"""
+    settings = get_settings()
+    if settings.env == "prod":
+        status = migration_status()
+        if status.dirty:
+            raise RuntimeError(
+                f"prod 启动阻断(Go-Live 翻转项 #12):迁移未达 head"
+                f"(current={status.current!r}, head={status.head!r}),"
+                f"先执行 alembic upgrade head 再启动"
+            )
+        logger.info("prod 迁移自检通过:current=head=%s", status.current)
     janitor = StreamJanitor(get_event_log())
     janitor.start()
     try:
