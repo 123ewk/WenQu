@@ -13,11 +13,24 @@ import uuid
 import pytest
 from sqlalchemy import delete
 
+from app.core.crypto import CredentialCipher
 from app.core.db import get_session_factory
 from app.domain.models import CustomModel, ModelProvider, User
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _cipher_with_test_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式注入加密主密钥:CI 无 .env 时真实入口 fail-closed 会 503(CI 曾误红)。
+
+    本文件只验证"写入即加密、只回显掩码"的形态,不跨进程解密,固定测试密钥即可。
+    """
+    monkeypatch.setattr(
+        "app.application.service.model_admin.get_credential_cipher",
+        lambda: CredentialCipher("admin-models-test-key"),
+    )
 
 
 @pytest.fixture(autouse=True)
