@@ -71,6 +71,7 @@ def build_env(parser: FakeParser | None = None, embedder: FakeEmbedder | None = 
     )
     task = tasks.enqueue(Task(type=TaskType.INGEST_DOCUMENT, payload={"document_id": str(doc.id)}))
     storage.put(doc.source, "第一段。\n\n第二段。".encode())
+    gateway = embedder or FakeEmbedder()
     service = IngestionService(
         documents=documents,
         kbs=kbs,
@@ -79,7 +80,7 @@ def build_env(parser: FakeParser | None = None, embedder: FakeEmbedder | None = 
         storage=storage,
         parser=parser
         or FakeParser(blocks=[SimpleNamespace(type="paragraph", text="第一段。第二段。")]),
-        embedder=embedder or FakeEmbedder(),
+        embedder_factory=lambda _db, _space_id: gateway,
     )
     return SimpleNamespace(
         service=service,

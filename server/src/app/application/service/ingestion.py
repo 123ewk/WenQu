@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
@@ -37,7 +38,7 @@ class IngestionService:
         chunks: ChunkRepository,
         storage: ObjectStorage,
         parser: ParserGateway,
-        embedder: EmbeddingGateway,
+        embedder_factory: Callable[[Session, uuid.UUID | None], EmbeddingGateway],
     ) -> None:
         self._documents = documents
         self._kbs = kbs
@@ -45,7 +46,8 @@ class IngestionService:
         self._chunks = chunks
         self._storage = storage
         self._parser = parser
-        self._embedder = embedder
+        # OPT-27:向量化网关按"任务所属空间"现建 —— 每空间的模型/Key 各不相同
+        self._embedder_factory = embedder_factory
 
     def handle_next(self, db: Session, worker_id: str) -> str | None:
         """认领并处理一条任务;返回任务 id,队列空返回 None。失败按退避/死信闭环。"""
@@ -53,7 +55,7 @@ class IngestionService:
         if task is None:
             return None
         try:
-            self._process(task)
+            self._process(db, task)
         except Exception as exc:  # noqa: BLE001 — 任务级失败闭环,不允许打断 worker 循环
             logger.warning("task %s failed: %s", task.id, exc)
             db.rollback()  # 丢弃半程状态;task 行随后在新事务里闭环
@@ -73,7 +75,7 @@ class IngestionService:
 
     # ---------------------------- 内部 ----------------------------
 
-    def _process(self, task: Task) -> None:
+    def _process(self, db: Session, task: Task) -> None:
         document = self._load_document(task)
         if document is None:
             return  # 文档已被删除:任务自然结束
@@ -96,7 +98,8 @@ class IngestionService:
         model_id = kb.embedding_model if kb is not None else None
         # 只有子块进索引;检索命中子块后回取父块组装引用与上下文
         child_texts = [c.content for _parent, children in families for c in children]
-        vectors = self._embedder.embed(child_texts, model_id) if child_texts else []
+        embedder = self._embedder_factory(db, document.space_id)
+        vectors = embedder.embed(child_texts, model_id) if child_texts else []
 
         payload = []
         cursor = 0

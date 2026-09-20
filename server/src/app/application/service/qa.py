@@ -21,7 +21,7 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -51,6 +51,7 @@ from app.domain.interfaces import (
     ConversationRepository,
     EmbeddingGateway,
     MessageRepository,
+    RerankGateway,
     SpaceRepository,
 )
 from app.domain.models import Conversation, Message
@@ -89,12 +90,16 @@ class BackgroundDb:
         session_factory: sessionmaker[Session],
         embedder: EmbeddingGateway,
         min_vector_score: float,
+        reranker_factory: Callable[[Session, uuid.UUID], RerankGateway | None] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._embedder = embedder
         self._min_vector_score = min_vector_score
+        # 重排网关按"会话所属空间 + 泵线程自己的会话"现建(OPT-27):
+        # 未开开关的空间返回 None,检索链路因此完全不碰重排
+        self._reranker_factory = reranker_factory
 
-    def _retrieval(self, db: Session) -> RetrievalService:
+    def _retrieval(self, db: Session, space_id: uuid.UUID) -> RetrievalService:
         return RetrievalService(
             RetrievalRepositoryImpl(db),
             KnowledgeBaseRepositoryImpl(db),
@@ -102,11 +107,13 @@ class BackgroundDb:
             SpaceRepositoryImpl(db),
             self._embedder,
             min_vector_score=self._min_vector_score,
+            reranker=None if self._reranker_factory is None
+            else self._reranker_factory(db, space_id),
         )
 
     def search(self, ctx: _AskContext) -> list[RetrievedChunk]:
         with self._session_factory() as db:
-            return self._retrieval(db).search(
+            return self._retrieval(db, ctx.space_id).search(
                 ctx.user_id,
                 ctx.space_id,
                 ctx.question,
@@ -119,7 +126,7 @@ class BackgroundDb:
         """Agent 工具检索入口(AgentRunner 的 SearchFn):查询词由模型给出,
         范围仍锁定本次提问的 user/space/kb_ids —— 模型没有扩权通道(§8.3-3)。"""
         with self._session_factory() as db:
-            return self._retrieval(db).search(
+            return self._retrieval(db, ctx.space_id).search(
                 ctx.user_id,
                 ctx.space_id,
                 query,

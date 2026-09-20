@@ -63,6 +63,8 @@ class ErrorCode:
     # 6xxx 模型管理(OPT-25):重名冲突 409,由管理端接口返回
     MODEL_PROVIDER_NAME_TAKEN = (6002, "MODEL_PROVIDER_NAME_TAKEN")
     MODEL_ID_TAKEN = (6003, "MODEL_ID_TAKEN")
+    # OPT-27 配置页【测试连接】:上游探活失败 424(依赖服务未就绪),details.reason 分诊
+    MODEL_UPSTREAM_ERROR = (6004, "UPSTREAM_MODEL_ERROR")
 
 
 class AppError(Exception):

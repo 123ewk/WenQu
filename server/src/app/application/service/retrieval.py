@@ -1,12 +1,17 @@
-"""检索服务(ADR-1/ADR-5):查询向量化 → 二路召回 → RRF 融合 → 阈值截断。
+"""检索服务(ADR-1/ADR-5):查询向量化 → 二路召回 → RRF 融合 → 重排 → 阈值截断。
 
 RRF(Reciprocal Rank Fusion):score = Σ weight_i / (k + rank_i),对两路各自
 的排名而非原始分数融合,天然免疫量纲差异(pgvector 余弦 vs ts_rank 不可比)。
 参数 k=60 为公开基准常用值;权重默认向量 0.7 / 全文 0.3,空间级可覆盖(M3 配置面)。
+
+重排(OPT-27)是**可选增益段**:空间开关 `rerank_enabled` 且配了 rerank 模型时,
+在融合结果前 `RERANK_CANDIDATES` 条上按相关性重排;上游失败/超时一律 fail-open
+回落融合顺序 —— 重排挂掉绝不能打断问答。未启用时零开销(网关压根不装配)。
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -19,9 +24,13 @@ from app.domain.interfaces import (
     DocumentRepository,
     EmbeddingGateway,
     KnowledgeBaseRepository,
+    RerankGateway,
     RetrievalRepository,
     SpaceRepository,
 )
+from app.domain.models import Chunk, Document
+
+logger = logging.getLogger("app.retrieval")
 
 DEFAULT_RRF_K = 60
 DEFAULT_VECTOR_WEIGHT = 0.7
@@ -30,6 +39,8 @@ DEFAULT_FULLTEXT_WEIGHT = 0.3
 # 可通过 APP_RETRIEVAL_MIN_SCORE 调整;调低=召回更多但噪声上升。
 DEFAULT_MIN_VECTOR_SCORE = 0.3
 DEFAULT_TOP_K = 6
+# 送重排模型的候选上限:再多的文档塞进一次 rerank 请求只会放大延迟与费用
+RERANK_CANDIDATES = 30
 
 
 @dataclass
@@ -145,6 +156,7 @@ class RetrievalService:
         fulltext_weight: float = DEFAULT_FULLTEXT_WEIGHT,
         candidate_multiplier: int = 3,
         min_vector_score: float = DEFAULT_MIN_VECTOR_SCORE,
+        reranker: RerankGateway | None = None,
     ) -> None:
         self._chunks = chunks
         self._kbs = kbs
@@ -156,6 +168,7 @@ class RetrievalService:
         self._fulltext_weight = fulltext_weight
         self._candidate_multiplier = candidate_multiplier
         self._min_vector_score = min_vector_score
+        self._reranker = reranker
 
     def search(
         self,
@@ -199,6 +212,7 @@ class RetrievalService:
             vector_weight=params.vector_weight,
             fulltext_weight=params.fulltext_weight,
         )
+        fused = self._rerank_order(query, fused, by_id)
         # 父子分块(OPT-4):命中子块回取父块;同一父块的多个子块只保留融合分最高的一条
         parent_ids: set[uuid.UUID] = set()
         for chunk_id, *_ranks in fused:
@@ -236,6 +250,35 @@ class RetrievalService:
                 )
             )
         return results
+
+    def _rerank_order(
+        self,
+        query: str,
+        fused: list[tuple[str, float, int | None, int | None]],
+        by_id: dict[str, tuple[Chunk, Document]],
+    ) -> list[tuple[str, float, int | None, int | None]]:
+        """重排头部队列(fail-open):任何异常都回落融合顺序,只留 WARNING 供运维查。
+
+        送去的是子块原文(与用户问题同一粒度),重排结果只改变**顺序**;
+        融合分保持原值(它是两路排名的可解释证据),上游少回的下标按原相对顺序补尾部。
+        """
+        if self._reranker is None or not fused:
+            return fused
+        head = fused[:RERANK_CANDIDATES]
+        documents = [str(chunk.content) for chunk, _doc in (by_id[cid] for cid, *_ in head)]
+        try:
+            ranked = self._reranker.rerank(query, documents, top_n=len(documents))
+        except Exception as exc:  # noqa: BLE001 — 重排是增益段,失败绝不能打断问答
+            logger.warning("重排上游失败,回落融合顺序: %s", exc)
+            return fused
+        placed: set[int] = set()
+        reordered: list[tuple[str, float, int | None, int | None]] = []
+        for index, _score in ranked:
+            if 0 <= index < len(head) and index not in placed:
+                placed.add(index)
+                reordered.append(head[index])
+        reordered.extend(item for i, item in enumerate(head) if i not in placed)
+        return reordered + fused[RERANK_CANDIDATES:]
 
     def _effective_params(
         self,

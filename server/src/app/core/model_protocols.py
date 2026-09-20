@@ -6,7 +6,8 @@
   调用方(ChatClient/EmbeddingClient)零改动;
 - **写入口 fail-closed**:管理端保存 provider 时校验 protocol 必须已在注册表中
   (`registered_protocols()`),存进库里的键永远可分发;
-- 目前仅 `openai_compatible` 一个适配器(基准 05「一个协议统一所有厂商」),
+- 目前两个适配器:`openai_compatible`(embed/chat)与 `cohere_rerank`(重排,
+  两者方法集不同,按 `get_protocol` / `get_rerank_protocol` 分别取),
   httpx 直连不引 SDK,原 model_client 的请求构造/流解析逻辑整体迁入。
 """
 
@@ -25,6 +26,8 @@ from app.core.model_catalog import ModelEntry, ProviderEntry
 
 _EMBED_BATCH_SIZE = 10
 _TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
+# 重排在问答关键路径上:预算给得紧,超时就 fail-open 回落融合顺序(实施计划 F1-3)
+_RERANK_TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0)
 
 
 class ModelCallError(AppError):
@@ -95,6 +98,25 @@ class ModelProtocol(Protocol):
     ) -> Generator[str | ToolCallRequest, None, None]: ...
 
 
+class RerankProtocol(Protocol):
+    """重排适配器接口:同一注册表,但只有支持重排的协议键能取到它。
+
+    返回 [(原始下标, 相关性分)] 按分数降序;调用方据此重排候选,不改动候选本身。
+    """
+
+    def rerank(
+        self,
+        provider: ProviderEntry,
+        model: ModelEntry,
+        api_key: str,
+        query: str,
+        documents: list[str],
+        top_n: int,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> list[tuple[int, float]]: ...
+
+
 _REGISTRY: dict[str, Callable[[], ModelProtocol]] = {}
 
 
@@ -117,6 +139,22 @@ def get_protocol(key: str) -> ModelProtocol:
             http_status=503,
         )
     return factory()
+
+
+def get_rerank_protocol(key: str) -> RerankProtocol:
+    """按协议键取重排实现;注册了但不支持重排的适配器一律拒绝(键空间共用)。"""
+    factory = _REGISTRY.get(key)
+    adapter = None if factory is None else factory()
+    if adapter is None or not hasattr(adapter, "rerank"):
+        supported = sorted(
+            name for name in _REGISTRY if hasattr(_REGISTRY[name](), "rerank")
+        )
+        raise AppError(
+            ErrorCode.MODEL_NOT_CONFIGURED,
+            f"模型协议 {key} 不支持重排(支持的重排协议:{', '.join(supported) or '无'})",
+            http_status=503,
+        )
+    return adapter  # type: ignore[return-value]
 
 
 def registered_protocols() -> list[str]:
@@ -266,6 +304,58 @@ class OpenAICompatible:
                         name=slot["name"],
                         arguments="".join(slot["args"]),
                     )
+
+
+@register_protocol("cohere_rerank")
+class CohereRerank:
+    """Cohere 形态重排:POST {base_url}/rerank(OPT-27)。
+
+    入参 `{model, query, documents, top_n}` → `results:[{index, relevance_score}]`。
+    这一形状已是事实标准(DashScope gte-rerank / Jina / SiliconFlow 等均兼容),
+    base_url 由用户自填,故不需要各家变体。
+    """
+
+    def rerank(
+        self,
+        provider: ProviderEntry,
+        model: ModelEntry,
+        api_key: str,
+        query: str,
+        documents: list[str],
+        top_n: int,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> list[tuple[int, float]]:
+        payload = {
+            "model": model.model,
+            "query": query,
+            "documents": documents,
+            "top_n": max(1, min(top_n, len(documents))),
+        }
+        with httpx.Client(
+            base_url=provider.base_url, timeout=_RERANK_TIMEOUT, transport=transport
+        ) as client:
+            response = client.post(
+                "/rerank", json=payload, headers={"Authorization": f"Bearer {api_key}"}
+            )
+        if response.status_code != 200:
+            raise ModelCallError(provider.key, response.status_code, response.text[:200])
+        results = response.json().get("results")
+        if not isinstance(results, list) or not results:
+            # 有候选却空返回 = 上游响应不可用(调用方 fail-open 回落融合顺序)
+            raise ModelCallError(provider.key, None, "重排响应缺少 results 列表")
+        ranked: list[tuple[int, float]] = []
+        for item in results:
+            try:
+                index = int(item["index"])
+                score = float(item["relevance_score"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ModelCallError(provider.key, None, f"重排结果字段异常: {exc}") from exc
+            if not 0 <= index < len(documents):
+                raise ModelCallError(provider.key, None, f"重排结果下标越界: {index}")
+            ranked.append((index, score))
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ranked
 
 
 def _iter_sse_deltas(lines: Iterator[str]) -> Iterator[dict]:

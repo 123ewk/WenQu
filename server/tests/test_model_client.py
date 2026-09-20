@@ -25,10 +25,11 @@ from app.core.model_client import (
     ChatClient,
     EmbeddingClient,
     ModelCallError,
+    RerankClient,
     ToolCallRequest,
     resolve_api_key,
 )
-from app.core.model_protocols import get_protocol, registered_protocols
+from app.core.model_protocols import get_protocol, get_rerank_protocol, registered_protocols
 
 _CIPHER = CredentialCipher("unit-test-master-key")
 
@@ -382,3 +383,114 @@ def test_chat_stream_tools_multiple_calls_in_index_order() -> None:
     frames = list(client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS))
     assert [f.name for f in frames] == ["t1", "t2"]
     assert frames[0].id == "call_0" and frames[1].id == "call_b"
+
+
+# ---------------------------- 重排(OPT-27 cohere_rerank) ----------------------------
+
+
+def _rerank_catalog(protocol: str = "cohere_rerank") -> ModelCatalog:
+    providers = {
+        "rr": ProviderEntry(
+            key="rr",
+            protocol=protocol,
+            base_url="https://rerank.example/v1",
+            api_key_encrypted=_enc("sk-rr"),
+            enabled=True,
+        )
+    }
+    models = {
+        "rr/gte": ModelEntry(
+            id="rr/gte", kind="rerank", provider_key="rr", model="gte-rerank"
+        )
+    }
+    return ModelCatalog(providers=providers, models=models, _defaults={"rerank": "rr/gte"})
+
+
+def _rerank_response(results: list[dict], status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status, json={"results": results}, request=httpx.Request("POST", "https://x/rerank")
+    )
+
+
+def test_rerank_sends_cohere_shape_and_returns_sorted_pairs() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        assert request.url.path == "/v1/rerank"
+        assert request.headers["authorization"] == "Bearer sk-rr"
+        return _rerank_response(
+            [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.2}]
+        )
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    ranked = client.rerank("报销政策", ["a", "b", "c"])
+
+    assert seen["model"] == "gte-rerank"
+    assert seen["query"] == "报销政策"
+    assert seen["documents"] == ["a", "b", "c"]
+    assert seen["top_n"] == 3  # 未指定 top_n = 全量候选
+    assert ranked == [(2, 0.9), (0, 0.2)]  # 按相关性降序
+
+
+def test_rerank_respects_top_n_cap() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["top_n"] == 2
+        return _rerank_response([{"index": 1, "relevance_score": 0.5}])
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", ["a", "b", "c"], top_n=2) == [(1, 0.5)]
+
+
+def test_rerank_empty_documents_skips_upstream() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("空候选不该打上游")
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", []) == []
+
+
+def test_rerank_upstream_error_and_bad_payload_raise_model_call_error() -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    with pytest.raises(ModelCallError) as exc_info:
+        RerankClient(_rerank_catalog(), transport=httpx.MockTransport(boom)).rerank(
+            "q", ["a"]
+        )
+    assert exc_info.value.status == 429
+
+    def _fails_with(results: list[dict]) -> None:
+        with pytest.raises(ModelCallError):
+            RerankClient(
+                _rerank_catalog(),
+                transport=httpx.MockTransport(lambda r: _rerank_response(results)),
+            ).rerank("q", ["a", "b"])
+
+    for bad in ([], [{"index": 9, "relevance_score": 0.1}], [{"relevance_score": 0.1}]):
+        _fails_with(bad)  # 空 results / 下标越界 / 缺字段
+
+
+def test_rerank_requires_rerank_kind_model_and_supported_protocol() -> None:
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(
+        lambda r: _rerank_response([{"index": 0, "relevance_score": 0.1}])
+    ))
+    assert client.rerank("q", ["a"]) == [(0, 0.1)]
+
+    # 目录里没有 rerank 默认 → 503(未配置,不是调用失败)
+    with pytest.raises(ModelNotConfigured):
+        RerankClient(
+            ModelCatalog(providers={}, models={}, _defaults={}),
+            transport=httpx.MockTransport(lambda r: _rerank_response([])),
+        ).rerank("q", ["a"])
+
+    # 协议不支持重排 → 503 且点名可用协议
+    with pytest.raises(AppError) as exc_info:
+        get_rerank_protocol("openai_compatible")
+    assert exc_info.value.code_str == ErrorCode.MODEL_NOT_CONFIGURED[1]
+    assert "cohere_rerank" in exc_info.value.message
+
+
+def test_cohere_rerank_is_registered() -> None:
+    assert "cohere_rerank" in registered_protocols()
+    assert hasattr(get_protocol("cohere_rerank"), "rerank")

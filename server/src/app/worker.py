@@ -67,9 +67,6 @@ class Worker:
         """回收陈旧 claim(限频)→ 认领处理一条;队列空返回 None。"""
         session_factory = get_session_factory()
         with session_factory() as db:
-            embedder = EmbeddingClient(
-                ModelCatalog.load_from_db(db), background_semaphore=self._bg_semaphore
-            )
             service = IngestionService(
                 documents=DocumentRepositoryImpl(db),
                 kbs=KnowledgeBaseRepositoryImpl(db),
@@ -77,7 +74,11 @@ class Worker:
                 chunks=ChunkRepositoryImpl(db),
                 storage=self._storage,
                 parser=self._parser,
-                embedder=embedder,
+                # OPT-27:按任务所属空间现建目录快照(空间模型/空间 embedding Key;信号量仍进程级)
+                embedder_factory=lambda session, space_id: EmbeddingClient(
+                    ModelCatalog.load_from_db(session, space_id),
+                    background_semaphore=self._bg_semaphore,
+                ),
             )
             now = time.monotonic()
             if now - self._last_maintenance > _MAINTENANCE_INTERVAL_SECONDS:

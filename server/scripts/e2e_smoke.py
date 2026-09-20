@@ -151,7 +151,7 @@ def main() -> int:
             parser=ParserClient(
                 os.environ["PARSER_GRPC_ADDR"], os.environ["PARSER_GRPC_TOKEN"]
             ),
-            embedder=StubEmbedder(),
+            embedder_factory=lambda _db, _sid: StubEmbedder(),
         )
         processed: list[str] = []
         for _ in range(20):

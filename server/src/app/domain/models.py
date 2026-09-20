@@ -26,6 +26,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -377,18 +378,37 @@ class ApiKey(Base):
 
 
 class ModelProvider(Base):
-    """自定义模型供应商(OPT-25):替代随包 YAML,库内可管理。
+    """自定义模型供应商(OPT-25,OPT-27 空间分层):替代随包 YAML,库内可管理。
 
     - `protocol` 是协议注册表键(core/model_protocols 注册),调用时按其分发;
     - `api_key_encrypted` 为 AES-GCM 密文(enc:v1:…),明文只在写入瞬间经过内存;
       空串 = 免密钥本地端点;`key_hint` 只供管理端辨识,任何接口不回显明文;
-    - `enabled=false` 的供应商,其下模型一律不出现在可选清单(与旧 provider 语义一致)。
+    - `enabled=false` 的供应商,其下模型一律不出现在可选清单(与旧 provider 语义一致);
+    - `space_id` NULL = 全局层(superuser 管理),非空 = 该空间私有(成员 Admin+ 管理)。
     """
 
     __tablename__ = "model_providers"
+    __table_args__ = (
+        Index(
+            "uq_model_providers_name_global",
+            "name",
+            unique=True,
+            postgresql_where=text("space_id IS NULL"),
+        ),
+        Index(
+            "uq_model_providers_name_space",
+            "space_id",
+            "name",
+            unique=True,
+            postgresql_where=text("space_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(64), unique=True)
+    space_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
     protocol: Mapped[str] = mapped_column(
         String(32), default="openai_compatible", server_default="openai_compatible"
     )
@@ -405,19 +425,51 @@ class ModelProvider(Base):
 
 
 class CustomModel(Base):
-    """自定义模型条目(OPT-25):kind 三分类与契约 ModelCatalogOut 一致。
+    """自定义模型条目(OPT-25,OPT-27 空间分层):kind 三分类与契约 ModelCatalogOut 一致。
 
     - `model_id` 是契约里的对外模型 id(如 "custom/qwen-plus"),String(128) 与
       messages.model_id / knowledge_bases.embedding_model 对齐;
-    - 默认模型按 kind 唯一(partial unique index);全库无默认时该 kind 调用
-      MODEL_NOT_CONFIGURED 503(fail-closed,上线手册要求配置后冒烟)。
+    - 默认模型按 (层级, kind) 唯一:全局一个默认 + 每空间一个默认(partial unique);
+      解析链"空间默认 → 全局默认 → 503"(embedding 的全局回落仅限 dev,见 catalog);
+    - `space_id` NULL = 全局层,非空 = 空间私有。
     """
 
     __tablename__ = "custom_models"
-    __table_args__ = (Index("ix_custom_models_kind_enabled", "kind", "enabled"),)
+    __table_args__ = (
+        Index("ix_custom_models_kind_enabled", "kind", "enabled"),
+        Index(
+            "uq_custom_models_model_id_global",
+            "model_id",
+            unique=True,
+            postgresql_where=text("space_id IS NULL"),
+        ),
+        Index(
+            "uq_custom_models_model_id_space",
+            "space_id",
+            "model_id",
+            unique=True,
+            postgresql_where=text("space_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_custom_models_default_per_kind_global",
+            "kind",
+            unique=True,
+            postgresql_where=text("is_default AND space_id IS NULL"),
+        ),
+        Index(
+            "uq_custom_models_default_per_kind_space",
+            "space_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("is_default AND space_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    model_id: Mapped[str] = mapped_column(String(128), unique=True)
+    space_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), nullable=True
+    )
+    model_id: Mapped[str] = mapped_column(String(128))
     provider_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("model_providers.id", ondelete="CASCADE")
     )
@@ -427,6 +479,40 @@ class CustomModel(Base):
     context_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SpaceModelSettings(Base):
+    """空间模型总设置(OPT-27):一空间一行。
+
+    - embedding 模型本体内置锁死(text-embedding-v3/1024 维,换模型=已入库向量作废),
+      空间能配的只有它的钥匙:`embedding_key_encrypted` AES-GCM 密文,空串=未配置
+      (dev 回落运维全局 Key;prod 直接 503,配置页红警示);
+    - `rerank_enabled`:重排开关,"开了就用",未启用时检索零开销。
+    """
+
+    __tablename__ = "space_model_settings"
+
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    embedding_key_encrypted: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
+    embedding_key_hint: Mapped[str] = mapped_column(
+        String(32), default="", server_default=""
+    )
+    rerank_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

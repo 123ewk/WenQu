@@ -379,3 +379,79 @@ def test_parent_hit_without_children_passes_through() -> None:
     results = env.service.search(env.user.id, env.space.id, "检索测试")
     assert len(results) == 1
     assert results[0].content == "存量父块内容"
+
+
+# ---------------------------- 重排挂点(OPT-27) ----------------------------
+
+
+class FakeReranker:
+    """假重排网关:返回预设的 (下标, 分数) 序列,并记录收到的请求。"""
+
+    def __init__(self, ranked=None, raises: bool = False) -> None:
+        self.ranked = ranked
+        self.raises = raises
+        self.calls: list[tuple] = []
+
+    def rerank(self, query, documents, top_n=None, model_id=None):
+        self.calls.append((query, list(documents), top_n, model_id))
+        if self.raises:
+            raise RuntimeError("上游 502")
+        return self.ranked if self.ranked is not None else [
+            (i, 1.0 - i * 0.1) for i in range(len(documents))
+        ]
+
+
+def _service_with(reranker):
+    env = build_env(vector_specs=["第一条", "第二条", "第三条"])
+    env.service._reranker = reranker  # noqa: SLF001 — 单测直接换挂点依赖
+    return env
+
+
+def test_rerank_reorders_candidates_with_child_contents() -> None:
+    """开了重排:送上游的是候选原文,顺序按返回的下标重排,top_n = 候选数。"""
+    reranker = FakeReranker(ranked=[(2, 0.99), (0, 0.5), (1, 0.1)])
+    env = _service_with(reranker)
+    results = env.service.search(env.user.id, env.space.id, "报销")
+    assert [r.content for r in results] == ["第三条", "第一条", "第二条"]
+    assert reranker.calls == [("报销", ["第一条", "第二条", "第三条"], 3, None)]
+    # 分数仍是融合分(可解释证据),重排只改顺序
+    assert results[0].score < results[1].score
+
+
+def test_rerank_failure_fails_open_to_fused_order() -> None:
+    """重排上游炸了 → 回落融合顺序 + WARNING,检索结果不受影响(绝不打断问答)。"""
+    env = _service_with(FakeReranker(raises=True))
+    results = env.service.search(env.user.id, env.space.id, "报销")
+    assert [r.content for r in results] == ["第一条", "第二条", "第三条"]
+
+
+def test_rerank_partial_result_appends_missing_in_fused_order() -> None:
+    """上游少回下标(top_n 截断/厂商行为差异)→ 余下的按融合序补在尾部,不丢候选。"""
+    env = _service_with(FakeReranker(ranked=[(2, 0.9)]))
+    results = env.service.search(env.user.id, env.space.id, "报销")
+    assert [r.content for r in results] == ["第三条", "第一条", "第二条"]
+
+
+def test_rerank_out_of_range_index_ignored() -> None:
+    env = _service_with(FakeReranker(ranked=[(99, 0.9), (1, 0.8)]))
+    results = env.service.search(env.user.id, env.space.id, "报销")
+    assert [r.content for r in results] == ["第二条", "第一条", "第三条"]
+
+
+def test_rerank_candidate_window_capped_at_30() -> None:
+    """重排只看头 30 条候选:再多的文档塞进一次请求只会放大延迟与费用。"""
+    reranker = FakeReranker()
+    env = _service_with(reranker)
+    env.repo.vector_hits = [
+        (*_chunk_pair(env.space.id, env.kb_id, f"c{i}"), 1.0) for i in range(40)
+    ]
+    env.service.search(env.user.id, env.space.id, "报销")
+    assert len(reranker.calls[0][1]) == 30
+
+
+def test_reranker_absent_means_zero_overhead() -> None:
+    """未启用重排(网关为 None):一次上游调用都不发,顺序即融合顺序。"""
+    env = build_env(vector_specs=["第一条", "第二条"])
+    assert env.service._reranker is None  # noqa: SLF001
+    results = env.service.search(env.user.id, env.space.id, "报销")
+    assert [r.content for r in results] == ["第一条", "第二条"]

@@ -60,6 +60,11 @@ class AuditAction(StrEnum):
     MODEL_CREATED = "model.created"
     MODEL_UPDATED = "model.updated"
     MODEL_DELETED = "model.deleted"
+    # OPT-27 空间级模型配置:内置 embedding 的钥匙、重排开关、连通探测(动作与全局层同款,
+    # 空间层靠 AuditLog.space_id 区分,不另立动作名)
+    MODEL_SETTING_EMBEDDING_KEY_UPDATED = "model_setting.embedding_key.updated"
+    MODEL_SETTING_RERANK_UPDATED = "model_setting.rerank.updated"
+    MODEL_TESTED = "model.tested"
     ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
 
 

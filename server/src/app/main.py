@@ -23,6 +23,7 @@ from app.api.routes import health as health_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import models as model_routes
 from app.api.routes import retrieval as retrieval_routes
+from app.api.routes import space_models as space_model_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import users as users_routes
 from app.application.streaming import StreamJanitor
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(model_routes.router)
     app.include_router(api_key_routes.router)
     app.include_router(admin_model_routes.router)
+    app.include_router(space_model_routes.router)
     return app
 
 

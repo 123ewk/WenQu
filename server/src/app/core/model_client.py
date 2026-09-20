@@ -26,9 +26,17 @@ from app.core.model_protocols import (
     ModelCallError,
     ToolCallRequest,
     get_protocol,
+    get_rerank_protocol,
 )
 
-__all__ = ["ChatClient", "EmbeddingClient", "ModelCallError", "ToolCallRequest", "resolve_api_key"]
+__all__ = [
+    "ChatClient",
+    "EmbeddingClient",
+    "ModelCallError",
+    "RerankClient",
+    "ToolCallRequest",
+    "resolve_api_key",
+]
 
 
 def resolve_api_key(provider: ProviderEntry) -> str:
@@ -122,3 +130,44 @@ class ChatClient:
             raise ModelNotConfigured(f"模型 {model.id} 不是 chat 类型")
         provider = self._catalog.provider_of(model)
         return model, provider, resolve_api_key(provider)
+
+
+class RerankClient:
+    """重排网关(OPT-27):把候选文档交给 rerank 模型按相关性重新排序。
+
+    与另两个网关不同,它只在空间 `rerank_enabled` 为真时才被装配(见 deps),
+    未启用时检索链路零开销;上游失败由调用方 fail-open 兜住,不在这里降级。
+    """
+
+    def __init__(
+        self,
+        catalog: ModelCatalog,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._catalog = catalog
+        self._transport = transport
+
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int | None = None,
+        model_id: str | None = None,
+    ) -> list[tuple[int, float]]:
+        if not documents:
+            return []
+        model = (
+            self._catalog.get_model(model_id, "rerank")
+            if model_id
+            else self._catalog.default_model("rerank")
+        )
+        provider = self._catalog.provider_of(model)
+        return get_rerank_protocol(provider.protocol).rerank(
+            provider,
+            model,
+            resolve_api_key(provider),
+            query,
+            documents,
+            top_n if top_n is not None else len(documents),
+            transport=self._transport,
+        )

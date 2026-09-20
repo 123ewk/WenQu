@@ -43,6 +43,11 @@ class Settings(BaseSettings):
 
     # ---- 模型(ADR-4:后台任务并发预算信号量,供应商限速的保守起配) ----
     model_bg_concurrency: int = Field(2, validation_alias="APP_MODEL_BG_CONCURRENCY")
+    # 空间自配模型 base_url 的 SSRF 闸门(OPT-27):默认拦截内网/本机/元数据地址。
+    # 只有"部署确需内网自建网关"时由运维显式开 1(此时内网边界交给网络策略);dev 环境恒放行。
+    allow_private_model_urls: bool = Field(
+        False, validation_alias="APP_ALLOW_PRIVATE_MODEL_URLS"
+    )
 
     # ---- 检索 ----
     retrieval_min_score: float = Field(0.3, validation_alias="APP_RETRIEVAL_MIN_SCORE")
