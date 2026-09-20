@@ -126,6 +126,8 @@ export const useAuthStore = defineStore('auth', () => {
    * F5 后校验令牌并静默刷新用户与空间列表(失败交由 401 链处理)。
    * 活动空间以契约(/users/me 的 current_space_id)为准覆盖本地初值;
    * 该值不在 spaces[] 里时由 refreshSpaces 的回退逻辑处理。
+   * current_space_id 为 null = 用户从未主动选过空间(后端不代为持久化展示性回退,§11.7 观察 2 后端裁决):
+   * 有空间时静默 switch-space 到第一个,走 applyAuth 整体替换链路让服务端落盘,跨设备一致。
    */
   async function bootstrap(): Promise<void> {
     if (!isLoggedIn) return
@@ -136,6 +138,8 @@ export const useAuthStore = defineStore('auth', () => {
       await refreshSpaces()
       if (me.current_space_id && spaces.value.some((s) => s.id === me.current_space_id)) {
         currentSpaceId.value = me.current_space_id
+      } else if (!me.current_space_id && !currentSpaceId.value && spaces.value.length) {
+        await switchUnlocked(spaces.value[0].id)
       }
     } catch {
       /* 静默:令牌失效时拦截器已处理 */
