@@ -40,6 +40,10 @@ def test_db_unreachable_reports_dirty_with_head(monkeypatch: pytest.MonkeyPatch)
 
 
 def _lifespan(monkeypatch: pytest.MonkeyPatch, status: MigrationStatus):
+    # prod fail-closed 校验要求显式密钥:测试给最小 dummy 值,不依赖本地 .env(CI 无 .env)
+    monkeypatch.setenv("APP_JWT_SECRET", "x" * 32)
+    monkeypatch.setenv("APP_MASTER_KEY", "x" * 32)
+    monkeypatch.setenv("PARSER_GRPC_TOKEN", "x" * 32)
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(env="prod"))
     monkeypatch.setattr(main_module, "migration_status", lambda: status)
     return main_module.stream_lifespan(main_module.app)
