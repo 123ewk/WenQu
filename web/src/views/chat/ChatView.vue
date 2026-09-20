@@ -395,6 +395,9 @@ async function onSend() {
   let partialAnswer = false
   let streamBroken = false
   let lastSeq = 0
+  // OPT-29:done 帧带回的上下文字段,随本轮助手消息落地,进度条只读不算
+  let ctxUsedEv: number | null = null
+  let ctxWindowEv: number | null = null
   const citedIndexes: number[] = []
 
   const onEvent = (event: AskEvent) => {
@@ -409,6 +412,8 @@ async function onSend() {
     } else if (event.type === 'done') {
       citedIndexes.push(...(event.cited_indexes ?? []))
       if (event.partial) partialAnswer = true // 生成被中断,落库的是部分答案
+      ctxUsedEv = event.context_used_tokens ?? null
+      ctxWindowEv = event.context_window_tokens ?? null
     } else if (event.type === 'error') {
       streamError = streamErrorMessage(event.message, event.code)
     } else if (event.type === 'tool_call') {
@@ -489,6 +494,8 @@ async function onSend() {
         // 工具卡随消息落地,渲染链路与 F5 回放的 agent_steps 同型
         agent_steps: streamTools.value.length ? streamToolsToSteps(streamTools.value) : null,
         partial: (partialAnswer || streamBroken) && !streamError,
+        context_used_tokens: ctxUsedEv,
+        context_window_tokens: ctxWindowEv,
       },
     ]
   } else if (aborted) {
@@ -552,6 +559,26 @@ function onKeydown(event: KeyboardEvent) {
     if (canSend.value) void onSend()
   }
 }
+
+/* ───── OPT-29 上下文窗口使用率(只读不算;数据来自 done 帧与 messages 接口) ───── */
+
+/** 渲染基准 = 该会话最后一条 assistant 消息;流式中沿用上轮 done 落地的值(V1 口径:不做实时爬升,防误导) */
+const lastAssistant = computed(() => [...messages.value].reverse().find((m) => m.role === 'assistant') ?? null)
+const ctxUsed = computed(() => lastAssistant.value?.context_used_tokens ?? null)
+const ctxWindow = computed(() => lastAssistant.value?.context_window_tokens ?? null)
+/** used 为 null(老消息/后端未回传)时没有任何可展示内容,整条隐藏 */
+const ctxVisible = computed(() => ctxUsed.value !== null && !streaming.value)
+const ctxPct = computed(() => {
+  if (ctxUsed.value === null || !ctxWindow.value) return null
+  return Math.min(100, Math.round((ctxUsed.value / ctxWindow.value) * 100))
+})
+/** §3.2 阈值配色:<70% 蓝、70–90% 黄、>90% 红 */
+const ctxColor = computed(() => {
+  const p = ctxPct.value ?? 0
+  if (p > 90) return '#ef4444'
+  if (p >= 70) return '#f59e0b'
+  return '#4f6ef2'
+})
 
 /* ───── 会话操作 ───── */
 
@@ -890,6 +917,16 @@ onUnmounted(abortStream)
         <!-- 输入区 -->
         <div class="chat-input-wrap">
           <div v-if="msgError" class="inline-error">{{ msgError }}</div>
+          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径) -->
+          <div v-if="ctxVisible" class="ctx-row">
+            <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
+            <template v-if="ctxPct !== null">
+              <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
+              <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
+              <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+            </template>
+            <span v-else class="ctx-hint">窗口未配置</span>
+          </div>
           <div class="chat-input-row">
             <!-- 知识库范围 -->
             <el-popover :width="300" trigger="click" popper-class="kb-scope-pop">
@@ -1408,6 +1445,42 @@ onUnmounted(abortStream)
   padding: 8px 24px 0;
   font-size: 12px;
   color: #ef4444;
+}
+/* OPT-29 上下文窗口使用率行 */
+.ctx-row {
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 6px 24px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.ctx-text {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ctx-track {
+  width: 96px;
+  height: 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ctx-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s;
+}
+.ctx-pct {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ctx-hint {
+  color: #9ca3af;
 }
 .chat-input-row {
   max-width: 768px;

@@ -527,6 +527,9 @@ export interface MessageOut {
   model_id: string | null
   /** OPT-10 agent 模式的工具调用轨迹;直检模式恒为 null/缺省,判空回退 citations 合成 */
   agent_steps?: AgentStepOut[] | null
+  /** OPT-29 上下文窗口进度条数据源(仅 assistant 消息;老消息/后端未合并时缺省) */
+  context_used_tokens?: number | null
+  context_window_tokens?: number | null
   created_at: string | null
 }
 
