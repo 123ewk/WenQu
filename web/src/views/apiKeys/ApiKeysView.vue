@@ -4,24 +4,29 @@ import { Plus, RefreshRight, WarningFilled } from '@element-plus/icons-vue'
 import { apiCreateApiKey, apiListApiKeys, apiRevokeApiKey } from '@/api/apiKeys'
 import { ApiError, errMessage } from '@/api/http'
 import { apiListKbs } from '@/api/knowledge'
-import type { ApiCapability, ApiKeyCreatedOut, ApiKeyOut, CreateApiKeyRequest } from '@/api/types'
+import { apiListMembers } from '@/api/spaces'
+import type { ApiCapability, ApiKeyCreatedOut, ApiKeyOut, CreateApiKeyRequest, MemberOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtDate, fmtRelative } from '@/utils/format'
-import { isAtLeast, ROLE } from '@/utils/roles'
+import { isAtLeast, ROLE, roleLabel } from '@/utils/roles'
 
 /**
- * API Key(原型 07,OPT-6)。三端点全挂在空间下:
- * GET 列表(含已吊销,Viewer+) / POST 创建(Editor+,明文仅此一次) / DELETE 吊销(Editor+,幂等)。
+ * API Key(原型 07,OPT-6 + OPT-26)。三端点全挂在空间下:
+ * GET 列表(含已吊销,Viewer+) / POST 创建(Admin+,须绑定成员) / DELETE 吊销(Admin+,幂等)。
+ * OPT-26 语义:Key 以**绑定成员**身份行事 —— 绑定成员被移出/注销 → Key 立即 401;
+ * 签发者被移出不影响 Key;成员被降级 → Key 权限实时收敛。
  * 完整明文只在创建响应出现,列表永远只有 key_hint —— 见 m3-api-keys-接口说明.md。
  */
 const auth = useAuthStore()
 
 const items = ref<ApiKeyOut[]>([])
 const kbs = ref<{ id: string; name: string }[]>([])
+const members = ref<MemberOut[]>([])
 const loading = ref(false)
 const loadError = ref<string | null>(null)
 
-const canManage = computed(() => isAtLeast(auth.role, ROLE.EDITOR))
+/** 创建/吊销门槛(OPT-26):Editor+ → Admin+;列表仍 Viewer+ 可看 */
+const canManage = computed(() => isAtLeast(auth.role, ROLE.ADMIN))
 
 const CAPABILITY_LABELS: Record<string, string> = {
   chat: '对话检索',
@@ -38,6 +43,8 @@ const CAPABILITY_OPTIONS: Array<{ value: ApiCapability; desc: string }> = [
 const createForm = reactive({
   name: '',
   description: '',
+  /** OPT-26 必填:绑定的空间成员 user_id,默认选中当前用户 */
+  memberUserId: '',
   capabilities: ['chat'] as string[],
   allKbs: true,
   kbIds: [] as string[],
@@ -60,12 +67,27 @@ function kbScopeLabel(key: ApiKeyOut): string {
 const activeKeys = computed(() => items.value.filter((k) => !k.revoked_at))
 const revokedKeys = computed(() => items.value.filter((k) => k.revoked_at))
 
+/** 绑定成员已注销(或存量 Key 无法回填):整行置灰,与"已吊销"同样式 */
+function isDeadKey(key: ApiKeyOut): boolean {
+  return !!key.revoked_at || !key.member_user_id
+}
+
+function rowClass({ row }: { row: ApiKeyOut }): string {
+  return isDeadKey(row) ? 'ak-row-dead' : ''
+}
+
+/** 列"绑定成员":昵称(用户名);注销后 member_* 为 null,显示"已注销" */
+function memberLabel(key: ApiKeyOut): string {
+  if (!key.member_user_id) return '已注销'
+  return key.member_nickname ? `${key.member_nickname}(${key.member_username})` : (key.member_username ?? '已注销')
+}
+
 /* ───── 数据加载 ───── */
 
 watch(
   () => auth.currentSpaceId,
   async () => {
-    await Promise.all([load(), loadKbs()])
+    await Promise.all([load(), loadKbs(), loadMembers()])
   },
   { immediate: true },
 )
@@ -102,6 +124,20 @@ async function loadKbs() {
   }
 }
 
+async function loadMembers() {
+  const spaceId = auth.currentSpaceId
+  if (!spaceId || !canManage.value) {
+    members.value = []
+    return
+  }
+  try {
+    // 绑定成员下拉数据源;列表本身 Viewer+ 可看,故仅 Admin+ 才拉
+    members.value = await apiListMembers(spaceId)
+  } catch {
+    members.value = []
+  }
+}
+
 /* ───── 新建(两步:表单 → 一次性展示) ───── */
 
 const createOpen = ref(false)
@@ -109,11 +145,15 @@ const creating = ref(false)
 const created = ref<ApiKeyCreatedOut | null>(null)
 const createError = ref('')
 
-const canSubmit = computed(() => createForm.name.trim().length > 0 && !creating.value)
+const canSubmit = computed(
+  () => createForm.name.trim().length > 0 && !!createForm.memberUserId && !creating.value,
+)
 
 function openCreate() {
   createForm.name = ''
   createForm.description = ''
+  // 默认选中当前用户(必为本空间成员,Admin+ 才能进到这里)
+  createForm.memberUserId = auth.user?.id ?? ''
   createForm.capabilities = ['chat']
   createForm.allKbs = true
   createForm.kbIds = kbs.value.map((k) => k.id)
@@ -136,6 +176,7 @@ async function onCreate() {
     const body: CreateApiKeyRequest = {
       name: createForm.name.trim(),
       description: createForm.description.trim(),
+      member_user_id: createForm.memberUserId,
       capabilities: createForm.capabilities,
       // 勾选「全部」时提交空数组(契约语义:不限制);否则提交选中的库
       kb_ids: createForm.allKbs ? [] : createForm.kbIds,
@@ -182,7 +223,7 @@ async function onRevoke(key: ApiKeyOut) {
     ElMessage.success('Key 已吊销')
     await load()
   } catch (e) {
-    if (e instanceof ApiError && e.code === 'FORBIDDEN') ElMessage.warning('当前角色无权吊销 API Key')
+    if (e instanceof ApiError && e.code === 'FORBIDDEN') ElMessage.warning('当前角色无权吊销 API Key(需 Admin 及以上)')
     else if (e instanceof ApiError && e.code === 'NOT_FOUND') ElMessage.warning('该 Key 已不存在')
     else ElMessage.error(errMessage(e))
   }
@@ -207,6 +248,7 @@ async function onRevoke(key: ApiKeyOut) {
         <span>
           Key 用于程序化接入,请妥善保管。完整 Key 只在创建时展示一次;一旦泄露请立即吊销并新建。
           调用时以 <span class="mono">X-API-Key</span> 请求头携带(不是 Bearer)。
+          每个 Key 绑定一名空间成员并以其身份行事:<b>绑定成员</b>被移出空间或注销,Key 立即失效;签发人离开不影响 Key。
         </span>
       </div>
 
@@ -232,12 +274,12 @@ async function onRevoke(key: ApiKeyOut) {
         <el-button v-if="canManage" type="primary" class="state-btn" @click="openCreate">
           <el-icon class="btn-ic"><Plus /></el-icon>新建 Key
         </el-button>
-        <div v-else class="state-desc role-hint">当前角色为 Viewer,无权创建 API Key(需 Editor 及以上)</div>
+        <div v-else class="state-desc role-hint">当前角色无权创建 API Key(创建/吊销需 Admin 及以上,列表 Viewer+ 可看)</div>
       </div>
 
       <!-- 列表 -->
       <div v-else class="card table-card" v-loading="loading">
-        <el-table :data="items" style="width: 100%">
+        <el-table :data="items" :row-class-name="rowClass" style="width: 100%">
           <el-table-column label="名称" min-width="180">
             <template #default="{ row }">
               <div class="ak-name">{{ row.name }}</div>
@@ -247,6 +289,20 @@ async function onRevoke(key: ApiKeyOut) {
           <el-table-column label="Key" width="200">
             <template #default="{ row }">
               <span class="mono ak-hint">{{ row.key_hint }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="绑定成员" min-width="170">
+            <template #default="{ row }">
+              <span v-if="!row.member_user_id" class="ak-revoked">已注销</span>
+              <span v-else>
+                <span class="ak-member">{{ memberLabel(row as ApiKeyOut) }}</span>
+                <span v-if="row.member_role != null" class="ak-member-role">{{ roleLabel(row.member_role) }}</span>
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="签发人" width="130">
+            <template #default="{ row }">
+              <span class="cell-dim">{{ row.created_by_name || '—' }}</span>
             </template>
           </el-table-column>
           <el-table-column label="能力" min-width="180">
@@ -300,6 +356,17 @@ async function onRevoke(key: ApiKeyOut) {
         <el-form label-position="top" @submit.prevent>
           <el-form-item label="名称" required>
             <el-input v-model="createForm.name" maxlength="64" placeholder="例如:ci-pipeline" />
+          </el-form-item>
+          <el-form-item label="绑定成员" required>
+            <el-select v-model="createForm.memberUserId" class="ak-member-select" placeholder="选择该空间的现存成员">
+              <el-option
+                v-for="m in members"
+                :key="m.user_id"
+                :label="`${m.nickname}(${m.username}) · ${roleLabel(m.role)}`"
+                :value="m.user_id"
+              />
+            </el-select>
+            <div class="ak-member-hint">Key 将以该成员的身份行事:成员被移出空间或注销,Key 立即失效</div>
           </el-form-item>
           <el-form-item label="描述">
             <el-input
@@ -457,9 +524,29 @@ async function onRevoke(key: ApiKeyOut) {
   font-size: 13px;
   color: #6b7280;
 }
+.ak-member {
+  font-size: 13px;
+  color: #374151;
+}
+.ak-member-role {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #f7f8fa;
+  border: 1px solid #e5e7eb;
+  font-size: 11px;
+  color: #6b7280;
+}
 .ak-revoked {
   font-size: 12px;
   color: #9ca3af;
+}
+/* 已吊销 / 绑定成员已注销:整行置灰 */
+.table-card :deep(.ak-row-dead) {
+  opacity: 0.5;
 }
 .ak-foot {
   height: 48px;
@@ -541,6 +628,16 @@ async function onRevoke(key: ApiKeyOut) {
 }
 .ak-kb-opt:hover {
   background: #f7f8fa;
+}
+
+.ak-member-select {
+  width: 100%;
+}
+.ak-member-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9ca3af;
 }
 
 .ak-created-sub {

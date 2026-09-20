@@ -317,6 +317,16 @@ export interface ApiKeyOut {
   description: string
   /** 形如 sk-live-****ab12;完整明文只在创建响应里出现一次 */
   key_hint: string
+  /* ───── OPT-26:Key 绑定空间成员,以下字段随列表/创建响应返回 ───── */
+  /** 绑定成员 id;存量旧 Key 回退签发者,成员注销后为 null */
+  member_user_id: string | null
+  member_username: string | null
+  member_nickname: string | null
+  /** 绑定时点的空间角色数值(40/30/20/10),与成员页同一口径 */
+  member_role: number | null
+  /** 签发操作者:仅留痕,不参与运行时身份(签发者被移出不影响 Key) */
+  created_by: string | null
+  created_by_name: string | null
   capabilities: string[]
   /** 空数组 = 全部知识库 */
   kb_ids: string[]
@@ -334,6 +344,8 @@ export interface ApiKeyCreatedOut extends ApiKeyOut {
 export interface CreateApiKeyRequest {
   name: string
   description?: string
+  /** ★ OPT-26 新增必填:该空间的现存成员 user_id;缺失 422,非本空间成员 404 MEMBER_NOT_FOUND */
+  member_user_id: string
   /** 空数组合法但等于"什么都不能做"(后端 fail-closed) */
   capabilities?: string[]
   /** 空数组 = 全部知识库 */
