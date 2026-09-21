@@ -5,7 +5,8 @@
  * GET /model-config 一次性拉下来后以 props 传入,本组件只做展示与写操作;
  * 任何写成功后 emit('changed') 让父级重拉聚合(设默认会顶掉旧默认、model_count
  * 变化、掩码都只有重拉才对得齐,不在本地拼)。
- * 供应商行没有 kind,按 protocol 分块:chat 块 = 非 cohere_rerank,rerank 块 = cohere_rerank;
+ * 供应商行没有 kind,按 protocol 分块:重排协议一律以 `_rerank` 结尾,其余归对话区块
+ * (dashscope_rerank 等新协议加入后不能只认 cohere_rerank);
  * 模型行按 kind 过滤;类型下拉按 ProviderTypeOut.kinds 过滤(§1.4)。
  */
 import { Edit, Plus, Search, Delete } from '@element-plus/icons-vue'
@@ -54,10 +55,12 @@ const kindLabel = computed(() => TYPE_LABELS[props.kind])
 /** §1.6 快捷预置值(前端写死即可,后端不拦);允许直接输入其他值 */
 const CONTEXT_PRESETS = [4096, 32768, 65536, 128000]
 
-/** 供应商按 protocol 分块(rerank 类型 protocol 固定 cohere_rerank) */
+/** 供应商按 protocol 分块:重排协议统一以 `_rerank` 结尾(后端从协议注册表派生)。
+ *  TODO(OPT-35): view.providers[] 将加法式下发 `kinds`,届时改 `p.kinds.includes(props.kind)`,删这个后缀判断 */
+const RERANK_PROTOCOL_SUFFIX = '_rerank'
 const providers = computed(() =>
   props.config.providers.filter((p) =>
-    props.kind === 'rerank' ? p.protocol === 'cohere_rerank' : p.protocol !== 'cohere_rerank',
+    props.kind === 'rerank' ? p.protocol.endsWith(RERANK_PROTOCOL_SUFFIX) : !p.protocol.endsWith(RERANK_PROTOCOL_SUFFIX),
   ),
 )
 const models = computed(() => props.config.models.filter((m) => m.kind === props.kind))

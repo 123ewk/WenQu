@@ -298,7 +298,7 @@ export interface ProviderTypeOut {
   label: string
   doc_url: string
   default_base_url: string
-  /** openai_compatible | cohere_rerank */
+  /** 协议由类型决定(如 openai_compatible / cohere_rerank / dashscope_rerank);前端不枚举,按后缀判断见 ProvidersModelsBlock */
   protocol: string
   /** 该类型可挂的模型类别;供应商下拉按它分开渲染(chat 区排 rerank 类型,反之亦然) */
   kinds: string[]
@@ -358,7 +358,7 @@ export interface SpaceModelOut {
 
 export interface SpaceModelCreateRequest {
   provider_id: string
-  /** 必须与供应商 protocol 匹配:cohere_rerank 只挂 rerank,其余只挂 chat(错给 422) */
+  /** 必须与供应商 protocol 匹配:重排协议(`*_rerank`)只挂 rerank,其余只挂 chat(错给 422) */
   kind: string
   model_name: string
   /** 不传 = 后端合成 `{供应商 name}/{model_name}`;自定义撞库 409 MODEL_ID_TAKEN */
