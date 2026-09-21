@@ -11,6 +11,9 @@
 EmbeddingClient 保留后台并发信号量(入库流水线限速);ChatClient 的
 chat_stream/chat_stream_tools 返回 Generator 是断线清理契约的一部分,
 生成器语义由适配器保持(本层原样透传,不做 list() 固化)。
+
+token 计量(OPT-28)在本层只是**透传可选的 `UsageSink` 出参**:带收集器才计数,
+不带时请求体与计量上线前完全一致;数字的采集与估算全在协议层。
 """
 
 from __future__ import annotations
@@ -26,9 +29,18 @@ from app.core.model_protocols import (
     ModelCallError,
     ToolCallRequest,
     get_protocol,
+    get_rerank_protocol,
 )
+from app.core.model_usage import UsageSink
 
-__all__ = ["ChatClient", "EmbeddingClient", "ModelCallError", "ToolCallRequest", "resolve_api_key"]
+__all__ = [
+    "ChatClient",
+    "EmbeddingClient",
+    "ModelCallError",
+    "RerankClient",
+    "ToolCallRequest",
+    "resolve_api_key",
+]
 
 
 def resolve_api_key(provider: ProviderEntry) -> str:
@@ -49,7 +61,13 @@ class EmbeddingClient:
         self._semaphore = background_semaphore
         self._transport = transport
 
-    def embed(self, texts: list[str], model_id: str | None = None) -> list[list[float]]:
+    def embed(
+        self,
+        texts: list[str],
+        model_id: str | None = None,
+        *,
+        usage: UsageSink | None = None,
+    ) -> list[list[float]]:
         if not texts:
             return []
         model = (
@@ -59,14 +77,24 @@ class EmbeddingClient:
         )
         if model.kind != "embedding":
             raise ModelNotConfigured(f"模型 {model.id} 不是 embedding 类型")
-        return self._dispatch(model, texts)
+        return self._dispatch(model, texts, usage)
 
-    def _dispatch(self, model: ModelEntry, texts: list[str]) -> list[list[float]]:
+    def _dispatch(
+        self, model: ModelEntry, texts: list[str], usage: UsageSink | None
+    ) -> list[list[float]]:
         provider = self._catalog.provider_of(model)
         api_key = resolve_api_key(provider)
         protocol = get_protocol(provider.protocol)
+        if usage is not None:
+            usage.bind(model.id, provider.key, model.context_tokens)
         return protocol.embed(
-            provider, model, api_key, texts, semaphore=self._semaphore, transport=self._transport
+            provider,
+            model,
+            api_key,
+            texts,
+            semaphore=self._semaphore,
+            transport=self._transport,
+            usage=usage,
         )
 
 
@@ -84,19 +112,23 @@ class ChatClient:
         messages: list[dict[str, str]],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> str:
-        return "".join(self.chat_stream(messages, model_id, temperature))
+        return "".join(self.chat_stream(messages, model_id, temperature, usage=usage))
 
     def chat_stream(
         self,
         messages: list[dict[str, str]],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> Generator[str, None, None]:
-        model, provider, api_key = self._resolve_chat(model_id)
+        model, provider, api_key = self._resolve_chat(model_id, usage)
         protocol = get_protocol(provider.protocol)
         return protocol.chat_stream(
-            provider, model, api_key, messages, temperature, transport=self._transport
+            provider, model, api_key, messages, temperature, transport=self._transport, usage=usage
         )
 
     def chat_stream_tools(
@@ -105,14 +137,25 @@ class ChatClient:
         tools: list[dict],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> Generator[str | ToolCallRequest, None, None]:
-        model, provider, api_key = self._resolve_chat(model_id)
+        model, provider, api_key = self._resolve_chat(model_id, usage)
         protocol = get_protocol(provider.protocol)
         return protocol.chat_stream_tools(
-            provider, model, api_key, messages, tools, temperature, transport=self._transport
+            provider,
+            model,
+            api_key,
+            messages,
+            tools,
+            temperature,
+            transport=self._transport,
+            usage=usage,
         )
 
-    def _resolve_chat(self, model_id: str | None) -> tuple[ModelEntry, ProviderEntry, str]:
+    def _resolve_chat(
+        self, model_id: str | None, usage: UsageSink | None = None
+    ) -> tuple[ModelEntry, ProviderEntry, str]:
         model = (
             self._catalog.get_model(model_id)
             if model_id
@@ -121,4 +164,47 @@ class ChatClient:
         if model.kind != "chat":
             raise ModelNotConfigured(f"模型 {model.id} 不是 chat 类型")
         provider = self._catalog.provider_of(model)
+        if usage is not None:
+            usage.bind(model.id, provider.key, model.context_tokens)
         return model, provider, resolve_api_key(provider)
+
+
+class RerankClient:
+    """重排网关(OPT-27):把候选文档交给 rerank 模型按相关性重新排序。
+
+    与另两个网关不同,它只在空间 `rerank_enabled` 为真时才被装配(见 deps),
+    未启用时检索链路零开销;上游失败由调用方 fail-open 兜住,不在这里降级。
+    """
+
+    def __init__(
+        self,
+        catalog: ModelCatalog,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._catalog = catalog
+        self._transport = transport
+
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int | None = None,
+        model_id: str | None = None,
+    ) -> list[tuple[int, float]]:
+        if not documents:
+            return []
+        model = (
+            self._catalog.get_model(model_id, "rerank")
+            if model_id
+            else self._catalog.default_model("rerank")
+        )
+        provider = self._catalog.provider_of(model)
+        return get_rerank_protocol(provider.protocol).rerank(
+            provider,
+            model,
+            resolve_api_key(provider),
+            query,
+            documents,
+            top_n if top_n is not None else len(documents),
+            transport=self._transport,
+        )

@@ -20,6 +20,7 @@ from app.application.service.retrieval import RetrievedChunk
 from app.application.streaming import GenerationHandle
 from app.core.errors import AppError
 from app.core.event_log import EventLog
+from app.core.model_usage import ChatTurnUsage
 from app.domain.interfaces import ChatGateway
 from app.domain.models import Message
 
@@ -39,8 +40,12 @@ SYSTEM_PROMPT = (
     "4. 回答保持简洁,使用与提问相同的语言。"
 )
 
-# 持久化协作者:QAService._persist_assistant 的形状(ctx, content, citations, model_id) → Message
-PersistFn = Callable[["_AskContext", str, list[dict], "str | None"], Message]
+# 持久化协作者:QAService._persist_assistant 的形状
+# (ctx, content, citations, model_id, context_used_tokens, context_window_tokens) → Message
+PersistFn = Callable[
+    ["_AskContext", str, list[dict], "str | None", "int | None", "int | None"],
+    Message,
+]
 # 检索协作者:QAService._search 的形状(含 BackgroundDb / 直接检索两条路径)
 SearchFn = Callable[["_AskContext"], list[RetrievedChunk]]
 
@@ -53,6 +58,7 @@ class GenerationState:
     handle: GenerationHandle
     stream_id: uuid.UUID
     log: EventLog
+    turn_usage: ChatTurnUsage | None = None
     hits: list[RetrievedChunk] = field(default_factory=list)
     citations: list[dict] = field(default_factory=list)
     prompt: list[dict[str, str]] | None = None
@@ -140,9 +146,15 @@ class FallbackStage:
     def run(self, state: GenerationState) -> None:
         if state.hits:
             return
-        self._persist(state.ctx, _NO_RESULT_ANSWER, [], None)
+        self._persist(state.ctx, _NO_RESULT_ANSWER, [], None, None, None)
         state.emit("delta", text=_NO_RESULT_ANSWER)
-        state.emit("done", message_id=str(state.ctx.user_message_id))
+        # 兜底回答没打模型 → 进度条两值显式 null(与"老消息"同口径,前端不必猜键缺失)
+        state.emit(
+            "done",
+            message_id=str(state.ctx.user_message_id),
+            context_used_tokens=None,
+            context_window_tokens=None,
+        )
         state.stop = True
 
 
@@ -195,10 +207,15 @@ class PersistStage:
 
     def run(self, state: GenerationState) -> None:
         content = "".join(state.pieces)
+        turn_window = state.turn_usage.window() if state.turn_usage is not None else None
+        used = turn_window.used_tokens if turn_window is not None else None
+        window_tokens = turn_window.window_tokens if turn_window is not None else None
         if state.interrupted:
             # 与完整答案不同:部分答案空内容不落库(没有半截空消息)
             saved = (
-                self._persist(state.ctx, content, state.citations, state.ctx.model_id)
+                self._persist(
+                    state.ctx, content, state.citations, state.ctx.model_id, used, window_tokens
+                )
                 if content.strip()
                 else None
             )
@@ -206,13 +223,19 @@ class PersistStage:
                 "done",
                 partial=True,
                 message_id=str(saved.id) if saved else None,
+                context_used_tokens=used,
+                context_window_tokens=window_tokens,
             )
             return
-        saved = self._persist(state.ctx, content, state.citations, state.ctx.model_id)
+        saved = self._persist(
+            state.ctx, content, state.citations, state.ctx.model_id, used, window_tokens
+        )
         state.emit(
             "done",
             message_id=str(saved.id),
             cited_indexes=_cited_indexes(content, len(state.citations)),
+            context_used_tokens=used,
+            context_window_tokens=window_tokens,
         )
 
 

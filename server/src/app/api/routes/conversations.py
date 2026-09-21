@@ -90,6 +90,9 @@ class MessageOut(BaseModel):
     model_id: str | None = None
     # Agent 模式(OPT-10)的工具调用轨迹;直检消息恒为 None,前端判空回退
     agent_steps: list[dict] | None = None
+    # 本轮上下文窗口快照(OPT-29);user 行与没打模型的老消息恒为 None
+    context_used_tokens: int | None = None
+    context_window_tokens: int | None = None
     created_at: datetime | None = None
 
 
@@ -113,6 +116,8 @@ def _message_out(message: Message) -> MessageOut:
         citations=citations,
         model_id=message.model_id,
         agent_steps=message.agent_steps,
+        context_used_tokens=message.context_used_tokens,
+        context_window_tokens=message.context_window_tokens,
         created_at=message.created_at,
     )
 

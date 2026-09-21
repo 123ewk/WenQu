@@ -28,6 +28,24 @@ class AuditResult(StrEnum):
     DENIED = "denied"
 
 
+class UsageKind(StrEnum):
+    """token 用量的计量类别(OPT-28):对哪条上游链路记的账。"""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+
+
+class UsageSource(StrEnum):
+    """用量数字的出处 —— 两种口径不可混算,所以必须随行落库。
+
+    - `upstream`:厂商 `usage` 回传的原值(精确);
+    - `estimated`:厂商不回传时由 `estimate_tokens()` 估算(近似,前端应打 ≈ 角标)。
+    """
+
+    UPSTREAM = "upstream"
+    ESTIMATED = "estimated"
+
+
 class AuditAction(StrEnum):
     """审计动作全分类;新增动作必须在此注册(40+ 分类为长期目标,见基准 04)。"""
 
@@ -60,6 +78,11 @@ class AuditAction(StrEnum):
     MODEL_CREATED = "model.created"
     MODEL_UPDATED = "model.updated"
     MODEL_DELETED = "model.deleted"
+    # OPT-27 空间级模型配置:内置 embedding 的钥匙、重排开关、连通探测(动作与全局层同款,
+    # 空间层靠 AuditLog.space_id 区分,不另立动作名)
+    MODEL_SETTING_EMBEDDING_KEY_UPDATED = "model_setting.embedding_key.updated"
+    MODEL_SETTING_RERANK_UPDATED = "model_setting.rerank.updated"
+    MODEL_TESTED = "model.tested"
     ACCESS_DENIED = "access.denied"  # 越权尝试(路由级,记录真实意图与目标)
 
 

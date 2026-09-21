@@ -197,6 +197,18 @@ class EmbeddingGateway(Protocol):
     ) -> list[list[float]]: ...
 
 
+class RerankGateway(Protocol):
+    """重排网关(OPT-27):返回 [(原始下标, 相关性分)] 按分数降序。"""
+
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_n: int | None = None,
+        model_id: str | None = None,
+    ) -> list[tuple[int, float]]: ...
+
+
 class KbStatsRepository(Protocol):
     """知识库聚合统计与空间级入库进度(KbStats 定义在 application/repository)。"""
 

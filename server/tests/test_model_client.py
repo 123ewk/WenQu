@@ -25,10 +25,17 @@ from app.core.model_client import (
     ChatClient,
     EmbeddingClient,
     ModelCallError,
+    RerankClient,
     ToolCallRequest,
     resolve_api_key,
 )
-from app.core.model_protocols import get_protocol, registered_protocols
+from app.core.model_protocols import (
+    get_protocol,
+    get_rerank_protocol,
+    registered_protocols,
+    registered_rerank_protocols,
+)
+from app.core.model_usage import UsageSink, estimate_usage_tokens
 
 _CIPHER = CredentialCipher("unit-test-master-key")
 
@@ -79,10 +86,19 @@ def _catalog(
     return ModelCatalog(providers=providers, models=models, _defaults=defaults)
 
 
-def _embed_response(vectors: list[list[float]], status: int = 200) -> httpx.Response:
+def _embed_body(vectors: list[list[float]], usage: dict | None) -> dict:
+    body: dict = {"data": [{"index": i, "embedding": v} for i, v in enumerate(vectors)]}
+    if usage is not None:
+        body["usage"] = usage
+    return body
+
+
+def _embed_response(
+    vectors: list[list[float]], status: int = 200, usage: dict | None = None
+) -> httpx.Response:
     return httpx.Response(
         status,
-        json={"data": [{"index": i, "embedding": v} for i, v in enumerate(vectors)]},
+        json=_embed_body(vectors, usage),
         request=httpx.Request("POST", "https://fake/embeddings"),
     )
 
@@ -287,14 +303,27 @@ def test_registry_custom_adapter_is_dispatched() -> None:
 
     @register_protocol("fake_unit_adapter")
     class FakeAdapter:
-        def embed(self, provider, model, api_key, texts, *, semaphore=None, transport=None):
+        def embed(
+            self, provider, model, api_key, texts, *, semaphore=None, transport=None, usage=None
+        ):
             return [[float(len(t))] for t in texts]
 
-        def chat_stream(self, provider, model, api_key, messages, temperature, *, transport=None):
+        def chat_stream(
+            self, provider, model, api_key, messages, temperature, *, transport=None, usage=None
+        ):
             yield "fake"
 
         def chat_stream_tools(
-            self, provider, model, api_key, messages, tools, temperature, *, transport=None
+            self,
+            provider,
+            model,
+            api_key,
+            messages,
+            tools,
+            temperature,
+            *,
+            transport=None,
+            usage=None,
         ):
             yield "fake"
 
@@ -382,3 +411,385 @@ def test_chat_stream_tools_multiple_calls_in_index_order() -> None:
     frames = list(client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS))
     assert [f.name for f in frames] == ["t1", "t2"]
     assert frames[0].id == "call_0" and frames[1].id == "call_b"
+
+
+# ---------------------------- token 用量采集(OPT-28) ----------------------------
+
+
+def _sse_with_usage(pieces: list[str], usage: dict | None = None) -> httpx.Response:
+    """造 chat SSE 流;`usage` 放在 choices 为空的收尾 chunk 里(OpenAI 的真实形态)。"""
+    lines = [
+        f"data: {json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in pieces
+    ]
+    if usage is not None:
+        lines.append(f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n")
+    lines.append("data: [DONE]\n\n")
+    return httpx.Response(
+        200, content="".join(lines).encode(), headers={"content-type": "text/event-stream"}
+    )
+
+
+def test_estimate_usage_tokens_rules() -> None:
+    """口径:1 个汉字 0.75 token、1 个英文字母 0.25 token,向上取整。"""
+    assert estimate_usage_tokens("") == 0
+    assert estimate_usage_tokens("abcd") == 1
+    assert estimate_usage_tokens("hello world") == 3  # 空格不单独计
+    assert estimate_usage_tokens("你好世界") == 3
+    assert estimate_usage_tokens("你好,world") == 3  # ceil(2*0.75 + 6*0.25)
+
+
+def test_usage_sink_never_mixes_the_two_sources() -> None:
+    sink = UsageSink()
+    for junk in (None, {}, {"prompt_tokens": 0, "completion_tokens": 0}):
+        sink.add_upstream(junk)  # 缺字段 / null / 全 0 都不算上游回传
+    assert sink.from_upstream is False
+    sink.estimate_from("abcd")
+    assert (sink.total_tokens, sink.from_upstream) == (1, False)
+
+    billed = UsageSink()
+    billed.add_upstream({"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19})
+    billed.estimate_from("hello world")  # 已认领上游口径,估算不得覆盖
+    assert (billed.prompt_tokens, billed.completion_tokens, billed.total_tokens) == (12, 7, 19)
+    assert billed.from_upstream is True
+
+
+def test_no_usage_sink_keeps_payload_byte_identical() -> None:
+    """不计量时连 stream_options 都不带:上线计量不能改变既有请求形态。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return _sse_response(["A"])
+
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
+    list(client.chat_stream([{"role": "user", "content": "hi"}]))
+    assert "stream_options" not in seen
+
+
+def test_chat_stream_records_upstream_usage() -> None:
+    sink = UsageSink()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream_options"] == {"include_usage": True}
+        return _sse_with_usage(
+            ["你好", "！"], {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}
+        )
+
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
+    answer = "".join(client.chat_stream([{"role": "user", "content": "你好"}], usage=sink))
+    assert answer == "你好！"
+    assert (sink.prompt_tokens, sink.completion_tokens, sink.total_tokens) == (12, 7, 19)
+    assert sink.from_upstream is True
+    # 缺省 model_id 时,实际命中的默认模型也要落到收集器上(用量表要按模型汇总)
+    assert (sink.model_id, sink.provider) == ("ds/chat", "ds")
+
+
+def test_chat_stream_estimates_when_upstream_silent() -> None:
+    sink = UsageSink()
+    client = ChatClient(
+        _catalog(), transport=httpx.MockTransport(lambda req: _sse_with_usage(["ABCDEF"]))
+    )
+    answer = "".join(
+        client.chat_stream([{"role": "user", "content": "hello world"}], usage=sink)
+    )
+    assert answer == "ABCDEF"
+    assert sink.from_upstream is False
+    assert (sink.prompt_tokens, sink.completion_tokens) == (3, 2)
+    assert sink.total_tokens == 5
+
+
+def test_chat_stream_retries_without_stream_options_when_rejected() -> None:
+    """厂商不认 stream_options(400)时去掉该字段重试一次:计量不许把问答弄挂。"""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": "unknown field stream_options"})
+        return _sse_with_usage(["ABC"])
+
+    sink = UsageSink()
+    answer = "".join(
+        ChatClient(_catalog(), transport=httpx.MockTransport(handler)).chat_stream(
+            [{"role": "user", "content": "hi"}], usage=sink
+        )
+    )
+    assert answer == "ABC"
+    assert ["stream_options" in b for b in bodies] == [True, False]
+    assert sink.from_upstream is False
+    assert (sink.prompt_tokens, sink.completion_tokens) == (1, 1)
+
+
+def test_other_upstream_errors_are_not_retried() -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(500, json={"error": "boom"})
+
+    client = ChatClient(_catalog(), transport=httpx.MockTransport(handler))
+    with pytest.raises(ModelCallError) as exc_info:
+        list(client.chat_stream([{"role": "user", "content": "hi"}], usage=UsageSink()))
+    assert exc_info.value.status == 500
+    assert len(calls) == 1  # 与计量无关的失败不重发,别把上游打爆
+
+
+def test_closed_stream_still_bills_what_it_emitted() -> None:
+    """断线清理契约不能被计量打破:close() 停在 yield 点也要把已吐出的部分入账。"""
+    sink = UsageSink()
+    gen = ChatClient(
+        _catalog(), transport=httpx.MockTransport(lambda req: _sse_with_usage(["A", "B"]))
+    ).chat_stream([{"role": "user", "content": "hi"}], usage=sink)
+    assert next(gen) == "A"
+    gen.close()
+    assert sink.completion_tokens == estimate_usage_tokens("A")
+
+
+def test_embed_usage_accumulates_across_batches() -> None:
+    sink = UsageSink()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        batch = json.loads(request.content)["input"]
+        return _embed_response(
+            [[0.0] for _ in batch], usage={"prompt_tokens": 4, "total_tokens": 4}
+        )
+
+    client = EmbeddingClient(_catalog(), transport=httpx.MockTransport(handler))
+    client.embed([f"t{i}" for i in range(12)], "dash/emb", usage=sink)  # 2 批
+    assert (sink.prompt_tokens, sink.total_tokens, sink.from_upstream) == (8, 8, True)
+    assert (sink.model_id, sink.provider) == ("dash/emb", "dash")
+
+
+def test_embed_estimates_when_upstream_silent() -> None:
+    sink = UsageSink()
+    client = EmbeddingClient(
+        _catalog(),
+        transport=httpx.MockTransport(
+            lambda req: _embed_response([[0.0]] * len(json.loads(req.content)["input"]))
+        ),
+    )
+    client.embed(["你好世界", "abcd"], usage=sink)
+    assert sink.from_upstream is False
+    assert sink.prompt_tokens == 4  # 4 汉字 3.0 + abcd 1.0
+    assert sink.completion_tokens == 0
+
+
+def test_chat_stream_tools_bills_tool_arguments_as_output() -> None:
+    fragments = [
+        {
+            "index": 0,
+            "id": "call_0",
+            "function": {"name": "search_knowledge", "arguments": '{"query": "报销"}'},
+        }
+    ]
+    sink = UsageSink()
+    client = ChatClient(
+        _catalog(),
+        transport=httpx.MockTransport(lambda req: _sse_tools_response(["先查一下。"], fragments)),
+    )
+    list(client.chat_stream_tools([{"role": "user", "content": "q"}], _TOOLS, usage=sink))
+    assert sink.from_upstream is False
+    assert sink.completion_tokens == estimate_usage_tokens(
+        "先查一下。search_knowledge" + '{"query": "报销"}'
+    )
+
+
+# ---------------------- 重排(cohere_rerank / dashscope_rerank) ----------------------
+
+
+def _rerank_catalog(
+    protocol: str = "cohere_rerank", base_url: str = "https://rerank.example/v1"
+) -> ModelCatalog:
+    providers = {
+        "rr": ProviderEntry(
+            key="rr",
+            protocol=protocol,
+            base_url=base_url,
+            api_key_encrypted=_enc("sk-rr"),
+            enabled=True,
+        )
+    }
+    models = {
+        "rr/gte": ModelEntry(
+            id="rr/gte", kind="rerank", provider_key="rr", model="gte-rerank"
+        )
+    }
+    return ModelCatalog(providers=providers, models=models, _defaults={"rerank": "rr/gte"})
+
+
+def _rerank_response(results: list[dict], status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status, json={"results": results}, request=httpx.Request("POST", "https://x/rerank")
+    )
+
+
+def test_rerank_sends_cohere_shape_and_returns_sorted_pairs() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        assert request.url.path == "/v1/rerank"
+        assert request.headers["authorization"] == "Bearer sk-rr"
+        return _rerank_response(
+            [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.2}]
+        )
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    ranked = client.rerank("报销政策", ["a", "b", "c"])
+
+    assert seen["model"] == "gte-rerank"
+    assert seen["query"] == "报销政策"
+    assert seen["documents"] == ["a", "b", "c"]
+    assert seen["top_n"] == 3  # 未指定 top_n = 全量候选
+    assert ranked == [(2, 0.9), (0, 0.2)]  # 按相关性降序
+
+
+def test_rerank_respects_top_n_cap() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["top_n"] == 2
+        return _rerank_response([{"index": 1, "relevance_score": 0.5}])
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", ["a", "b", "c"], top_n=2) == [(1, 0.5)]
+
+
+def test_rerank_empty_documents_skips_upstream() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("空候选不该打上游")
+
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", []) == []
+
+
+def test_rerank_upstream_error_and_bad_payload_raise_model_call_error() -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate limited"})
+
+    with pytest.raises(ModelCallError) as exc_info:
+        RerankClient(_rerank_catalog(), transport=httpx.MockTransport(boom)).rerank(
+            "q", ["a"]
+        )
+    assert exc_info.value.status == 429
+
+    def _fails_with(results: list[dict]) -> None:
+        with pytest.raises(ModelCallError):
+            RerankClient(
+                _rerank_catalog(),
+                transport=httpx.MockTransport(lambda r: _rerank_response(results)),
+            ).rerank("q", ["a", "b"])
+
+    for bad in ([], [{"index": 9, "relevance_score": 0.1}], [{"relevance_score": 0.1}]):
+        _fails_with(bad)  # 空 results / 下标越界 / 缺字段
+
+
+def test_rerank_requires_rerank_kind_model_and_supported_protocol() -> None:
+    client = RerankClient(_rerank_catalog(), transport=httpx.MockTransport(
+        lambda r: _rerank_response([{"index": 0, "relevance_score": 0.1}])
+    ))
+    assert client.rerank("q", ["a"]) == [(0, 0.1)]
+
+    # 目录里没有 rerank 默认 → 503(未配置,不是调用失败)
+    with pytest.raises(ModelNotConfigured):
+        RerankClient(
+            ModelCatalog(providers={}, models={}, _defaults={}),
+            transport=httpx.MockTransport(lambda r: _rerank_response([])),
+        ).rerank("q", ["a"])
+
+    # 协议不支持重排 → 503 且点名可用协议
+    with pytest.raises(AppError) as exc_info:
+        get_rerank_protocol("openai_compatible")
+    assert exc_info.value.code_str == ErrorCode.MODEL_NOT_CONFIGURED[1]
+    assert "cohere_rerank" in exc_info.value.message
+
+
+def test_cohere_rerank_is_registered() -> None:
+    assert "cohere_rerank" in registered_protocols()
+    assert hasattr(get_protocol("cohere_rerank"), "rerank")
+
+
+_DASHSCOPE_PATH = "/api/v1/services/rerank/text-rerank/text-rerank"
+
+
+def _dashscope_catalog() -> ModelCatalog:
+    # base_url 只到站点根:原生端点的服务路径由适配器钉死,拼不出第二段 /v1
+    return _rerank_catalog("dashscope_rerank", "https://dashscope.example")
+
+
+def _dashscope_response(body: dict, status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status, json=body, request=httpx.Request("POST", "https://x/text-rerank")
+    )
+
+
+def test_dashscope_rerank_sends_native_shape_and_parses_output_results() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        assert request.url.path == _DASHSCOPE_PATH
+        assert request.headers["authorization"] == "Bearer sk-rr"
+        return _dashscope_response(
+            {
+                "output": {
+                    "results": [
+                        {"index": 0, "relevance_score": 0.3},
+                        {"index": 2, "relevance_score": 0.8},
+                    ]
+                },
+                "usage": {"total_tokens": 123},
+            }
+        )
+
+    client = RerankClient(_dashscope_catalog(), transport=httpx.MockTransport(handler))
+    ranked = client.rerank("合同审批", ["a", "b", "c"], top_n=2)
+
+    assert seen["model"] == "gte-rerank"
+    assert seen["input"] == {"query": "合同审批", "documents": ["a", "b", "c"]}
+    assert seen["parameters"] == {"top_n": 2, "return_documents": False}
+    assert ranked == [(2, 0.8), (0, 0.3)]  # output 里乱序回,也要按分数降序
+
+
+def test_dashscope_rerank_clamps_top_n_to_documents() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["parameters"]["top_n"] == 3
+        return _dashscope_response({"output": {"results": [{"index": 1, "relevance_score": 0.5}]}})
+
+    client = RerankClient(_dashscope_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", ["a", "b", "c"], top_n=9) == [(1, 0.5)]
+
+
+def test_dashscope_rerank_bad_responses_raise_model_call_error() -> None:
+    def _fails(body: dict, status: int = 200) -> None:
+        with pytest.raises(ModelCallError):
+            RerankClient(
+                _dashscope_catalog(),
+                transport=httpx.MockTransport(lambda r: _dashscope_response(body, status)),
+            ).rerank("q", ["a", "b"])
+
+    # 缺 output / output 非对象 / output 里无 results / results 空 / 下标越界
+    for body in (
+        {},
+        {"output": "ok"},
+        {"output": {}},
+        {"output": {"results": []}},
+        {"output": {"results": [{"index": 5, "relevance_score": 0.1}]}},
+    ):
+        _fails(body)
+
+    with pytest.raises(ModelCallError) as exc_info:
+        RerankClient(
+            _dashscope_catalog(),
+            transport=httpx.MockTransport(lambda r: _dashscope_response({}, 400)),
+        ).rerank("q", ["a"])
+    assert exc_info.value.status == 400  # 上游错误码要留着,前端按 §1.6 文案直显
+
+
+def test_both_rerank_protocols_are_registered() -> None:
+    assert registered_rerank_protocols() == ["cohere_rerank", "dashscope_rerank"]
+    assert "dashscope_rerank" in registered_protocols()
+    assert hasattr(get_protocol("dashscope_rerank"), "rerank")
+    # 错误消息点名两份清单,运维不用猜支持哪些
+    with pytest.raises(AppError) as exc_info:
+        get_rerank_protocol("openai_compatible")
+    assert "dashscope_rerank" in exc_info.value.message

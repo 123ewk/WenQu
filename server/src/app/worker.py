@@ -12,6 +12,7 @@ import logging
 import socket
 import threading
 import time
+import uuid
 
 from app.application.repository.knowledge import (
     ChunkRepositoryImpl,
@@ -21,12 +22,14 @@ from app.application.repository.knowledge import (
 from app.application.repository.tasks import TaskRepositoryImpl
 from app.application.service.ingestion import IngestionService
 from app.application.service.maintenance import MaintenanceService
+from app.application.service.usage import UsageRecorder
 from app.core.config import get_settings
 from app.core.db import get_session_factory
 from app.core.model_catalog import ModelCatalog
 from app.core.model_client import EmbeddingClient
 from app.core.parser_client import ParserClient
 from app.core.storage import MinioStorage
+from app.domain.interfaces import EmbeddingGateway
 
 logger = logging.getLogger("app.worker")
 
@@ -50,6 +53,8 @@ class Worker:
             settings.minio_secure,
         )
         self._audit_retention_days = settings.audit_retention_days
+        # OPT-28:入库 token 用量按空间/成员记账(独立会话写,失败只记日志)
+        self._usage_recorder = UsageRecorder(get_session_factory())
         self._last_recover = 0.0
         self._last_maintenance = 0.0
 
@@ -63,13 +68,21 @@ class Worker:
                 logger.exception("maintenance run failed")
                 return (0, 0)
 
+    def _wrap_embedder(
+        self,
+        client: EmbeddingClient,
+        space_id: uuid.UUID | None,
+        user_id: uuid.UUID | None,
+    ) -> EmbeddingGateway:
+        """取不到空间 = 无租户上下文,不记账(与 API 层网关同一口径)。"""
+        if space_id is None:
+            return client
+        return self._usage_recorder.embedding(client, space_id, user_id)
+
     def run_once(self, worker_id: str) -> str | None:
         """回收陈旧 claim(限频)→ 认领处理一条;队列空返回 None。"""
         session_factory = get_session_factory()
         with session_factory() as db:
-            embedder = EmbeddingClient(
-                ModelCatalog.load_from_db(db), background_semaphore=self._bg_semaphore
-            )
             service = IngestionService(
                 documents=DocumentRepositoryImpl(db),
                 kbs=KnowledgeBaseRepositoryImpl(db),
@@ -77,7 +90,16 @@ class Worker:
                 chunks=ChunkRepositoryImpl(db),
                 storage=self._storage,
                 parser=self._parser,
-                embedder=embedder,
+                # OPT-27:按任务所属空间现建目录快照(空间模型/空间 embedding Key;信号量仍进程级)
+                # OPT-28:空间已知才套计量外壳;user_id 为文档上传者(可空 → 只进空间合计)
+                embedder_factory=lambda session, space_id, user_id: self._wrap_embedder(
+                    EmbeddingClient(
+                        ModelCatalog.load_from_db(session, space_id),
+                        background_semaphore=self._bg_semaphore,
+                    ),
+                    space_id,
+                    user_id,
+                ),
             )
             now = time.monotonic()
             if now - self._last_maintenance > _MAINTENANCE_INTERVAL_SECONDS:
