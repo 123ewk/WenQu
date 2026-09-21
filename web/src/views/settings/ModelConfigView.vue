@@ -7,9 +7,9 @@
  */
 import { Link, WarningFilled } from '@element-plus/icons-vue'
 
-import { apiGetModelConfig, apiPutEmbeddingKey, apiSetRerankSwitch, apiTestEmbeddingKey, modelTestErrorHint } from '@/api/modelConfig'
+import { apiGetModelConfig, apiGetProviderTypes, apiPutEmbeddingKey, apiPutRerankSwitch, apiTestEmbeddingKey, modelConfigErrorHint } from '@/api/modelConfig'
 import { errMessage } from '@/api/http'
-import type { SpaceModelConfigOut, SpaceModelOut } from '@/api/types'
+import type { ProviderTypeOut, SpaceModelConfigOut } from '@/api/types'
 import ProvidersModelsBlock from './ProvidersModelsBlock.vue'
 import { useAuthStore } from '@/stores/auth'
 import { isAtLeast, ROLE } from '@/utils/roles'
@@ -20,9 +20,12 @@ const auth = useAuthStore()
 const canManage = computed(() => isAtLeast(auth.role, ROLE.ADMIN))
 
 const config = ref<SpaceModelConfigOut | null>(null)
+const types = ref<ProviderTypeOut[]>([])
 const loading = ref(false)
 const loadError = ref<string | null>(null)
 
+/** 唯一的读口:聚合 GET /model-config(契约里没有 providers/models 列表接口);
+ *  任何写操作完成后都重拉这里(掩码/默认态只由后端给) */
 async function load() {
   const spaceId = auth.currentSpaceId
   if (!spaceId) {
@@ -32,7 +35,9 @@ async function load() {
   loading.value = true
   loadError.value = null
   try {
-    config.value = await apiGetModelConfig(spaceId)
+    const [cfg, t] = await Promise.all([apiGetModelConfig(spaceId), apiGetProviderTypes(spaceId)])
+    config.value = cfg
+    types.value = t
   } catch (e) {
     loadError.value = errMessage(e)
     config.value = null
@@ -51,20 +56,21 @@ const embSaving = ref(false)
 
 const embedding = computed(() => config.value?.embedding ?? null)
 
-/** 未配 Key 的展示分流:fallback_active=true(dev 回落全局 Key)= 灰色提示;否则生产 = 红色警示 */
-const embMissingProd = computed(() => !!embedding.value && !embedding.value.key_configured && !config.value!.fallback_active)
-const embFallbackDev = computed(() => !!embedding.value && !embedding.value.key_configured && config.value!.fallback_active)
+/** 未配 Key 的展示分流:fallback_active=true(dev 回落全局 Key)= 灰色提示;否则生产 = 红色警示。
+ *  注意它在 embedding 卡片对象里,不在聚合顶层;后端不告诉前端环境,判据只有这两个字段 */
+const embMissingProd = computed(() => !!embedding.value && !embedding.value.key_configured && !embedding.value.fallback_active)
+const embFallbackDev = computed(() => !!embedding.value && !embedding.value.key_configured && embedding.value.fallback_active)
 
 async function onTestEmbedding() {
   const spaceId = auth.currentSpaceId
   if (!spaceId || embTesting.value) return
   embTesting.value = true
   try {
-    // 输入框为空时不传 api_key = 测已存 Key(§1.2)
-    await apiTestEmbeddingKey(spaceId, embKeyInput.value.trim() || undefined)
+    // 输入框为空时不传 api_key = 测已存 Key(§1.2);一把 Key 都没有时后端给 503,message 照展示
+    await apiTestEmbeddingKey(spaceId, embKeyInput.value ? { api_key: embKeyInput.value } : {})
     ElMessage.success('向量化 Key 可用')
   } catch (e) {
-    ElMessage.error(`测试失败:${modelTestErrorHint(e)}`)
+    ElMessage.error(`测试失败:${modelConfigErrorHint(e)}`)
   } finally {
     embTesting.value = false
   }
@@ -75,7 +81,7 @@ async function onSaveEmbedding() {
   if (!spaceId || embSaving.value) return
   const key = embKeyInput.value.trim()
   if (!key) {
-    // 空串 = 清除本空间 Key,必须二次确认(§1.2);清除后果按 dev/prod 口径讲清
+    // 空串(纯空白后端等价空串)= 清除本空间 Key,必须二次确认(§1.2);后果按 dev/prod 口径讲清
     const confirmed = await ElMessageBox.confirm(
       '保存空值将清除本空间的向量化 Key。清除后:生产环境上传入库直接不可用;开发环境会回落到运维全局 Key。确认清除?',
       '清除向量化 Key',
@@ -85,13 +91,13 @@ async function onSaveEmbedding() {
   }
   embSaving.value = true
   try {
-    // 保存响应形状以契约重导为准,统一重新 GET 落全量配置
-    await apiPutEmbeddingKey(spaceId, key)
+    // 只回 {ok:true};key_configured/key_hint 必须重拉聚合才拿到,别在本地拼掩码
+    await apiPutEmbeddingKey(spaceId, { api_key: key })
     await load()
     embKeyInput.value = ''
     ElMessage.success(key ? '向量化 Key 已保存' : '向量化 Key 已清除')
   } catch (e) {
-    ElMessage.error(errMessage(e))
+    ElMessage.error(modelConfigErrorHint(e))
   } finally {
     embSaving.value = false
   }
@@ -99,29 +105,24 @@ async function onSaveEmbedding() {
 
 /* ───── 区块④:Rerank 开关 ───── */
 
-const rerankModels = ref<SpaceModelOut[]>([])
 const switchSaving = ref(false)
 
-const rerankEnabled = computed(() => config.value?.rerank.enabled ?? false)
-/** 开关打开但无默认重排模型 = 后端等同关闭(§1.5),给黄色提示 */
-const rerankNoDefault = computed(() => rerankEnabled.value && !rerankModels.value.some((m) => m.is_default))
-
-function onRerankModelsChange(models: SpaceModelOut[]) {
-  rerankModels.value = models
-}
+const rerank = computed(() => config.value?.rerank ?? null)
+const rerankEnabled = computed(() => rerank.value?.enabled ?? false)
+/** 开关打开但没有默认重排模型 = 后端等同关闭(§1.5),给黄色提示;default_model 来自聚合 */
+const rerankNoDefault = computed(() => rerankEnabled.value && !rerank.value?.default_model)
 
 async function onRerankSwitch(v: boolean) {
   const spaceId = auth.currentSpaceId
-  if (!spaceId || !config.value) return
-  const prev = config.value
-  // 乐观更新,失败回滚
-  config.value = { ...prev, rerank: { enabled: v } }
+  if (!spaceId || !config.value || switchSaving.value) return
   switchSaving.value = true
   try {
-    config.value = await apiSetRerankSwitch(spaceId, v)
+    // 只回 {ok:true};开关与"是否已配模型"解耦,拨完重拉聚合对齐 default_model 提示
+    await apiPutRerankSwitch(spaceId, { enabled: v })
+    await load()
   } catch (e) {
-    config.value = prev
-    ElMessage.error(errMessage(e))
+    await load()
+    ElMessage.error(modelConfigErrorHint(e))
   } finally {
     switchSaving.value = false
   }
@@ -189,11 +190,18 @@ async function onRerankSwitch(v: boolean) {
         </div>
       </div>
 
-      <!-- 区块②③:chat 供应商 + 模型 -->
-      <ProvidersModelsBlock kind="chat" :can-manage="canManage" />
+      <!-- 区块②③:chat 供应商 + 模型(数据都来自上方聚合视图,写成功后重拉) -->
+      <ProvidersModelsBlock
+        v-if="config"
+        kind="chat"
+        :can-manage="canManage"
+        :config="config"
+        :types="types"
+        @changed="load"
+      />
 
-      <!-- 区块④:Rerank -->
-      <div class="card mc-rerank">
+      <!-- 区块④:Rerank 开关 + 其供应商/模型(同款形状,kind 过滤) -->
+      <div v-if="rerank" class="card mc-rerank">
         <div class="mc-rerank-head">
           <div>
             <div class="mc-title">重排(Rerank)</div>
@@ -202,6 +210,7 @@ async function onRerankSwitch(v: boolean) {
           <el-switch
             :model-value="rerankEnabled"
             :disabled="!canManage || switchSaving"
+            :loading="switchSaving"
             @update:model-value="(v: any) => onRerankSwitch(Boolean(v))"
           />
         </div>
@@ -209,7 +218,14 @@ async function onRerankSwitch(v: boolean) {
           重排已开启,但还没有默认重排模型 —— 实际检索等同关闭,请在下方配置模型并设为默认
         </div>
       </div>
-      <ProvidersModelsBlock kind="rerank" :can-manage="canManage" @models-change="onRerankModelsChange" />
+      <ProvidersModelsBlock
+        v-if="config"
+        kind="rerank"
+        :can-manage="canManage"
+        :config="config"
+        :types="types"
+        @changed="load"
+      />
     </div>
   </div>
 </template>

@@ -168,13 +168,15 @@ const allKbSelected = computed({
   },
 })
 
-/* ───── 回答模型(GET /models,全局;提交用 id 字段) ───── */
+/* ───── 回答模型(GET /models;OPT-27 后内容 = 当前活动空间的合并清单,提交用 id 字段) ───── */
 
 const catalog = ref<ModelCatalogOut | null>(null)
 /** '' = 默认模型(不传 model_id,由服务端自选);仅当用户显式选择时才提交 */
 const selectedModelId = ref('')
 
 const chatModels = computed(() => catalog.value?.chat ?? [])
+/** 清单拉成功但 chat 为空(prod 下空间没配任何可用对话模型):选择器隐藏不够,要给配置页引导 */
+const chatCatalogEmpty = computed(() => !!catalog.value && chatModels.value.length === 0)
 
 /** provider 是显示名,做下拉分组 */
 const modelGroups = computed(() => {
@@ -191,7 +193,7 @@ const selectedModelLabel = computed(
   () => chatModels.value.find((m) => m.id === selectedModelId.value)?.model ?? '默认模型',
 )
 
-onMounted(async () => {
+async function loadModelCatalog() {
   try {
     catalog.value = await apiGetModelCatalog()
   } catch {
@@ -199,7 +201,9 @@ onMounted(async () => {
   }
   // 默认"默认模型"(不传 model_id,与后端默认一致);显式选择提交 id。
   // 后端已修 model_id 语义冲突(检索向量化改用 KB 的 embedding_model),显式选择即生效。
-})
+}
+
+onMounted(loadModelCatalog)
 
 /* ───── 输入 ───── */
 
@@ -242,12 +246,17 @@ function autoGrow() {
 /* ───── 数据加载 ───── */
 
 // 切换空间:清空当前会话并重新拉列表;首帧挂载不重置(否则会丢掉路由里的会话 id)
+// OPT-27 语义:GET /models 内容 = 当前活动空间的合并清单(形状不变),切空间必须重拉
 watch(
   () => auth.currentSpaceId,
   async (_next, prev) => {
     if (!spaceId.value) return
     abortStream()
-    if (prev !== undefined) resetConversation()
+    if (prev !== undefined) {
+      resetConversation()
+      // 清单内容随活动空间变(形状不变):只在真正切换后重拉,首帧由 onMounted 负责
+      loadModelCatalog()
+    }
     await Promise.all([loadConversations(), loadKbs()])
   },
   { immediate: true },
@@ -963,6 +972,10 @@ onUnmounted(abortStream)
                 <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
               </el-option-group>
             </el-select>
+            <!-- OPT-27:prod 下空间没配任何可用对话模型时清单为空,要给出配置页引导 -->
+            <router-link v-else-if="chatCatalogEmpty" to="/settings/models" class="model-empty-link">
+              本空间未配置对话模型 · 去配置
+            </router-link>
 
             <!-- Agent 模式开关(OPT-10,请求级,默认关):开启后模型自主决定检索,SSE 出工具事件 -->
             <el-tooltip
@@ -1523,6 +1536,21 @@ onUnmounted(abortStream)
   min-height: 36px;
   border-radius: 8px;
   font-size: 13px;
+}
+.model-empty-link {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px dashed #f59e0b;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #d97706;
+  text-decoration: none;
+}
+.model-empty-link:hover {
+  background: rgba(245, 158, 11, 0.06);
 }
 .scope-head {
   display: flex;

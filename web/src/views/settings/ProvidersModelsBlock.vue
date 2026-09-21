@@ -1,34 +1,47 @@
 <script setup lang="ts">
 /**
- * OPT-27 区块②③的可复用形状:供应商卡片列表 + 模型表格 + 两套新建/编辑弹窗。
- * 对接说明 §1.5 明确 rerank "与区块②③同款形状,复用同一套 providers/models 端点",
- * 故本组件按 kind 参数化,chat/rerank 各挂一份。
- * 权限:props.canManage=false 时整块只读(写按钮隐藏)。
- * 模型清单通过 models-change 事件回抛给父级(rerank 开关的"无默认模型"黄色提示要用)。
+ * OPT-27 区块②③/④的可复用形状:供应商卡片 + 模型表格 + 两套弹窗。
+ * 契约(52/74)里没有单独的 providers/models 列表接口:数据由父级把聚合
+ * GET /model-config 一次性拉下来后以 props 传入,本组件只做展示与写操作;
+ * 任何写成功后 emit('changed') 让父级重拉聚合(设默认会顶掉旧默认、model_count
+ * 变化、掩码都只有重拉才对得齐,不在本地拼)。
+ * 供应商行没有 kind,按 protocol 分块:chat 块 = 非 cohere_rerank,rerank 块 = cohere_rerank;
+ * 模型行按 kind 过滤;类型下拉按 ProviderTypeOut.kinds 过滤(§1.4)。
  */
-import { Edit, Plus, RefreshRight, Search, Delete } from '@element-plus/icons-vue'
+import { Edit, Plus, Search, Delete } from '@element-plus/icons-vue'
 
 import {
+  ASCII_NO_SPACE_RE,
   apiCreateModel,
   apiCreateProvider,
   apiDeleteModel,
   apiDeleteProvider,
-  apiGetModelConfigTypes,
-  apiListModels,
-  apiListProviders,
   apiTestModel,
   apiTestProvider,
   apiUpdateModel,
   apiUpdateProvider,
-  modelTestErrorHint,
+  modelConfigErrorHint,
+  providerTestBlockedHint,
   type ModelKind,
 } from '@/api/modelConfig'
-import { errMessage } from '@/api/http'
-import type { ModelProviderOut, ModelProviderUpdateRequest, ModelTypeOption, SpaceModelOut } from '@/api/types'
+import type {
+  ProviderTypeOut,
+  SpaceModelConfigOut,
+  SpaceModelOut,
+  SpaceModelUpdateRequest,
+  SpaceProviderOut,
+  SpaceProviderUpdateRequest,
+} from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 
-const props = defineProps<{ kind: ModelKind; canManage: boolean }>()
-const emit = defineEmits<{ (e: 'models-change', models: SpaceModelOut[]): void }>()
+const props = defineProps<{
+  kind: ModelKind
+  canManage: boolean
+  config: SpaceModelConfigOut
+  /** 供应商类型清单:父级拉一次 /model-config/types 传下来(两区块共用) */
+  types: ProviderTypeOut[]
+}>()
+const emit = defineEmits<{ (e: 'changed'): void }>()
 
 const auth = useAuthStore()
 
@@ -38,50 +51,30 @@ const TYPE_LABELS: Record<ModelKind, string> = {
 }
 const kindLabel = computed(() => TYPE_LABELS[props.kind])
 
-const providers = ref<ModelProviderOut[]>([])
-const models = ref<SpaceModelOut[]>([])
-const types = ref<ModelTypeOption[]>([])
-const loading = ref(false)
-const loadError = ref<string | null>(null)
-/** 逐行测试按钮的 in-flight 标记(id -> true) */
-const testing = reactive<Record<string, boolean>>({})
-
 /** §1.6 快捷预置值(前端写死即可,后端不拦);允许直接输入其他值 */
 const CONTEXT_PRESETS = [4096, 32768, 65536, 128000]
 
-function typeDisplayName(key: string): string {
-  return types.value.find((t) => t.key === key)?.display_name ?? key
-}
-
-function providerModels(providerId: string): SpaceModelOut[] {
-  return models.value.filter((m) => m.provider_id === providerId)
-}
-
-/* ───── 数据加载 ───── */
-
-watch(
-  () => auth.currentSpaceId,
-  () => load(),
-  { immediate: true },
+/** 供应商按 protocol 分块(rerank 类型 protocol 固定 cohere_rerank) */
+const providers = computed(() =>
+  props.config.providers.filter((p) =>
+    props.kind === 'rerank' ? p.protocol === 'cohere_rerank' : p.protocol !== 'cohere_rerank',
+  ),
 )
+const models = computed(() => props.config.models.filter((m) => m.kind === props.kind))
+/** 下拉只渲染 kinds 含本区块类别的类型(§1.4:搞错 kind 后端 422) */
+const typeOptions = computed(() => props.types.filter((t) => t.kinds.includes(props.kind)))
 
-async function load() {
-  const spaceId = auth.currentSpaceId
-  if (!spaceId) return
-  loading.value = true
-  loadError.value = null
-  try {
-    const [p, m] = await Promise.all([apiListProviders(spaceId, props.kind), apiListModels(spaceId, props.kind)])
-    providers.value = p
-    models.value = m
-    emit('models-change', m)
-    if (!types.value.length) types.value = await apiGetModelConfigTypes(spaceId)
-  } catch (e) {
-    loadError.value = errMessage(e)
-  } finally {
-    loading.value = false
-  }
+/* 本地类型(Ollama/vLLM)默认地址是 127.0.0.1,prod 会被 SSRF 闸门拒(§1.6) */
+function typeLabel(t: ProviderTypeOut): string {
+  return /^(127\.|localhost)/.test(t.default_base_url) ? `${t.label}(本地/开发环境)` : t.label
 }
+
+/** ASCII 无空白预校验(§1.3 字符口径):命中内联提示,不等 422;name/model_name 允许中文,不套这条 */
+function asciiHint(v: string): string {
+  return v && !ASCII_NO_SPACE_RE.test(v) ? '只能是不含空白的 ASCII 字符(中文/空格/换行会被拒绝)' : ''
+}
+const baseUrlHint = computed(() => asciiHint(providerDialog.baseUrl))
+const apiKeyHint = computed(() => asciiHint(providerDialog.apiKey))
 
 /* ───── 供应商弹窗 ───── */
 
@@ -92,24 +85,26 @@ const providerDialog = reactive({
   name: '',
   baseUrl: '',
   apiKey: '',
+  enabled: true,
 })
 const savingProvider = ref(false)
 const providerError = ref('')
 
-/** 新建必填 Key;编辑留空 = 不修改 */
-const providerKeyRequired = computed(() => !providerDialog.editingId)
+const editingProvider = computed(
+  () => (providerDialog.editingId ? providers.value.find((p) => p.id === providerDialog.editingId) ?? null : null),
+)
 const canSubmitProvider = computed(
   () =>
-    !!providerDialog.providerType &&
-    providerDialog.name.trim().length > 0 &&
-    providerDialog.baseUrl.trim().length > 0 &&
-    (!providerKeyRequired.value || providerDialog.apiKey.trim().length > 0) &&
+    !!providerDialog.name.trim() &&
+    !baseUrlHint.value &&
+    !apiKeyHint.value &&
+    (providerDialog.editingId ? true : !!providerDialog.providerType) &&
     !savingProvider.value,
 )
 
 function onProviderTypeChange(key: string) {
-  // 选中类型后用 default_base_url 预填,允许用户改(§1.3)
-  const t = types.value.find((x) => x.key === key)
+  // 选中类型后用该类型的 default_base_url 预填,允许改(§1.3,不硬编码清单)
+  const t = (props.types ?? []).find((x) => x.key === key)
   if (t && !providerDialog.editingId) providerDialog.baseUrl = t.default_base_url
 }
 
@@ -119,16 +114,17 @@ function openCreateProvider() {
   providerDialog.name = ''
   providerDialog.baseUrl = ''
   providerDialog.apiKey = ''
+  providerDialog.enabled = true
   providerError.value = ''
   providerDialog.open = true
 }
 
-function openEditProvider(p: ModelProviderOut) {
+function openEditProvider(p: SpaceProviderOut) {
   providerDialog.editingId = p.id
-  providerDialog.providerType = p.provider_type
   providerDialog.name = p.name
   providerDialog.baseUrl = p.base_url
   providerDialog.apiKey = ''
+  providerDialog.enabled = p.enabled
   providerError.value = ''
   providerDialog.open = true
 }
@@ -140,37 +136,62 @@ async function onSubmitProvider() {
   providerError.value = ''
   try {
     if (providerDialog.editingId) {
-      const body: ModelProviderUpdateRequest = {
+      const body: SpaceProviderUpdateRequest = {
         name: providerDialog.name.trim(),
         base_url: providerDialog.baseUrl.trim(),
+        enabled: providerDialog.enabled,
       }
-      // 留空 = 不改 Key:字段整个不出现在 body 里
-      if (providerDialog.apiKey.trim()) body.api_key = providerDialog.apiKey.trim()
+      // PATCH Key 语义:字段不传 = 不动(编辑留空即不动);清除走独立按钮(显式空串)
+      if (providerDialog.apiKey) body.api_key = providerDialog.apiKey
       await apiUpdateProvider(spaceId, providerDialog.editingId, body)
+      ElMessage.success('供应商已保存')
     } else {
-      await apiCreateProvider(spaceId, props.kind, {
+      await apiCreateProvider(spaceId, {
         provider_type: providerDialog.providerType,
         name: providerDialog.name.trim(),
+        // 留空 = 后端用该类型 default_base_url;空 api_key = 免密钥本地端点
         base_url: providerDialog.baseUrl.trim(),
-        api_key: providerDialog.apiKey.trim(),
+        api_key: providerDialog.apiKey,
+        enabled: providerDialog.enabled,
       })
+      ElMessage.success('供应商已创建')
     }
     providerDialog.open = false
-    await load()
+    emit('changed')
   } catch (e) {
-    providerError.value = errMessage(e)
+    providerError.value = modelConfigErrorHint(e)
   } finally {
     savingProvider.value = false
   }
 }
 
-async function onDeleteProvider(p: ModelProviderOut) {
+/** 清除已存 Key:PATCH 显式空串(与"字段不传=不动"是两种语义,所以单独给动作) */
+async function onClearProviderKey(p: SpaceProviderOut) {
   const spaceId = auth.currentSpaceId
   if (!spaceId) return
-  const n = providerModels(p.id).length
+  const confirmed = await ElMessageBox.confirm(
+    `清除供应商「${p.name}」的 API Key?清除后该供应商按免密钥端点调用,大概率直接 401。`,
+    '清除 API Key',
+    { type: 'warning', confirmButtonText: '确认清除', cancelButtonText: '取消' },
+  ).catch(() => false)
+  if (!confirmed) return
+  try {
+    await apiUpdateProvider(spaceId, p.id, { api_key: '' })
+    ElMessage.success('API Key 已清除')
+    emit('changed')
+  } catch (e) {
+    ElMessage.error(modelConfigErrorHint(e))
+  }
+}
+
+async function onDeleteProvider(p: SpaceProviderOut) {
+  const spaceId = auth.currentSpaceId
+  if (!spaceId) return
+  // 级联删其下模型:数量用后端的 model_count(聚合行),不是本地过滤
+  const n = p.model_count
   const confirmed = await ElMessageBox.confirm(
     n
-      ? `删除供应商「${p.name}」?该供应商下 ${n} 个模型将不可用(级联删除),此操作不可恢复。`
+      ? `删除供应商「${p.name}」?该供应商下 ${n} 个模型将被级联删除、不可用,此操作不可恢复。`
       : `删除供应商「${p.name}」?此操作不可恢复。`,
     '删除供应商',
     { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
@@ -179,13 +200,13 @@ async function onDeleteProvider(p: ModelProviderOut) {
   try {
     await apiDeleteProvider(spaceId, p.id)
     ElMessage.success('供应商已删除')
-    await load()
+    emit('changed')
   } catch (e) {
-    ElMessage.error(errMessage(e))
+    ElMessage.error(modelConfigErrorHint(e))
   }
 }
 
-async function onTestProvider(p: ModelProviderOut) {
+async function onTestProvider(p: SpaceProviderOut) {
   const spaceId = auth.currentSpaceId
   if (!spaceId || testing[p.id]) return
   testing[p.id] = true
@@ -193,7 +214,7 @@ async function onTestProvider(p: ModelProviderOut) {
     await apiTestProvider(spaceId, p.id)
     ElMessage.success(`供应商「${p.name}」连接正常`)
   } catch (e) {
-    ElMessage.error(`连接失败:${modelTestErrorHint(e)}`)
+    ElMessage.error(`连接失败:${modelConfigErrorHint(e)}`)
   } finally {
     testing[p.id] = false
   }
@@ -205,14 +226,16 @@ const modelDialog = reactive({
   open: false,
   editingId: null as string | null,
   providerId: '',
+  modelId: '',
   modelName: '',
   contextTokens: '' as string,
+  enabled: true,
   isDefault: false,
 })
 const savingModel = ref(false)
 const modelError = ref('')
 
-/** 上下文窗口:chat 必填(§1.4),rerank 无此字段(§1.5);allow-create 允许直接输入 */
+/** 上下文窗口:chat 新建必填(缺了 422),rerank 不需要;allow-create 允许直接输入 */
 const contextSelectValue = computed({
   get: () => modelDialog.contextTokens,
   set: (v: string | number) => (modelDialog.contextTokens = String(v ?? '')),
@@ -221,8 +244,10 @@ const contextSelectValue = computed({
 function openCreateModel() {
   modelDialog.editingId = null
   modelDialog.providerId = providers.value[0]?.id ?? ''
+  modelDialog.modelId = ''
   modelDialog.modelName = ''
   modelDialog.contextTokens = ''
+  modelDialog.enabled = true
   modelDialog.isDefault = models.value.length === 0
   modelError.value = ''
   modelDialog.open = true
@@ -231,8 +256,10 @@ function openCreateModel() {
 function openEditModel(m: SpaceModelOut) {
   modelDialog.editingId = m.id
   modelDialog.providerId = m.provider_id
+  modelDialog.modelId = m.model_id
   modelDialog.modelName = m.model_name
   modelDialog.contextTokens = m.context_tokens != null ? String(m.context_tokens) : ''
+  modelDialog.enabled = m.enabled
   modelDialog.isDefault = m.is_default
   modelError.value = ''
   modelDialog.open = true
@@ -258,23 +285,33 @@ async function onSubmitModel() {
   const ctx = props.kind === 'rerank' ? undefined : (parsedContext.value ?? undefined)
   try {
     if (modelDialog.editingId) {
-      await apiUpdateModel(spaceId, modelDialog.editingId, {
+      // PATCH 只开放 model_name/context_tokens/enabled/is_default(provider_id/kind/model_id 锁死)
+      const body: SpaceModelUpdateRequest = {
         model_name: modelDialog.modelName.trim(),
-        context_tokens: ctx,
+        enabled: modelDialog.enabled,
         is_default: modelDialog.isDefault,
-      })
+      }
+      if (props.kind === 'chat') body.context_tokens = ctx ?? null
+      await apiUpdateModel(spaceId, modelDialog.editingId, body)
+      ElMessage.success('模型已保存')
     } else {
-      await apiCreateModel(spaceId, props.kind, {
+      await apiCreateModel(spaceId, {
         provider_id: modelDialog.providerId,
+        kind: props.kind,
         model_name: modelDialog.modelName.trim(),
+        // 留空 = 后端合成 `{供应商 name}/{model_name}`
+        ...(modelDialog.modelId.trim() ? { model_id: modelDialog.modelId.trim() } : {}),
         context_tokens: ctx,
+        enabled: modelDialog.enabled,
         is_default: modelDialog.isDefault,
       })
+      ElMessage.success('模型已创建')
     }
     modelDialog.open = false
-    await load()
+    // 设默认会顶掉同 kind 旧默认,局部更新会对不齐 → 统一由父级重拉聚合
+    emit('changed')
   } catch (e) {
-    modelError.value = errMessage(e)
+    modelError.value = modelConfigErrorHint(e)
   } finally {
     savingModel.value = false
   }
@@ -284,7 +321,7 @@ async function onDeleteModel(m: SpaceModelOut) {
   const spaceId = auth.currentSpaceId
   if (!spaceId) return
   const confirmed = await ElMessageBox.confirm(
-    `删除模型「${m.model_name}」?问答页选择该模型的程序将不可再选,此操作不可恢复。`,
+    `删除模型「${m.model_id}」?问答页选择该模型的程序将不可再选,此操作不可恢复。`,
     '删除模型',
     { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
   ).catch(() => false)
@@ -292,11 +329,26 @@ async function onDeleteModel(m: SpaceModelOut) {
   try {
     await apiDeleteModel(spaceId, m.id)
     ElMessage.success('模型已删除')
-    await load()
+    emit('changed')
   } catch (e) {
-    ElMessage.error(errMessage(e))
+    ElMessage.error(modelConfigErrorHint(e))
   }
 }
+
+/** 行内启停:关掉 = 从 GET /models 清单消失且不能被设成默认 */
+async function onToggleModelEnabled(m: SpaceModelOut, v: boolean) {
+  const spaceId = auth.currentSpaceId
+  if (!spaceId) return
+  try {
+    await apiUpdateModel(spaceId, m.id, { enabled: v })
+    emit('changed')
+  } catch (e) {
+    ElMessage.error(modelConfigErrorHint(e))
+  }
+}
+
+/** 逐行测试按钮的 in-flight 标记(id -> true) */
+const testing = reactive<Record<string, boolean>>({})
 
 async function onTestModel(m: SpaceModelOut) {
   const spaceId = auth.currentSpaceId
@@ -306,7 +358,7 @@ async function onTestModel(m: SpaceModelOut) {
     await apiTestModel(spaceId, m.id)
     ElMessage.success(`模型「${m.model_name}」调用正常`)
   } catch (e) {
-    ElMessage.error(`测试失败:${modelTestErrorHint(e)}`)
+    ElMessage.error(`测试失败:${modelConfigErrorHint(e)}`)
   } finally {
     testing[m.id] = false
   }
@@ -314,40 +366,46 @@ async function onTestModel(m: SpaceModelOut) {
 </script>
 
 <template>
-  <div class="pm-block card" v-loading="loading">
+  <div class="pm-block card">
     <div class="pm-head">
       <div>
         <div class="pm-title">{{ kindLabel }}供应商</div>
-        <div class="pm-sub">自配 Base URL 与 API Key;Key 只回显掩码,编辑留空 = 不修改</div>
+        <div class="pm-sub">自配 Base URL 与 API Key;Key 只回显掩码,编辑留空 = 不修改(清除走行内按钮)</div>
       </div>
       <el-button v-if="canManage" type="primary" @click="openCreateProvider">
         <el-icon class="btn-ic"><Plus /></el-icon>新建供应商
       </el-button>
     </div>
 
-    <div v-if="loadError" class="pm-empty">{{ loadError }}
-      <el-button class="state-btn" @click="load">
-        <el-icon class="btn-ic"><RefreshRight /></el-icon>重试
-      </el-button>
-    </div>
-    <div v-else-if="!providers.length" class="pm-empty">
+    <div v-if="!providers.length" class="pm-empty">
       还没有配置供应商{{ canManage ? ',点「新建供应商」开始(需先到官网创建 API Key)' : '(联系空间管理员配置)' }}
     </div>
     <div v-else class="pm-grid">
-      <div v-for="p in providers" :key="p.id" class="pm-card">
+      <div v-for="p in providers" :key="p.id" class="pm-card" :class="{ 'pm-card-off': !p.enabled }">
         <div class="pm-card-head">
           <span class="pm-card-name truncate">{{ p.name }}</span>
-          <span class="pm-card-type">{{ typeDisplayName(p.provider_type) }}</span>
+          <span v-if="!p.enabled" class="pm-card-offtag">已停用</span>
         </div>
         <div class="pm-card-url truncate" :title="p.base_url">{{ p.base_url }}</div>
         <div class="pm-card-meta">
           <span class="mono pm-key-hint">{{ p.key_hint || '未配置 Key' }}</span>
-          <span class="pm-count">{{ providerModels(p.id).length }} 个模型</span>
+          <span class="pm-count">{{ p.model_count }} 个模型</span>
         </div>
         <div v-if="canManage" class="pm-card-ops">
-          <el-button link type="primary" :loading="testing[p.id]" @click="onTestProvider(p)">
-            <el-icon class="btn-ic"><Search /></el-icon>测试连接
-          </el-button>
+          <el-tooltip :disabled="!providerTestBlockedHint(p)" :content="providerTestBlockedHint(p)" placement="top">
+            <!-- disabled 的 button 不触发 tooltip,包一层 span -->
+            <span>
+              <el-button
+                link
+                type="primary"
+                :loading="testing[p.id]"
+                :disabled="!!providerTestBlockedHint(p)"
+                @click="onTestProvider(p)"
+              >
+                <el-icon class="btn-ic"><Search /></el-icon>测试连接
+              </el-button>
+            </span>
+          </el-tooltip>
           <el-button link @click="openEditProvider(p)">
             <el-icon class="btn-ic"><Edit /></el-icon>编辑
           </el-button>
@@ -376,12 +434,12 @@ async function onTestModel(m: SpaceModelOut) {
           <span class="pm-cell-strong">{{ row.model_id }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="模型名" min-width="150">
+      <el-table-column label="模型名" min-width="130">
         <template #default="{ row }">
           <span class="mono">{{ row.model_name }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="供应商" min-width="120">
+      <el-table-column label="供应商" min-width="110">
         <template #default="{ row }">
           <span class="pm-cell-dim">{{ row.provider_name }}</span>
         </template>
@@ -390,6 +448,17 @@ async function onTestModel(m: SpaceModelOut) {
         <template #default="{ row }">
           <span v-if="row.context_tokens != null" class="pm-cell-dim">{{ row.context_tokens.toLocaleString() }}</span>
           <span v-else class="pm-cell-warn">未配置</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="启用" width="70">
+        <template #default="{ row }">
+          <el-switch
+            v-if="canManage"
+            :model-value="row.enabled"
+            :disabled="row.is_default"
+            @update:model-value="(v: any) => onToggleModelEnabled(row as SpaceModelOut, Boolean(v))"
+          />
+          <span v-else :class="row.enabled ? 'pm-cell-dim' : 'pm-cell-warn'">{{ row.enabled ? '是' : '否' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="默认" width="70">
@@ -409,7 +478,7 @@ async function onTestModel(m: SpaceModelOut) {
         </template>
       </el-table-column>
     </el-table>
-    <div v-else-if="!loading && !loadError" class="pm-empty">
+    <div v-else class="pm-empty">
       {{ providers.length ? '还没有模型,点「新建模型」添加' : ' ' }}
     </div>
 
@@ -421,25 +490,40 @@ async function onTestModel(m: SpaceModelOut) {
       append-to-body
     >
       <el-form label-position="top" @submit.prevent>
-        <el-form-item label="供应商" required>
+        <el-form-item v-if="!providerDialog.editingId" label="供应商类型" required>
           <el-select
             v-model="providerDialog.providerType"
-            :disabled="!!providerDialog.editingId"
             placeholder="选择供应商类型"
             class="pm-full"
             @change="onProviderTypeChange"
           >
-            <el-option v-for="t in types" :key="t.key" :label="t.display_name" :value="t.key" />
+            <el-option v-for="t in typeOptions" :key="t.key" :label="typeLabel(t)" :value="t.key" />
           </el-select>
+          <div class="pm-hint">协议由类型决定、建好锁死;{{ kind === 'rerank' ? '本区块只列重排类型' : '本地类型(Ollama/vLLM)默认地址仅开发环境可存' }}</div>
         </el-form-item>
         <el-form-item label="显示名" required>
-          <el-input v-model="providerDialog.name" maxlength="64" placeholder="空间内唯一,如 公司 DeepSeek" />
+          <el-input v-model="providerDialog.name" maxlength="64" placeholder="本空间内唯一,如 公司 DeepSeek(允许中文)" />
         </el-form-item>
-        <el-form-item label="Base URL" required>
-          <el-input v-model="providerDialog.baseUrl" placeholder="选择供应商后自动预填,可修改(https)" />
+        <el-form-item label="Base URL">
+          <el-input v-model="providerDialog.baseUrl" placeholder="留空 = 用该类型的默认地址;填了必须 http(s)" />
+          <div v-if="baseUrlHint" class="pm-err pm-err-inline">{{ baseUrlHint }}</div>
         </el-form-item>
-        <el-form-item label="API Key" :required="providerKeyRequired">
-          <el-input v-model="providerDialog.apiKey" type="password" show-password :placeholder="providerKeyRequired ? '必填;明文只在提交这一跳,落库即加密' : '留空 = 不修改已存 Key'" />
+        <el-form-item label="API Key">
+          <el-input
+            v-model="providerDialog.apiKey"
+            type="password"
+            show-password
+            :placeholder="providerDialog.editingId ? '留空 = 不修改已存 Key' : '免密钥本地端点可留空;明文只在提交这一跳,落库即加密'"
+          />
+          <div v-if="apiKeyHint" class="pm-err pm-err-inline">{{ apiKeyHint }}</div>
+          <div v-if="providerDialog.editingId && editingProvider?.key_hint" class="pm-hint">
+            当前已存:<span class="mono">{{ editingProvider.key_hint }}</span>
+            <el-button link type="danger" size="small" @click="onClearProviderKey(editingProvider!)">清除 Key</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="providerDialog.enabled">启用</el-checkbox>
+          <span class="pm-hint pm-hint-inline">关掉后其模型从问答模型清单消失</span>
         </el-form-item>
       </el-form>
       <div v-if="providerError" class="pm-err">{{ providerError }}</div>
@@ -463,9 +547,18 @@ async function onTestModel(m: SpaceModelOut) {
           <el-select v-model="modelDialog.providerId" class="pm-full" :disabled="!!modelDialog.editingId">
             <el-option v-for="p in providers" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
+          <div v-if="modelDialog.editingId" class="pm-hint">供应商/类别/模型 ID 建好即锁死;要换请删除后重建</div>
+        </el-form-item>
+        <el-form-item label="模型 ID">
+          <el-input
+            v-if="!modelDialog.editingId"
+            v-model="modelDialog.modelId"
+            placeholder="留空 = 自动合成 {供应商名}/{模型名}"
+          />
+          <el-input v-else :model-value="modelDialog.modelId" disabled />
         </el-form-item>
         <el-form-item label="模型名" required>
-          <el-input v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat" />
+          <el-input v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat(允许中文)" />
         </el-form-item>
         <el-form-item v-if="kind === 'chat'" label="上下文窗口(tokens)" required>
           <el-select
@@ -478,9 +571,10 @@ async function onTestModel(m: SpaceModelOut) {
           >
             <el-option v-for="n in CONTEXT_PRESETS" :key="n" :label="n.toLocaleString()" :value="String(n)" />
           </el-select>
-          <div class="pm-hint">OPT-29 上下文进度条的分母;常用值 4096 / 32768 / 65536 / 128000</div>
+          <div class="pm-hint">OPT-29 上下文进度条的分母,必填;常用值 4096 / 32768 / 65536 / 128000</div>
         </el-form-item>
         <el-form-item>
+          <el-checkbox v-model="modelDialog.enabled">启用</el-checkbox>
           <el-checkbox v-model="modelDialog.isDefault">设为默认</el-checkbox>
           <span class="pm-hint pm-hint-inline">同空间同类别仅一个默认,勾选后自动顶替现有默认</span>
         </el-form-item>
@@ -544,6 +638,9 @@ async function onTestModel(m: SpaceModelOut) {
   flex-direction: column;
   gap: 6px;
 }
+.pm-card-off {
+  opacity: 0.6;
+}
 .pm-card-head {
   display: flex;
   align-items: center;
@@ -556,13 +653,13 @@ async function onTestModel(m: SpaceModelOut) {
   color: #111827;
   min-width: 0;
 }
-.pm-card-type {
+.pm-card-offtag {
   flex-shrink: 0;
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 6px;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: #f3f4f6;
+  color: #9ca3af;
 }
 .pm-card-url {
   font-size: 12px;
@@ -614,5 +711,8 @@ async function onTestModel(m: SpaceModelOut) {
 .pm-err {
   font-size: 13px;
   color: #ef4444;
+}
+.pm-err-inline {
+  margin-top: 4px;
 }
 </style>
