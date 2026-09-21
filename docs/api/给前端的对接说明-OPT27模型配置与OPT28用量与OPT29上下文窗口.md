@@ -1,6 +1,8 @@
 # 给前端的对接说明:OPT-27 模型配置页 / OPT-28 Token 用量 / OPT-29 上下文窗口(2026-09-21)
 
-**状态:v3.2 —— 按你们《给后端的回复:OPT-27/28/29 联调报告》处置回写**:F2 是后端真 bug 已修
+**状态:v3.3 —— 二轮需求单的后端部分已落地**(OPT-35 `providers[].kinds` + OPT-36 `types[].model_names`,
+两处响应字段加法、零破坏,见 §1.9 与 `docs/api/给前端的契约变更说明-OPT35供应商kinds与OPT36模型名预设.md`)。
+上一版 v3.2 —— 按你们《给后端的回复:OPT-27/28/29 联调报告》处置回写:F2 是后端真 bug 已修
 (**百炼重排走原生协议 `dashscope_rerank`,`/types` 里该类型的 `protocol`/`default_base_url` 值变了**,
 见 §1.5/§1.6;其余三个重排类型不变),F1/F3 是口径没写清(已在 §1.4 补 PATCH 三态与探活 body),
 F2 后半"重排生效不可观测"登记为台账 OPT-34(设计如此,不是缺陷)。**契约路径/方法数不变(52/74)**,
@@ -229,6 +231,18 @@ PUT    /api/v1/spaces/{sid}/model-config/rerank-switch          {"enabled":true}
 - `PUT /embedding-key`、`PUT /rerank-switch`、以及所有 `*/test` → 只回 **`{"ok": true}`**(契约里的 `OkOut`)。
   所以**存完 Key / 拨完开关要重新 `GET /model-config`** 才能拿到新的 `key_configured`/`key_hint`/`rerank.enabled`
   —— 别在本地自己拼掩码,掩码只由后端给。
+
+### 1.9 v3.3 新增的两个只读字段(OPT-35 / OPT-36,随二轮需求单落地)
+
+细节与验收见 `docs/api/给前端的契约变更说明-OPT35供应商kinds与OPT36模型名预设.md`,这里只给一句话:
+
+| 字段 | 出处 | 一句话 |
+|---|---|---|
+| `providers[].kinds` | `GET /model-config` 聚合视图(POST/PATCH 供应商的响应同样带) | 该供应商**允许挂**的模型类别(由协议从类型表派生,非"实际挂了哪些")。前端分块请改成 `kinds.includes(kind)`,**别再按 protocol 划块** —— v3.2 起重排协议有两个,写死 `cohere_rerank` 会让百炼重排供应商既不进重排块又串进对话块。`[]` = 未知协议,两个区块都不列 |
+| `types[].model_names` | `GET /model-config/types` | 模型名**提示清单**(下拉数据源),不是白名单:后端不校验,自定义照存。数组顺序即建议顺序,首位是最该选的那个。`[]` = 没有有意义的预设(豆包要填逐账号自建的接入点 id、vLLM 取决于部署方),渲染成纯输入框。百炼重排只给 `gte-rerank-v2`/`qwen3-rerank`,已下线的 `gte-rerank` 不在表里 |
+
+两个字段都是**响应字段加法**:路径/方法数仍 **52/74**,请求体、错误码、`GET /api/v1/models`、SSE 全部不动。
+`openapi.json` 已随本批重导。
 
 ---
 

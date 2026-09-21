@@ -5962,6 +5962,13 @@
             },
             "type": "array",
             "title": "Kinds"
+          },
+          "model_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Model Names"
           }
         },
         "type": "object",
@@ -5971,7 +5978,8 @@
           "doc_url",
           "default_base_url",
           "protocol",
-          "kinds"
+          "kinds",
+          "model_names"
         ],
         "title": "ProviderTypeOut"
       },
@@ -6706,6 +6714,13 @@
           "model_count": {
             "type": "integer",
             "title": "Model Count"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kinds"
           }
         },
         "type": "object",
@@ -6716,7 +6731,8 @@
           "base_url",
           "key_hint",
           "enabled",
-          "model_count"
+          "model_count",
+          "kinds"
         ],
         "title": "SpaceProviderOut"
       },
