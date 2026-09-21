@@ -347,11 +347,23 @@ class ApiKey(Base):
     - `created_by`:签发操作者(审计 actor),不再参与运行时身份;
     - `capabilities`:能力级授权(路由授权表 fail-closed),空数组 = 无任何能力;
     - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受绑定成员身份约束);
+    - `is_active`:「正在使用」分配标记(OPT-31),Admin+ 为成员设定,同成员至多
+      一把生效(部分唯一索引);**仅管理语义,不参与认证**,未标记的未吊销 Key 仍可调用;
     - 吊销 = 置 `revoked_at`(保留行,审计与"最近使用"仍有据可查)。
     """
 
     __tablename__ = "api_keys"
-    __table_args__ = (Index("ix_api_keys_space_created", "space_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_api_keys_space_created", "space_id", "created_at"),
+        # 同空间同成员至多一把"正在使用"(分配标记,不参与认证热路径)
+        Index(
+            "uq_api_keys_one_active_per_member",
+            "space_id",
+            "member_user_id",
+            unique=True,
+            postgresql_where=text("is_active AND revoked_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     space_id: Mapped[uuid.UUID] = mapped_column(
@@ -369,6 +381,8 @@ class ApiKey(Base):
     key_hint: Mapped[str] = mapped_column(String(32))
     capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    # "正在使用"分配标记(OPT-31):Admin+ 设定,成员每把未吊销 Key 仍可调用
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

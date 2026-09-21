@@ -2657,6 +2657,64 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/api-keys/{key_id}/activate": {
+      "put": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Activate Api Key",
+        "operationId": "activate_api_key_api_v1_spaces__space_id__api_keys__key_id__activate_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/model-protocols": {
       "get": {
         "tags": [
@@ -4049,6 +4107,11 @@
             "type": "array",
             "title": "Kb Ids"
           },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
+          },
           "revoked_at": {
             "anyOf": [
               {
@@ -4201,6 +4264,11 @@
             "type": "array",
             "title": "Kb Ids"
           },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active",
+            "default": false
+          },
           "revoked_at": {
             "anyOf": [
               {
@@ -4339,6 +4407,7 @@
           "document.reparsed",
           "api_key.created",
           "api_key.revoked",
+          "api_key.activated",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",

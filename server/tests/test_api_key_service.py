@@ -449,3 +449,99 @@ def test_non_member_gets_404_on_list() -> None:
     with pytest.raises(AppError) as exc:
         scene.svc.list_for_space(scene.space_id, outsider.user)
     assert exc.value.code_str == _SPACE_NOT_FOUND
+
+
+# ---------------------------- 生效标记 activate(OPT-31) ----------------------------
+
+
+def _activated(scene, key_id, actor=None):
+    return scene.svc.activate(scene.space_id, actor or scene.owner, key_id)
+
+
+def test_activate_sets_flag_and_writes_audit() -> None:
+    scene = make_api_env()
+    created = _create(scene)
+    assert created.api_key.is_active is not True  # 创建不自动标记,由 Admin 分配
+    activated = _activated(scene, created.api_key.id)
+    assert activated.is_active is True
+    assert scene.api_keys.get(created.api_key.id).is_active is True
+    log = [x for x in scene.env.audit.logs if x.action == AuditAction.API_KEY_ACTIVATED]
+    assert len(log) == 1 and log[0].target == created.api_key.name
+
+
+def test_activate_is_mutually_exclusive_per_member() -> None:
+    """同一成员换着分配:新激活一把,该成员原生效钥匙自动置 false;别的成员不受影响。"""
+    scene = make_api_env()
+    mine_a = _create(scene, name="mine-a")
+    mine_b = _create(scene, name="mine-b")
+    theirs = scene.svc.create(
+        scene.space_id, scene.owner, scene.admin.id, "theirs", "", [ApiCapability.CHAT], []
+    )
+    _activated(scene, theirs.api_key.id, actor=scene.owner)
+    _activated(scene, mine_a.api_key.id)
+    _activated(scene, mine_b.api_key.id)
+    assert scene.api_keys.get(mine_a.api_key.id).is_active is False
+    assert scene.api_keys.get(mine_b.api_key.id).is_active is True
+    assert scene.api_keys.get(theirs.api_key.id).is_active is True
+
+
+def test_activate_requires_admin() -> None:
+    scene = make_api_env()
+    created = scene.svc.create(
+        scene.space_id, scene.owner, scene.editor.id, "k", "", [ApiCapability.CHAT], []
+    )
+    with pytest.raises(AppError) as exc:
+        scene.svc.activate(scene.space_id, scene.editor, created.api_key.id)
+    assert exc.value.code_str == _FORBIDDEN
+
+
+def test_activate_revoked_key_rejected() -> None:
+    scene = make_api_env()
+    created = _create(scene)
+    scene.svc.revoke(scene.space_id, scene.owner, created.api_key.id)
+    with pytest.raises(AppError) as exc:
+        _activated(scene, created.api_key.id)
+    assert exc.value.code_str == _VALIDATION
+
+
+def test_activate_orphan_key_rejected() -> None:
+    """绑定成员与签发人都没了(member_user_id/created_by 均 NULL)的 Key 无"成员"可分配。"""
+    scene = make_api_env()
+    created = _create(scene)
+    stored = scene.api_keys.get(created.api_key.id)
+    stored.member_user_id = None
+    stored.created_by = None
+    with pytest.raises(AppError) as exc:
+        _activated(scene, created.api_key.id)
+    assert exc.value.code_str == _VALIDATION
+
+
+def test_activate_is_idempotent() -> None:
+    scene = make_api_env()
+    created = _create(scene)
+    _activated(scene, created.api_key.id)
+    _activated(scene, created.api_key.id)
+    assert scene.api_keys.get(created.api_key.id).is_active is True
+    assert (
+        len([x for x in scene.env.audit.logs if x.action == AuditAction.API_KEY_ACTIVATED])
+        == 1
+    )
+
+
+def test_activate_other_space_key_404() -> None:
+    scene = make_api_env()
+    created = _create(scene)
+    other, _ = scene.env.space_svc.create(scene.admin, "别的空间", "")
+    with pytest.raises(AppError) as exc:
+        scene.svc.activate(other.id, scene.admin, created.api_key.id)
+    assert exc.value.code_str == _NOT_FOUND
+
+
+def test_inactive_key_still_authenticates() -> None:
+    """核心语义:activate 只是管理标记,不参与认证热路径 —— 未标记的 Key 照用。"""
+    scene = make_api_env()
+    a = _create(scene, name="a")
+    b = _create(scene, name="b")
+    _activated(scene, b.api_key.id)  # a 被挤下"正在使用"
+    assert scene.svc.authenticate(a.plaintext) is not None
+    assert scene.svc.authenticate(b.plaintext) is not None
