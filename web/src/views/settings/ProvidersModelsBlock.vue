@@ -418,7 +418,7 @@ async function onTestModel(m: SpaceModelOut) {
 
     <div class="pm-head pm-head-models">
       <div>
-        <div class="pm-title">{{ kindLabel }}模型</div>
+        <div class="pm-title">{{ kind === 'chat' ? '对话模型' : `${kindLabel}模型` }}</div>
         <div class="pm-sub">
           {{ kind === 'chat' ? '问答未指定模型时使用带「默认」标记的模型;上下文窗口是进度条分母' : '开启重排后检索结果按默认重排模型重排' }}
         </div>
