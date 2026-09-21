@@ -127,16 +127,12 @@ export function apiTestModel(spaceId: string, modelPk: string): Promise<OkOut> {
 
 /**
  * §1.7 错误码展示口径。422(含 SSRF"模型服务地址不安全:"/ASCII 字符口径)直接透传
- * 后端 message 按场景展示;409 名称冲突在表单内联提示;424 按 details.reason 三分。
+ * 后端 message 按场景展示;409 名称冲突在表单内联提示;424 照抄后端 message(后端按 HTTP
+ * 状态细分 401/403,reason 三值枚举分不开,不按 reason 本地映射——处置单 §2.1)。
  */
 export function modelConfigErrorHint(e: unknown): string {
   if (e instanceof ApiError) {
-    const reason = (e.details as { reason?: string } | null)?.reason
-    if (e.code === 'UPSTREAM_MODEL_ERROR') {
-      if (reason === 'auth') return 'Key 无效'
-      if (reason === 'model_name') return '模型名不存在'
-      if (reason === 'network') return e.message
-    }
+    if (e.code === 'UPSTREAM_MODEL_ERROR') return e.message || '上游调用失败'
     if (e.code === 'MODEL_PROVIDER_NAME_TAKEN' || e.code === 'MODEL_ID_TAKEN')
       return '该名称已存在(仅本空间层内判重)'
     if (e.code === 'FORBIDDEN') return '需要空间管理员权限'
