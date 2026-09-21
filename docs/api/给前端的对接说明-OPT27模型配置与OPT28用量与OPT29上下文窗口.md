@@ -7,9 +7,10 @@
 权威源 `docs/api/openapi.json`,字段/枚举以它为准;
 流程与错误口径另见 `docs/api/m4-模型管理-接口说明.md` §6、§7。
 OPT-29(§3)**已完成**:`done` 帧与 `MessageOut` 的两值都已发出、契约已重导、dev 真跑取证,
-按你们 §1 的裁决**没有**加 `context_usage_estimated`。代码在本地 `main` **未推送**,
-当前进度、解锁条件与本轮该测/不该测什么,见
-`docs/api/给前端的回复-OPT29契约已就绪.md`(接续 `给前端的回复-OPT27-28落地与联调门槛.md`)。
+按你们 §1 的裁决**没有**加 `context_usage_estimated`。三批代码(含 OPT-27/28)**已推送 `origin/main`**,
+剩"重启 server+worker"与"dev 库升到 0015"两道闸;当前进度、解锁条件与本轮该测/不该测什么,见
+`docs/api/给前端的回复-OPT29契约已就绪.md` 与可直接执行的
+`docs/api/前端接入工单-OPT29上下文窗口进度条.md`。
 
 用户 2026-09-20 二轮裁决已落进实现:rerank 入口 + 启用开关;embedding 回落全局 Key 仅限开发环境,
 生产必须空间自配。实施计划见 `docs/优化实施计划-OPT27-29.md`。
@@ -341,7 +342,7 @@ PUT    /api/v1/spaces/{sid}/model-config/rerank-switch          {"enabled":true}
 - **OPT-29 已交付(2026-09-21),契约基线不变:仍 52 路径 / 74 方法** —— 三项全是字段级加法
   (`done` 帧 +2、`MessageOut` +2、`messages` 表 +2 列/迁移 0015),**路径数不变不等于"没契约变化"**:
   要画进度条仍需按 §3 接;`GET /models`、`/admin/*`、API Key、既有 SSE 事件一律逐字段不变。
-  **但这三件事仍受"推送 / 重启 server+worker / dev 库 `alembic upgrade` 到 0015"三道闸约束**,
+  **但这三批代码仍受"重启 server+worker / dev 库 `alembic upgrade` 到 0015"两道闸约束**(推送已完成),
   解除前联调单照旧不开(见 `docs/api/给前端的回复-OPT29契约已就绪.md`);
 - 三批全部为**加法式变更**:语义变化只有一处对前端透明 —— 模型解析多了"空间优先、全局兜底"(见本文开头的提示框:
   `GET /models` 内容随活动空间变化,切空间要重拉)。OPT-28 另外只往**写入侧**加了旁路记账:
