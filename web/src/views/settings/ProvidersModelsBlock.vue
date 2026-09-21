@@ -5,8 +5,7 @@
  * GET /model-config 一次性拉下来后以 props 传入,本组件只做展示与写操作;
  * 任何写成功后 emit('changed') 让父级重拉聚合(设默认会顶掉旧默认、model_count
  * 变化、掩码都只有重拉才对得齐,不在本地拼)。
- * 供应商行没有 kind,按 protocol 分块:重排协议一律以 `_rerank` 结尾,其余归对话区块
- * (dashscope_rerank 等新协议加入后不能只认 cohere_rerank);
+ * 供应商分块看后端下发的 `providers[].kinds`(OPT-35,该供应商允许挂载的类别),前端不再猜协议;
  * 模型行按 kind 过滤;类型下拉按 ProviderTypeOut.kinds 过滤(§1.4)。
  */
 import { Edit, Plus, Search, Delete, Link } from '@element-plus/icons-vue'
@@ -33,7 +32,6 @@ import type {
   SpaceProviderOut,
   SpaceProviderUpdateRequest,
 } from '@/api/types'
-import { MODEL_NAME_PRESETS } from './modelPresets'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps<{
@@ -59,14 +57,9 @@ const titlePrefix = computed(() => (props.hideKindLabel ? '' : kindLabel.value))
 /** §1.6 快捷预置值(前端写死即可,后端不拦);允许直接输入其他值 */
 const CONTEXT_PRESETS = [4096, 32768, 65536, 128000]
 
-/** 供应商按 protocol 分块:重排协议统一以 `_rerank` 结尾(后端从协议注册表派生)。
- *  TODO(OPT-35): view.providers[] 将加法式下发 `kinds`,届时改 `p.kinds.includes(props.kind)`,删这个后缀判断 */
-const RERANK_PROTOCOL_SUFFIX = '_rerank'
-const providers = computed(() =>
-  props.config.providers.filter((p) =>
-    props.kind === 'rerank' ? p.protocol.endsWith(RERANK_PROTOCOL_SUFFIX) : !p.protocol.endsWith(RERANK_PROTOCOL_SUFFIX),
-  ),
-)
+/** 供应商按后端下发的 `kinds`(该供应商允许挂载的类别)分块,前端不再猜协议(OPT-35);
+ *  `kinds: []` = 未知协议,两个区块都不列它 */
+const providers = computed(() => props.config.providers.filter((p) => p.kinds.includes(props.kind)))
 const models = computed(() => props.config.models.filter((m) => m.kind === props.kind))
 /** 下拉只渲染 kinds 含本区块类别的类型(§1.4:搞错 kind 后端 422) */
 const typeOptions = computed(() => props.types.filter((t) => t.kinds.includes(props.kind)))
@@ -244,19 +237,18 @@ const modelDialog = reactive({
 const savingModel = ref(false)
 const modelError = ref('')
 
-/** 二轮§3:模型名预设提示。供应商行不带 type key,按「类型 default_base_url == 供应商 base_url」
- *  反推 type key(建供应商时 base_url 就是按此预填/落库);自定义端点反推不到 = 无预设,纯输入框。
- *  数据源切到 t.model_names 后此推导照用,只换 names 取值(见 modelPresets.ts TODO(OPT-36))。 */
+/** 二轮§3(OPT-36 已落地):模型名候选 = 所选供应商对应类型的 `model_names`(提示清单非白名单,后端不校验,[] = 无预设)。
+ *  供应商行不带 type key,按「类型 default_base_url == 供应商 base_url」反推(建供应商时 base_url 即类型默认值预填);
+ *  自定义过 base_url 的端点反推不到 = 按无预设渲染纯输入框。 */
 const selectedModelType = computed(() => {
   const p = providers.value.find((x) => x.id === modelDialog.providerId)
   if (!p) return null
   return typeOptions.value.find((t) => t.default_base_url && t.default_base_url === p.base_url) ?? null
 })
-const modelPreset = computed(() => (selectedModelType.value ? MODEL_NAME_PRESETS[selectedModelType.value.key] : undefined))
-/** 编辑态当前值不在预设里也要正常显示 → unshift 进选项;空清单(本地类型)按无预设走纯输入框 */
-const hasModelPresets = computed(() => (modelPreset.value?.names.length ?? 0) > 0)
+const hasModelPresets = computed(() => (selectedModelType.value?.model_names.length ?? 0) > 0)
+/** 编辑态当前值不在预设里也要正常显示 → unshift 进选项 */
 const modelNameOptions = computed(() => {
-  const names = [...(modelPreset.value?.names ?? [])]
+  const names = [...(selectedModelType.value?.model_names ?? [])]
   if (modelDialog.modelName && !names.includes(modelDialog.modelName)) names.unshift(modelDialog.modelName)
   return names
 })
@@ -602,9 +594,10 @@ async function onTestModel(m: SpaceModelOut) {
           </el-select>
           <el-input v-else v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat(允许自定义)" />
           <div class="pm-hint">
-            清单只是常见提示,后端不校验,不在清单里的名字也能保存;填错时【测试模型】会报上游 model_name 类错误{{
-              modelPreset?.note ? `。${modelPreset.note}` : ''
-            }}
+            清单只是常见提示,后端不校验,不在清单里的名字也能保存;填错时【测试模型】会报上游 model_name 类错误
+          </div>
+          <div v-if="selectedModelType?.key === 'dashscope_rerank'" class="pm-hint">
+            百炼重排只能填 gte-rerank-v2 / qwen3-rerank;gte-rerank(无 -v2)已于 2026-05-30 下线,填它上游必报错
           </div>
         </el-form-item>
         <el-form-item v-if="kind === 'chat'" label="上下文窗口(tokens)" required>

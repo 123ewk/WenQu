@@ -298,10 +298,12 @@ export interface ProviderTypeOut {
   label: string
   doc_url: string
   default_base_url: string
-  /** 协议由类型决定(如 openai_compatible / cohere_rerank / dashscope_rerank);前端不枚举,按后缀判断见 ProvidersModelsBlock */
+  /** 协议由类型决定(如 openai_compatible / cohere_rerank / dashscope_rerank);前端不枚举协议,分块看 SpaceProviderOut.kinds */
   protocol: string
   /** 该类型可挂的模型类别;供应商下拉按它分开渲染(chat 区排 rerank 类型,反之亦然) */
   kinds: string[]
+  /** OPT-36:模型名提示清单(非白名单),下拉数据源;[] = 无预设退纯输入框;顺序即下拉顺序 */
+  model_names: string[]
 }
 
 export interface SpaceProviderOut {
@@ -316,6 +318,8 @@ export interface SpaceProviderOut {
   enabled: boolean
   /** 该供应商下的模型数;为 0 时【测试连接】会 422,按钮应禁用 */
   model_count: number
+  /** OPT-35:该供应商允许挂载的模型类别(按 protocol 从类型表派生,非"实际挂了哪些 kind");[] = 未知协议,两区块都不列 */
+  kinds: string[]
 }
 
 export interface SpaceProviderCreateRequest {
