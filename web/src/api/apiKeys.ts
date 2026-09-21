@@ -19,3 +19,12 @@ export function apiCreateApiKey(spaceId: string, body: CreateApiKeyRequest): Pro
 export function apiRevokeApiKey(spaceId: string, keyId: string): Promise<void> {
   return http.delete<void>(`/spaces/${spaceId}/api-keys/${keyId}`).then((r) => r.data)
 }
+
+/**
+ * 设为「正在使用」(OPT-31):需 Admin+,同成员原生效 Key 自动置 false(互斥),重复调用幂等。
+ * 纯管理标记 —— 未标"正在使用"的未吊销 Key 仍可正常调用(成员可换着用),后端不拦。
+ * 已吊销/成员已注销的 Key → 400 VALIDATION_ERROR;200 返回更新后的 Key(同列表结构)。
+ */
+export function apiActivateApiKey(spaceId: string, keyId: string): Promise<ApiKeyOut> {
+  return http.put<ApiKeyOut>(`/spaces/${spaceId}/api-keys/${keyId}/activate`).then((r) => r.data)
+}

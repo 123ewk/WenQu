@@ -455,6 +455,8 @@ export interface ApiKeyOut {
   capabilities: string[]
   /** 空数组 = 全部知识库 */
   kb_ids: string[]
+  /** OPT-31「正在使用」分配标记:同成员至多一把为 true,由 Admin+ 设定;仅管理语义,不影响调用 */
+  is_active: boolean
   /** 非 null 即已吊销 */
   revoked_at: string | null
   last_used_at: string | null
