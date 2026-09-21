@@ -221,6 +221,7 @@ async function onRerankSwitch(v: boolean) {
       <ProvidersModelsBlock
         v-if="config"
         kind="rerank"
+        hide-kind-label
         :can-manage="canManage"
         :config="config"
         :types="types"

@@ -41,6 +41,8 @@ const props = defineProps<{
   config: SpaceModelConfigOut
   /** 供应商类型清单:父级拉一次 /model-config/types 传下来(两区块共用) */
   types: ProviderTypeOut[]
+  /** 外层卡片标题已说明类别时置真,子标题不再复读 kindLabel(重排区块用) */
+  hideKindLabel?: boolean
 }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
@@ -48,9 +50,10 @@ const auth = useAuthStore()
 
 const TYPE_LABELS: Record<ModelKind, string> = {
   chat: '对话模型',
-  rerank: 'Rerank 重排',
+  rerank: '重排',
 }
 const kindLabel = computed(() => TYPE_LABELS[props.kind])
+const titlePrefix = computed(() => (props.hideKindLabel ? '' : kindLabel.value))
 
 /** §1.6 快捷预置值(前端写死即可,后端不拦);允许直接输入其他值 */
 const CONTEXT_PRESETS = [4096, 32768, 65536, 128000]
@@ -372,7 +375,7 @@ async function onTestModel(m: SpaceModelOut) {
   <div class="pm-block card">
     <div class="pm-head">
       <div>
-        <div class="pm-title">{{ kindLabel }}供应商</div>
+        <div class="pm-title">{{ titlePrefix }}供应商</div>
         <div class="pm-sub">自配 Base URL 与 API Key;Key 只回显掩码,编辑留空 = 不修改(清除走行内按钮)</div>
       </div>
       <el-button v-if="canManage" type="primary" @click="openCreateProvider">
@@ -421,7 +424,7 @@ async function onTestModel(m: SpaceModelOut) {
 
     <div class="pm-head pm-head-models">
       <div>
-        <div class="pm-title">{{ kind === 'chat' ? '对话模型' : `${kindLabel}模型` }}</div>
+        <div class="pm-title">{{ kind === 'chat' ? '对话模型' : `${titlePrefix}模型` }}</div>
         <div class="pm-sub">
           {{ kind === 'chat' ? '问答未指定模型时使用带「默认」标记的模型;上下文窗口是进度条分母' : '开启重排后检索结果按默认重排模型重排' }}
         </div>
