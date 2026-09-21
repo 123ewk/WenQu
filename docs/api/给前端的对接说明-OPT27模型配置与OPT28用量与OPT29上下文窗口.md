@@ -200,7 +200,7 @@ SiliconFlow / Jina / Cohere 三条带 `/v1` 或 `/v2` 版本段(平铺形态,后
 | FORBIDDEN | 403 | 不该出现(按钮已按角色隐藏);兜底 toast"需要空间管理员权限" |
 | VALIDATION | 422 | **直接展示后端 `error.message`**(已按场景写清:未知类型 / kind 与协议不匹配 / chat 缺 `context_tokens` / 供应商下无模型 / **模型服务地址不安全:…** / **只能是不含空格的 ASCII 地址…**),不要按 code 归并成一句"参数错误" |
 | MODEL_PROVIDER_NAME_TAKEN / MODEL_ID_TAKEN | 409 | 表单内联报错"该名称已存在"(注意唯一性只算本空间层) |
-| UPSTREAM_MODEL_ERROR | 424 | 【测试连接】失败,`details.reason` ∈ `auth`/`model_name`/`network`,分别提示"Key 无效或权限不足 / 模型名不存在(检查上游的模型/接入点 id) / 网络不通或 base_url 有误"(后端 message 就是这三句,可直接用)。注:`network` 是**兜底桶**,除 DNS/拒绝连接/超时外,上游回任意其它状态码也归它,此时后端 message 会变成"上游返回异常(status=…)"—— 照抄 message 显示即可,不要自己改写原因 |
+| UPSTREAM_MODEL_ERROR | 424 | 【测试连接】失败,`details.reason` ∈ `auth`/`model_name`/`network`。**展示请照抄 `error.message`,不要按 `reason` 本地映射成一句固定文案**:`reason=auth` 现在对应**两句**不同的 message —— 401"Key 无效(鉴权失败)"、403"Key 权限不足,或该模型不可用(未开通/已下线)"(百炼对已下线模型回 403,和"Key 无权限"共用状态码,靠 `reason` 分不开)。另两句:`model_name` = "模型名不存在(检查上游的模型/接入点 id)";`network` 是**兜底桶**,除 DNS/拒绝连接/超时("网络不通或 base_url 有误")外,上游回任意其它状态码也归它,此时 message 变成"上游返回异常(status=…)"—— 同样照抄即可 |
 | MODEL_NOT_CONFIGURED | 503 | 问答页既有链路不变;配置页"测向量化 Key 但一把 Key 都没有"也是它 |
 
 生产环境额外一条要给用户的解释:SSRF 闸门只判**写入时**,已经存下的地址不会被回溯;

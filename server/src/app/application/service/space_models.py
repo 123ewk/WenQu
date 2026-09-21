@@ -626,10 +626,17 @@ def _first_chat_delta(
 
 
 def _upstream_error(exc: ModelCallError) -> AppError:
-    """上游失败 → 配置页能看懂的三类原因(密钥/网络/模型名)。"""
+    """上游失败 → 配置页能看懂的三类原因(密钥/网络/模型名)。
+
+    `reason` 枚举刻意只有三种(前端按它出文案,不吞厂商错误码);403 与 401 分开措辞:
+    百炼对"模型已下线/未开通"回的是 403 `AccessDenied`,与"Key 无权限"共用状态码,
+    只说"Key 无效"会把用户支去查一把本来没问题的密钥(二轮联调 F1)。
+    """
     status = exc.status
-    if status in (401, 403):
-        reason, message = "auth", "Key 无效或权限不足"
+    if status == 401:
+        reason, message = "auth", "Key 无效(鉴权失败)"
+    elif status == 403:
+        reason, message = "auth", "Key 权限不足,或该模型不可用(未开通/已下线)"
     elif status in (400, 404):
         reason, message = "model_name", "模型名不存在(检查上游的模型/接入点 id)"
     else:

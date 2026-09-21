@@ -675,7 +675,12 @@ def test_probes_success_and_upstream_reason_mapping(
     # 已存密钥走解密:适配器拿到的是明文,不是 enc:v1: 密文
     assert not adapter.calls[-1][2].startswith("enc:v1:")
 
-    for status, reason in [(401, "auth"), (404, "model_name"), (429, "network")]:
+    for status, reason in [
+        (401, "auth"),
+        (403, "auth"),
+        (404, "model_name"),
+        (429, "network"),
+    ]:
         _patch_protocol(
             monkeypatch,
             _ProbeAdapter(fail=ModelCallError("演示厂", status, "upstream says no")),
@@ -685,6 +690,19 @@ def test_probes_success_and_upstream_reason_mapping(
         err = resp.json()["error"]
         assert err["code"] == "UPSTREAM_MODEL_ERROR"
         assert err["details"]["reason"] == reason
+
+    # F1:百炼对"模型已下线"回 403 AccessDenied,与"Key 无权限"同状态码 —— reason 仍是 auth
+    # (契约枚举不动),但措辞必须两条都指到,否则用户会去查一把没问题的密钥。
+    def _message_for(status: int) -> str:
+        _patch_protocol(
+            monkeypatch, _ProbeAdapter(fail=ModelCallError("演示厂", status, "no"))
+        )
+        body = client.post(f"{base}/models/{model['id']}/test", headers=owner).json()
+        return body["error"]["message"]
+
+    assert "鉴权" in _message_for(401)
+    assert "不可用" in _message_for(403)
+    assert "upstream" not in _message_for(403)  # 厂商响应体不外泄
 
     _patch_protocol(monkeypatch, _ProbeAdapter(fail=httpx.ConnectError("no route")))
     resp = client.post(f"{base}/providers/{pid}/test", headers=owner)
