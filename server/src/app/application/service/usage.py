@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.model_protocols import ToolCallRequest
-from app.core.model_usage import UsageSink, usage_prompt_text
+from app.core.model_usage import ChatTurnUsage, UsageSink, usage_prompt_text
 from app.domain.enums import UsageKind, UsageSource
 from app.domain.interfaces import EmbeddingGateway
 from app.domain.models import TokenUsageEvent
@@ -92,8 +92,10 @@ class UsageRecorder:
         inner: UsageAwareChat,
         space_id: uuid.UUID,
         user_id: uuid.UUID | None,
+        *,
+        turn: ChatTurnUsage | None = None,
     ) -> ToolCallingChat:
-        return _MeteredChat(inner, self, space_id, user_id)
+        return _MeteredChat(inner, self, space_id, user_id, turn)
 
     def embedding(
         self,
@@ -150,11 +152,13 @@ class _MeteredChat:
         recorder: UsageRecorder,
         space_id: uuid.UUID,
         user_id: uuid.UUID | None,
+        turn: ChatTurnUsage | None = None,
     ) -> None:
         self._inner = inner
         self._recorder = recorder
         self._space_id = space_id
         self._user_id = user_id
+        self._turn = turn
 
     def chat_stream(
         self,
@@ -206,6 +210,9 @@ class _MeteredChat:
         # 网关没交回上游数字(不支持 usage 的适配器)时按本地口径兜底;
         # 真适配器已在流收尾时估好,这里同文本重算是幂等的
         sink.estimate_from(usage_prompt_text(messages), "".join(seen))
+        if self._turn is not None:
+            # 与"不落用量行"同一守卫:没发生的调用不该喂给进度条的分子
+            self._turn.add(sink)
         self._recorder.record(UsageKind.CHAT, self._space_id, self._user_id, sink)
 
 

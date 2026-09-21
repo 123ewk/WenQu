@@ -86,7 +86,7 @@ class EmbeddingClient:
         api_key = resolve_api_key(provider)
         protocol = get_protocol(provider.protocol)
         if usage is not None:
-            usage.bind(model.id, provider.key)
+            usage.bind(model.id, provider.key, model.context_tokens)
         return protocol.embed(
             provider,
             model,
@@ -165,7 +165,7 @@ class ChatClient:
             raise ModelNotConfigured(f"模型 {model.id} 不是 chat 类型")
         provider = self._catalog.provider_of(model)
         if usage is not None:
-            usage.bind(model.id, provider.key)
+            usage.bind(model.id, provider.key, model.context_tokens)
         return model, provider, resolve_api_key(provider)
 
 

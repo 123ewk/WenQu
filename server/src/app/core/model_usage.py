@@ -17,9 +17,15 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-__all__ = ["UsageSink", "estimate_usage_tokens", "usage_prompt_text"]
+__all__ = [
+    "ChatTurnUsage",
+    "ContextWindowUsage",
+    "UsageSink",
+    "estimate_usage_tokens",
+    "usage_prompt_text",
+]
 
 # 汉字 + 假名 + 谚文:这些字符按 0.75 token/字估(中文 BPE 大致 1 字 ≈ 0.6~1 token)
 _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af]")
@@ -65,6 +71,8 @@ class UsageSink:
     # 落到哪条模型/供应商:调用方只传"要不要默认模型",真实身份在解析后才确定
     model_id: str = ""
     provider: str = ""
+    # 该模型声明的上下文窗口上限(OPT-29);目录里允许留空
+    context_tokens: int | None = None
 
     def add_upstream(self, raw: object) -> None:
         """累加厂商响应里的 usage 对象;没有可用数字(缺失/null/全 0)时不认领上游口径。"""
@@ -88,7 +96,48 @@ class UsageSink:
         self.completion_tokens = estimate_usage_tokens(completion_text)
         self.total_tokens = self.prompt_tokens + self.completion_tokens
 
-    def bind(self, model_id: str, provider: str) -> None:
+    def bind(
+        self,
+        model_id: str,
+        provider: str,
+        context_tokens: int | None = None,
+    ) -> None:
         """记下这次实际用到的模型与供应商(model_id 缺省时要到解析完才知道)。"""
         self.model_id = model_id
         self.provider = provider
+        self.context_tokens = context_tokens
+
+
+@dataclass(frozen=True)
+class ContextWindowUsage:
+    """本轮上下文的占用快照:分子 used_tokens,分母 window_tokens(未配置时为 None)。"""
+
+    used_tokens: int
+    window_tokens: int | None
+
+
+@dataclass
+class ChatTurnUsage:
+    """一次问答内所有上游 chat 调用的收集器(OPT-29 进度条的分子来源)。
+
+    **为什么挂在计量外壳上而不是流水线里**:Agent 模式的 prompt 由 AgentRunner 逐轮
+    组装,问答流水线根本看不见;而外壳看得到每一次真正发给上游的调用。
+    """
+
+    sinks: list[UsageSink] = field(default_factory=list)
+
+    def add(self, sink: UsageSink) -> None:
+        self.sinks.append(sink)
+
+    def window(self) -> ContextWindowUsage | None:
+        """取**最后一次**调用的分子/分母;一次都没发生则为 None。
+
+        不累加:Agent 每轮都在重发同一份上下文,累加会把用量报到超出窗口。
+        """
+        if not self.sinks:
+            return None
+        last = self.sinks[-1]
+        return ContextWindowUsage(
+            used_tokens=last.prompt_tokens + last.completion_tokens,
+            window_tokens=last.context_tokens,
+        )

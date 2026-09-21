@@ -46,6 +46,7 @@ from app.application.service.retrieval import RetrievalService, RetrievedChunk
 from app.application.streaming import GenerationHandle, StreamSupervisor
 from app.core.errors import AppError, ErrorCode
 from app.core.event_log import EventLog, MemoryEventLog
+from app.core.model_usage import ChatTurnUsage
 from app.domain.enums import Role
 from app.domain.interfaces import (
     ConversationRepository,
@@ -158,6 +159,7 @@ class QAService:
         db: Session | None = None,
         pipeline: Sequence[str] | None = None,
         agent_max_rounds: int = 20,
+        turn_usage: ChatTurnUsage | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -180,6 +182,8 @@ class QAService:
             )
         )
         self._agent_max_rounds = agent_max_rounds  # Agent 工具循环轮数上限(OPT-10)
+        # 上下文窗口用量的收集器(OPT-29),由计量外壳逐次调用喂入;单测不传则进度条双 null
+        self._turn_usage = turn_usage
 
     def create_conversation(
         self, user_id: uuid.UUID, space_id: uuid.UUID, title: str
@@ -311,7 +315,13 @@ class QAService:
         """后台泵:Agent 模式跑 ReAct 循环,否则跑流水线插件链;收尾固定在此兜底。"""
         cid = ctx.conversation.id
         sid = handle.stream_id  # 事件日志的键:一次生成一条流
-        state = GenerationState(ctx=ctx, handle=handle, stream_id=sid, log=self._event_log)
+        state = GenerationState(
+            ctx=ctx,
+            handle=handle,
+            stream_id=sid,
+            log=self._event_log,
+            turn_usage=self._turn_usage,
+        )
         try:
             state.emit("meta", conversation_id=str(cid))
             if ctx.agent:
@@ -354,15 +364,42 @@ class QAService:
         if outcome.error is not None:
             self._event_log.append(sid, "error", {"message": outcome.error})
             return
+        turn_window = self._turn_usage.window() if self._turn_usage is not None else None
+        used = turn_window.used_tokens if turn_window is not None else None
+        window_tokens = turn_window.window_tokens if turn_window is not None else None
         if not outcome.answer.strip():
             # 中断无正文 / 模型空答:没有可保存的内容(与直检路径的空部分答案同口径)
-            self._event_log.append(sid, "done", {"partial": True, "message_id": None})
+            self._event_log.append(
+                sid,
+                "done",
+                {
+                    "partial": True,
+                    "message_id": None,
+                    "context_used_tokens": used,
+                    "context_window_tokens": window_tokens,
+                },
+            )
             return
         saved = self._persist_assistant(
-            ctx, outcome.answer, outcome.citations, ctx.model_id, agent_steps=outcome.steps
+            ctx,
+            outcome.answer,
+            outcome.citations,
+            ctx.model_id,
+            used,
+            window_tokens,
+            agent_steps=outcome.steps,
         )
         if outcome.interrupted:
-            self._event_log.append(sid, "done", {"partial": True, "message_id": str(saved.id)})
+            self._event_log.append(
+                sid,
+                "done",
+                {
+                    "partial": True,
+                    "message_id": str(saved.id),
+                    "context_used_tokens": used,
+                    "context_window_tokens": window_tokens,
+                },
+            )
             return
         self._event_log.append(
             sid,
@@ -370,6 +407,8 @@ class QAService:
             {
                 "message_id": str(saved.id),
                 "cited_indexes": _cited_indexes(outcome.answer, len(outcome.citations)),
+                "context_used_tokens": used,
+                "context_window_tokens": window_tokens,
             },
         )
 
@@ -407,9 +446,14 @@ class QAService:
         content: str,
         citations: list[dict],
         model_id: str | None,
+        context_used_tokens: int | None = None,
+        context_window_tokens: int | None = None,
         agent_steps: list[dict] | None = None,
     ) -> Message:
-        """落库 assistant 消息(完整答案或宽限截止的部分答案;agent 模式附工具轨迹)。"""
+        """落库 assistant 消息(完整答案或宽限截止的部分答案;agent 模式附工具轨迹)。
+
+        两列窗口值是**本轮快照**(OPT-29),由调用方从计量外壳取;没打模型则留 null。
+        """
         message = Message(
             conversation_id=ctx.conversation.id,
             space_id=ctx.space_id,
@@ -418,6 +462,8 @@ class QAService:
             citations=citations,
             model_id=model_id,
             agent_steps=agent_steps,
+            context_used_tokens=context_used_tokens,
+            context_window_tokens=context_window_tokens,
         )
         if self._background_db is not None:
             return self._background_db.save_message(message)

@@ -48,6 +48,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.event_log import EventLog, MemoryEventLog
 from app.core.model_catalog import ModelCatalog
 from app.core.model_client import ChatClient, EmbeddingClient, RerankClient
+from app.core.model_usage import ChatTurnUsage
 from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
 from app.domain.interfaces import (
@@ -355,19 +356,30 @@ def get_space_model_admin_service(
     return SpaceModelAdminService(db, space_id, spaces)
 
 
+def get_chat_turn_usage() -> ChatTurnUsage:
+    """本轮上下文窗口用量的收集器(OPT-29 进度条):每请求一份,绝不能做进程级单例。
+
+    缓存它等于让 A 用户的进度条读到 B 用户的用量,且列表随请求无界增长。
+    FastAPI 会缓存同请求内的子依赖,所以网关与 QAService 拿到的是同一个实例。
+    """
+    return ChatTurnUsage()
+
+
 def get_chat_gateway(
     db: Session = Depends(get_db),
     space_id: uuid.UUID | None = Depends(get_request_space_id),
     caller: Caller = Depends(get_current_actor),
+    turn_usage: ChatTurnUsage = Depends(get_chat_turn_usage),
 ) -> ToolCallingChat:
     """对话网关:问答直检走 chat_stream,Agent 模式(OPT-10)走 chat_stream_tools;
     目录每请求从库读(OPT-25),OPT-27 起快照带空间上下文(空间默认 chat 优先);
     OPT-28 起套计量外壳(每次上游调用一行用量,Agent 的多个轮次各记一行);
+    OPT-29 起外壳同时喂上下文窗口收集器;
     测试用 dependency_overrides 换假实现。"""
     client = ChatClient(ModelCatalog.load_from_db(db, space_id))
     if space_id is None:
         return client
-    return get_usage_recorder().chat(client, space_id, caller.user.id)
+    return get_usage_recorder().chat(client, space_id, caller.user.id, turn=turn_usage)
 
 
 @lru_cache
@@ -390,6 +402,7 @@ def get_qa_service(
     retrieval: RetrievalService = Depends(get_retrieval_service),
     chat: ToolCallingChat = Depends(get_chat_gateway),
     embedder: EmbeddingGateway = Depends(get_embedding_gateway),
+    turn_usage: ChatTurnUsage = Depends(get_chat_turn_usage),
 ) -> QAService:
     return QAService(
         conversations,
@@ -397,6 +410,7 @@ def get_qa_service(
         spaces,
         retrieval,
         chat,
+        turn_usage=turn_usage,
         event_log=get_event_log(),
         supervisor=get_stream_supervisor(),
         background_db=BackgroundDb(
