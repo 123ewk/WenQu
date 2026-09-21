@@ -7,6 +7,9 @@
 
 ## 1. 结论先说
 
+> **要一份能直接照着做完的文档?** 有:`docs/api/前端接入工单-OPT29上下文窗口进度条.md`
+> (自包含:字段原文、三态判定分支、最小改动清单、验收 8 步、报告格式)。本文只讲状态与取证。
+
 - **进度条契约已冻结可接**:`done` 帧与 `MessageOut` 各加 `context_used_tokens` /
   `context_window_tokens` 两个 `int|null`,**没有** `context_usage_estimated`(你们 §1 裁决已采纳);
 - **契约规模不变:52 路径 / 74 方法**。三项全是字段级加法(SSE `done` +2、`MessageOut` +2、
