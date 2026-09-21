@@ -29,7 +29,12 @@ from app.core.model_client import (
     ToolCallRequest,
     resolve_api_key,
 )
-from app.core.model_protocols import get_protocol, get_rerank_protocol, registered_protocols
+from app.core.model_protocols import (
+    get_protocol,
+    get_rerank_protocol,
+    registered_protocols,
+    registered_rerank_protocols,
+)
 from app.core.model_usage import UsageSink, estimate_usage_tokens
 
 _CIPHER = CredentialCipher("unit-test-master-key")
@@ -590,15 +595,17 @@ def test_chat_stream_tools_bills_tool_arguments_as_output() -> None:
     )
 
 
-# ---------------------------- 重排(OPT-27 cohere_rerank) ----------------------------
+# ---------------------- 重排(cohere_rerank / dashscope_rerank) ----------------------
 
 
-def _rerank_catalog(protocol: str = "cohere_rerank") -> ModelCatalog:
+def _rerank_catalog(
+    protocol: str = "cohere_rerank", base_url: str = "https://rerank.example/v1"
+) -> ModelCatalog:
     providers = {
         "rr": ProviderEntry(
             key="rr",
             protocol=protocol,
-            base_url="https://rerank.example/v1",
+            base_url=base_url,
             api_key_encrypted=_enc("sk-rr"),
             enabled=True,
         )
@@ -699,3 +706,90 @@ def test_rerank_requires_rerank_kind_model_and_supported_protocol() -> None:
 def test_cohere_rerank_is_registered() -> None:
     assert "cohere_rerank" in registered_protocols()
     assert hasattr(get_protocol("cohere_rerank"), "rerank")
+
+
+_DASHSCOPE_PATH = "/api/v1/services/rerank/text-rerank/text-rerank"
+
+
+def _dashscope_catalog() -> ModelCatalog:
+    # base_url 只到站点根:原生端点的服务路径由适配器钉死,拼不出第二段 /v1
+    return _rerank_catalog("dashscope_rerank", "https://dashscope.example")
+
+
+def _dashscope_response(body: dict, status: int = 200) -> httpx.Response:
+    return httpx.Response(
+        status, json=body, request=httpx.Request("POST", "https://x/text-rerank")
+    )
+
+
+def test_dashscope_rerank_sends_native_shape_and_parses_output_results() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        assert request.url.path == _DASHSCOPE_PATH
+        assert request.headers["authorization"] == "Bearer sk-rr"
+        return _dashscope_response(
+            {
+                "output": {
+                    "results": [
+                        {"index": 0, "relevance_score": 0.3},
+                        {"index": 2, "relevance_score": 0.8},
+                    ]
+                },
+                "usage": {"total_tokens": 123},
+            }
+        )
+
+    client = RerankClient(_dashscope_catalog(), transport=httpx.MockTransport(handler))
+    ranked = client.rerank("合同审批", ["a", "b", "c"], top_n=2)
+
+    assert seen["model"] == "gte-rerank"
+    assert seen["input"] == {"query": "合同审批", "documents": ["a", "b", "c"]}
+    assert seen["parameters"] == {"top_n": 2, "return_documents": False}
+    assert ranked == [(2, 0.8), (0, 0.3)]  # output 里乱序回,也要按分数降序
+
+
+def test_dashscope_rerank_clamps_top_n_to_documents() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["parameters"]["top_n"] == 3
+        return _dashscope_response({"output": {"results": [{"index": 1, "relevance_score": 0.5}]}})
+
+    client = RerankClient(_dashscope_catalog(), transport=httpx.MockTransport(handler))
+    assert client.rerank("q", ["a", "b", "c"], top_n=9) == [(1, 0.5)]
+
+
+def test_dashscope_rerank_bad_responses_raise_model_call_error() -> None:
+    def _fails(body: dict, status: int = 200) -> None:
+        with pytest.raises(ModelCallError):
+            RerankClient(
+                _dashscope_catalog(),
+                transport=httpx.MockTransport(lambda r: _dashscope_response(body, status)),
+            ).rerank("q", ["a", "b"])
+
+    # 缺 output / output 非对象 / output 里无 results / results 空 / 下标越界
+    for body in (
+        {},
+        {"output": "ok"},
+        {"output": {}},
+        {"output": {"results": []}},
+        {"output": {"results": [{"index": 5, "relevance_score": 0.1}]}},
+    ):
+        _fails(body)
+
+    with pytest.raises(ModelCallError) as exc_info:
+        RerankClient(
+            _dashscope_catalog(),
+            transport=httpx.MockTransport(lambda r: _dashscope_response({}, 400)),
+        ).rerank("q", ["a"])
+    assert exc_info.value.status == 400  # 上游错误码要留着,前端按 §1.6 文案直显
+
+
+def test_both_rerank_protocols_are_registered() -> None:
+    assert registered_rerank_protocols() == ["cohere_rerank", "dashscope_rerank"]
+    assert "dashscope_rerank" in registered_protocols()
+    assert hasattr(get_protocol("dashscope_rerank"), "rerank")
+    # 错误消息点名两份清单,运维不用猜支持哪些
+    with pytest.raises(AppError) as exc_info:
+        get_rerank_protocol("openai_compatible")
+    assert "dashscope_rerank" in exc_info.value.message

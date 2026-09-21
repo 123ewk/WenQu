@@ -6,9 +6,10 @@
   调用方(ChatClient/EmbeddingClient)零改动;
 - **写入口 fail-closed**:管理端保存 provider 时校验 protocol 必须已在注册表中
   (`registered_protocols()`),存进库里的键永远可分发;
-- 目前两个适配器:`openai_compatible`(embed/chat)与 `cohere_rerank`(重排,
-  两者方法集不同,按 `get_protocol` / `get_rerank_protocol` 分别取),
-  httpx 直连不引 SDK,原 model_client 的请求构造/流解析逻辑整体迁入;
+- 目前三个适配器:`openai_compatible`(embed/chat)、`cohere_rerank` 与
+  `dashscope_rerank`(两种重排线格式,方法同名),按 `get_protocol` /
+  `get_rerank_protocol` 分别取;httpx 直连不引 SDK,原 model_client 的
+  请求构造/流解析逻辑整体迁入;
 - token 用量(OPT-28)在本层解析:调用方传 `UsageSink` 出参,适配器负责"上游回传
   照抄 / 没回传按本地口径估算",重排链路不计量。
 """
@@ -159,15 +160,18 @@ def get_rerank_protocol(key: str) -> RerankProtocol:
     factory = _REGISTRY.get(key)
     adapter = None if factory is None else factory()
     if adapter is None or not hasattr(adapter, "rerank"):
-        supported = sorted(
-            name for name in _REGISTRY if hasattr(_REGISTRY[name](), "rerank")
-        )
         raise AppError(
             ErrorCode.MODEL_NOT_CONFIGURED,
-            f"模型协议 {key} 不支持重排(支持的重排协议:{', '.join(supported) or '无'})",
+            f"模型协议 {key} 不支持重排(支持的重排协议:"
+            f"{', '.join(registered_rerank_protocols()) or '无'})",
             http_status=503,
         )
     return adapter  # type: ignore[return-value]
+
+
+def registered_rerank_protocols() -> list[str]:
+    """支持重排的协议键(类型表与 kind 匹配判定都取它,别再各处抄一份清单)。"""
+    return sorted(name for name in _REGISTRY if hasattr(_REGISTRY[name](), "rerank"))
 
 
 def registered_protocols() -> list[str]:
@@ -432,8 +436,9 @@ class OpenAICompatible:
 class CohereRerank:
     """Cohere 形态重排:POST {base_url}/rerank(OPT-27)。
 
-    入参 `{model, query, documents, top_n}` → `results:[{index, relevance_score}]`。
-    这一形状已是事实标准(DashScope gte-rerank / Jina / SiliconFlow 等均兼容),
+    入参 `{model, query, documents, top_n}` → 根级 `results:[{index, relevance_score}]`。
+    Jina / SiliconFlow / Cohere 自家端点兼容这一形状;
+    **百炼(DashScope)不兼容**,它走 `dashscope_rerank`(见下)。
     base_url 由用户自填,故不需要各家变体。
     """
 
@@ -452,7 +457,7 @@ class CohereRerank:
             "model": model.model,
             "query": query,
             "documents": documents,
-            "top_n": max(1, min(top_n, len(documents))),
+            "top_n": _clamp_top_n(top_n, documents),
         }
         with httpx.Client(
             base_url=provider.base_url, timeout=_RERANK_TIMEOUT, transport=transport
@@ -460,24 +465,92 @@ class CohereRerank:
             response = client.post(
                 "/rerank", json=payload, headers={"Authorization": f"Bearer {api_key}"}
             )
-        if response.status_code != 200:
-            raise ModelCallError(provider.key, response.status_code, response.text[:200])
-        results = response.json().get("results")
-        if not isinstance(results, list) or not results:
-            # 有候选却空返回 = 上游响应不可用(调用方 fail-open 回落融合顺序)
-            raise ModelCallError(provider.key, None, "重排响应缺少 results 列表")
-        ranked: list[tuple[int, float]] = []
-        for item in results:
-            try:
-                index = int(item["index"])
-                score = float(item["relevance_score"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ModelCallError(provider.key, None, f"重排结果字段异常: {exc}") from exc
-            if not 0 <= index < len(documents):
-                raise ModelCallError(provider.key, None, f"重排结果下标越界: {index}")
-            ranked.append((index, score))
-        ranked.sort(key=lambda item: item[1], reverse=True)
-        return ranked
+        results = _rerank_body(provider, response).get("results")
+        return _ranked_pairs(results, provider, documents)
+
+
+# 百炼原生重排的固定服务路径:base_url 只填到站点根,路径由适配器钉死
+_DASHSCOPE_RERANK_PATH = "/api/v1/services/rerank/text-rerank/text-rerank"
+
+
+@register_protocol("dashscope_rerank")
+class DashScopeRerank:
+    """百炼(DashScope)原生重排:POST {base_url}/api/v1/services/rerank/text-rerank/text-rerank。
+
+    与 cohere 形态**两处不同名**,只能单独一个适配器(改 base_url 复用不了):
+    请求把 query/documents 包进 `input`、把 top_n 包进 `parameters`;
+    响应把结果放在 `output.results`。适用 gte-rerank-v2 一类原生端点,
+    上游回的 usage.total_tokens 按既有口径**不计量**(重排不计费)。
+    """
+
+    def rerank(
+        self,
+        provider: ProviderEntry,
+        model: ModelEntry,
+        api_key: str,
+        query: str,
+        documents: list[str],
+        top_n: int,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> list[tuple[int, float]]:
+        payload = {
+            "model": model.model,
+            "input": {"query": query, "documents": documents},
+            "parameters": {"top_n": _clamp_top_n(top_n, documents), "return_documents": False},
+        }
+        with httpx.Client(
+            base_url=provider.base_url, timeout=_RERANK_TIMEOUT, transport=transport
+        ) as client:
+            response = client.post(
+                _DASHSCOPE_RERANK_PATH,
+                json=payload,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        output = _rerank_body(provider, response).get("output")
+        results = None if not isinstance(output, dict) else output.get("results")
+        return _ranked_pairs(results, provider, documents)
+
+
+def _clamp_top_n(top_n: int, documents: list[str]) -> int:
+    return max(1, min(top_n, len(documents)))
+
+
+def _rerank_body(provider: ProviderEntry, response: httpx.Response) -> dict:
+    """重排响应的共用前置校验:非 200 一律按调用失败,200 必须是 JSON 对象。
+
+    错误消息只带上游响应体前 200 字符(厂商回的内容,不含请求与密钥)。
+    """
+    if response.status_code != 200:
+        raise ModelCallError(provider.key, response.status_code, response.text[:200])
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ModelCallError(provider.key, None, f"重排响应非 JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise ModelCallError(provider.key, None, "重排响应不是 JSON 对象")
+    return body
+
+
+def _ranked_pairs(
+    results: object, provider: ProviderEntry, documents: list[str]
+) -> list[tuple[int, float]]:
+    """`[{index, relevance_score}]` → 按分数降序的 (原始下标, 分数);两形态共用。"""
+    if not isinstance(results, list) or not results:
+        # 有候选却空返回 = 上游响应不可用(调用方 fail-open 回落融合顺序)
+        raise ModelCallError(provider.key, None, "重排响应缺少 results 列表")
+    ranked: list[tuple[int, float]] = []
+    for item in results:
+        try:
+            index = int(item["index"])
+            score = float(item["relevance_score"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ModelCallError(provider.key, None, f"重排结果字段异常: {exc}") from exc
+        if not 0 <= index < len(documents):
+            raise ModelCallError(provider.key, None, f"重排结果下标越界: {index}")
+        ranked.append((index, score))
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
 
 
 def _iter_sse_deltas(
