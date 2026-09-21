@@ -282,6 +282,56 @@ def test_dashscope_rerank_type_uses_native_protocol(client) -> None:
         assert bad.status_code == 422 and "重排协议" in bad.text
 
 
+def test_provider_rows_carry_kinds_so_frontend_stops_guessing_protocol(client) -> None:
+    """OPT-35:聚合视图的供应商行下发 kinds,前端分块不再按 protocol 硬编码。
+
+    F2 之后重排协议有两个,`protocol === 'cohere_rerank'` 会让百炼重排供应商既不进
+    重排块又串进对话块(表现 = "配了但页面看不到")。kinds 由类型表派生,新增协议零改动。
+    """
+    space_id, owner = _owner(client, "mckinds", "分块空间")
+    base = f"/api/v1/spaces/{space_id}/model-config"
+
+    chat = _create_provider(client, space_id, owner, name="对话厂")
+    native = _create_provider(
+        client, space_id, owner, provider_type="dashscope_rerank", name="百炼重排厂"
+    )
+    flat = _create_provider(
+        client, space_id, owner, provider_type="siliconflow_rerank", name="硅基重排厂"
+    )
+    rows = {p["id"]: p for p in client.get(base, headers=owner).json()["providers"]}
+    assert rows[chat["id"]]["kinds"] == ["chat"]
+    assert rows[native["id"]]["kinds"] == ["rerank"]
+    assert rows[flat["id"]]["kinds"] == ["rerank"]
+
+    # 分块判据自洽:两类互斥,不会有一行同时落进两个区块
+    by_kind = {k: {i for i, p in rows.items() if k in p["kinds"]} for k in ("chat", "rerank")}
+    assert by_kind["chat"] == {chat["id"]} and by_kind["rerank"] == {native["id"], flat["id"]}
+
+    # 类型表里同一协议的 kinds 必须唯一,否则"按协议派生"会互相覆盖
+    types = client.get(f"{base}/types", headers=owner).json()
+    per_protocol: dict[str, set[str]] = {}
+    for t in types:
+        per_protocol.setdefault(t["protocol"], set()).update(t["kinds"])
+    assert per_protocol["openai_compatible"] == {"chat"}
+    assert per_protocol["dashscope_rerank"] == {"rerank"}
+    assert per_protocol["cohere_rerank"] == {"rerank"}
+
+    # 未知协议(库里被手改的残留行)→ 空清单:宁可两个区块都不列,也不蒙一个
+    with get_session_factory()() as db:
+        db.add(
+            ModelProvider(
+                space_id=uuid.UUID(space_id),
+                name="历史遗留厂",
+                protocol="legacy_rerank_v0",
+                base_url="https://legacy.example",
+                api_key_encrypted="",
+            )
+        )
+        db.commit()
+    named = {p["name"]: p for p in client.get(base, headers=owner).json()["providers"]}
+    assert named["历史遗留厂"]["kinds"] == []
+
+
 def test_provider_type_prefill_and_masked_list(client) -> None:
     space_id, owner = _owner(client, "mcprov", "供应商空间")
     base = f"/api/v1/spaces/{space_id}/model-config"

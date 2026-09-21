@@ -21,7 +21,10 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_client_ip, get_current_user, get_space_model_admin_service
 from app.api.routing import CommitBeforeSendRoute
-from app.application.service.space_models import SpaceModelAdminService
+from app.application.service.space_models import (
+    SpaceModelAdminService,
+    kinds_for_protocol,
+)
 from app.domain.models import CustomModel, User
 
 router = APIRouter(
@@ -53,6 +56,7 @@ class SpaceProviderOut(BaseModel):
     key_hint: str
     enabled: bool
     model_count: int
+    kinds: list[str]  # 该供应商允许挂载的模型类别;空 = 未知协议
 
 
 class SpaceModelOut(BaseModel):
@@ -209,6 +213,7 @@ def create_provider(
         key_hint=provider.key_hint,
         enabled=provider.enabled,
         model_count=0,
+        kinds=list(kinds_for_protocol(provider.protocol)),
     )
 
 
@@ -239,6 +244,7 @@ def update_provider(
         key_hint=provider.key_hint,
         enabled=provider.enabled,
         model_count=counts.get(provider.id, 0),
+        kinds=list(kinds_for_protocol(provider.protocol)),
     )
 
 

@@ -120,6 +120,18 @@ PROVIDER_TYPES: tuple[ProviderType, ...] = (
 
 _TYPES_BY_KEY = {t.key: t for t in PROVIDER_TYPES}
 
+# 协议 → 该协议允许挂载的模型类别(供聚合视图给前端分块用,新增类型不用再抄清单)。
+# 库里只存 protocol 不存类型 key,而类型表里 protocol→kinds 是一对多映射的确定关系。
+_KINDS_BY_PROTOCOL: dict[str, tuple[str, ...]] = {}
+for _t in PROVIDER_TYPES:
+    _merged = set(_KINDS_BY_PROTOCOL.get(_t.protocol, ())) | set(_t.kinds)
+    _KINDS_BY_PROTOCOL[_t.protocol] = tuple(sorted(_merged))
+
+
+def kinds_for_protocol(protocol: str) -> tuple[str, ...]:
+    """该协议允许挂载的模型类别;未知协议 → 空(前端两个区块都不列,而不是蒙一个)。"""
+    return _KINDS_BY_PROTOCOL.get(protocol, ())
+
 
 class SpaceModelAdminService(ModelAdminService):
     """空间层模型配置;一个实例绑定一个空间(基类只管全局层)。"""
@@ -191,6 +203,7 @@ class SpaceModelAdminService(ModelAdminService):
                     "key_hint": p.key_hint,
                     "enabled": p.enabled,
                     "model_count": counts.get(p.id, 0),
+                    "kinds": list(kinds_for_protocol(p.protocol)),
                 }
                 for p in self.list_providers()
             ],
