@@ -9,7 +9,7 @@
  * (dashscope_rerank 等新协议加入后不能只认 cohere_rerank);
  * 模型行按 kind 过滤;类型下拉按 ProviderTypeOut.kinds 过滤(§1.4)。
  */
-import { Edit, Plus, Search, Delete } from '@element-plus/icons-vue'
+import { Edit, Plus, Search, Delete, Link } from '@element-plus/icons-vue'
 
 import {
   ASCII_NO_SPACE_RE,
@@ -69,6 +69,8 @@ const providers = computed(() =>
 const models = computed(() => props.config.models.filter((m) => m.kind === props.kind))
 /** 下拉只渲染 kinds 含本区块类别的类型(§1.4:搞错 kind 后端 422) */
 const typeOptions = computed(() => props.types.filter((t) => t.kinds.includes(props.kind)))
+/** 二轮§2「获取 API Key」入口:取所选类型的 doc_url 原值;空串(OpenAI 兼容自建)不渲染 */
+const providerTypeDocUrl = computed(() => props.types.find((t) => t.key === providerDialog.providerType)?.doc_url || '')
 
 /* 本地类型(Ollama/vLLM)默认地址是 127.0.0.1,prod 会被 SSRF 闸门拒(§1.6) */
 function typeLabel(t: ProviderTypeOut): string {
@@ -506,6 +508,10 @@ async function onTestModel(m: SpaceModelOut) {
             <el-option v-for="t in typeOptions" :key="t.key" :label="typeLabel(t)" :value="t.key" />
           </el-select>
           <div class="pm-hint">协议由类型决定、建好锁死;{{ kind === 'rerank' ? '本区块只列重排类型' : '本地类型(Ollama/vLLM)默认地址仅开发环境可存' }}</div>
+          <!-- 二轮§2:类型表自带 doc_url,只在新建态且非空时渲染;文案不承诺"创建 Key"(本地类型指向模型库/文档) -->
+          <a v-if="providerTypeDocUrl" class="pm-doc-link" :href="providerTypeDocUrl" target="_blank" rel="noopener noreferrer">
+            <el-icon class="btn-ic"><Link /></el-icon>打开官方文档 / 控制台获取 API Key ↗
+          </a>
         </el-form-item>
         <el-form-item label="显示名" required>
           <el-input v-model="providerDialog.name" maxlength="64" placeholder="本空间内唯一,如 公司 DeepSeek(允许中文)" />
@@ -707,6 +713,18 @@ async function onTestModel(m: SpaceModelOut) {
   font-size: 12px;
   color: #9ca3af;
   line-height: 1.5;
+}
+.pm-doc-link {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #4f6ef2;
+  text-decoration: none;
+}
+.pm-doc-link:hover {
+  text-decoration: underline;
 }
 .pm-hint-inline {
   margin-left: 10px;
