@@ -307,6 +307,9 @@ class Message(Base):
 
     agent_steps 存 Agent 模式(OPT-10)的工具调用轨迹(轮次/思考/调用/结果摘要),
     直检模式恒为 NULL。
+
+    context_used_tokens / context_window_tokens(OPT-29)是**当轮快照**而不是现算值:
+    分母所在模型的 context_tokens 可能被改被删,只有存下来才能复原进度条。
     """
 
     __tablename__ = "messages"
@@ -325,6 +328,9 @@ class Message(Base):
     citations: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     agent_steps: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # OPT-29:当轮窗口使用快照(仅 assistant 行;老行与 user 行恒 NULL)
+    context_used_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
