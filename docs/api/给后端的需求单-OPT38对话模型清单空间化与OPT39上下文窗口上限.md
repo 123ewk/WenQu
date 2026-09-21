@@ -50,6 +50,17 @@ docker exec my_rag-postgres-1 psql -U wenqu -d wenqu -c \
 
 副作用(可量化):这条链路上 `messages.model_id` 落 null(即台账 OPT-33 记的那条),而 `token_usage_events` 记的是全局夹具的 model_id —— 空间维度的用量归因里混进了"该空间从没配过的模型"。
 
+补充取证 D —— 前端 W2 已上线后**仍能复现**(2026-09-21 13:50 左右,`GET /api/v1/models` 直接快照,另一账号/另一空间各一次):
+
+| 活动空间 | 该空间 chat 配置行数 | `GET /models` 返回 `chat[].id` | 返回 `defaults.chat` |
+| --- | --- | --- | --- |
+| 二轮联调空间A `104fa4d5-3660-4cf4-9a9f-639b45b13255` | 1 行(`prod-deepseek/deepseek-chat`) | `deepseek/deepseek-chat`、`prod-deepseek/deepseek-chat` **两条(多出全局那条)** | `prod-deepseek/deepseek-chat`(空间行优先,正确) |
+| 二轮联调空间B-空配置 `738ed481-b2fe-455a-a730-08c98c1ec5c6` | **0 行** | `deepseek/deepseek-chat` **一条(纯全局)** | `deepseek/deepseek-chat`(全局那条) |
+
+两点结论:① 空间 A 的**默认解析已经正确**(空间行顶掉全局),但清单仍混进全局那条 → 是 N1 单独没做;② 空间 B 名下 0 行,清单与默认解析**双双**指向全局行 → N1/N2 都要收,前端已无能为力(契约没有来源字段)。前端下拉的「默认」徽标按 `defaults.chat` 打,所以现在空间 A 打对了、空间 B 会把徽标打在全局那条上(视觉上更坐实"这条能用")。
+
+取证 E —— 无检索命中时 `qa_pipeline.py:149` 直接以 `model_id=None` 落库(`_NO_RESULT_ANSWER` 短路分支),正常生成分支 `:217/:231` 才落 `state.ctx.model_id`。这解释了前端实测里"请求带了 id、messages 行仍是 null",避免你们误判为 N3 的回归;与 OPT-33 同一条链路,本轮不要求改。
+
 取证 C —— 页面文案自证(说明这是**已知语义**,不是漏网):
 
 - `web/src/views/settings/ModelConfigView.vue:138` 副标题:`本空间自配模型与 Key;未配置的模型调用回落全局默认`
