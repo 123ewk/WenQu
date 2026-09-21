@@ -959,15 +959,18 @@ onUnmounted(abortStream)
               </div>
             </el-popover>
 
-            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。默认"默认模型"不传 model_id -->
+            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。二轮§4:无「默认模型」可选项,
+                 不选(清空后为 '')= 不传 model_id,由服务端按空间→全局默认自选 -->
             <el-select
               v-if="chatModels.length"
               v-model="selectedModelId"
               class="model-select"
-              :title="`回答模型:${selectedModelLabel}`"
+              placeholder="默认模型"
+              clearable
+              value-on-clear=""
+              :title="selectedModelId ? `回答模型:${selectedModelLabel}` : '默认模型:不选 = 由服务端按本空间默认模型回答'"
               :disabled="streaming"
             >
-              <el-option label="默认模型" value="" />
               <el-option-group v-for="g in modelGroups" :key="g.label" :label="g.label">
                 <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
               </el-option-group>
