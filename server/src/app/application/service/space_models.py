@@ -6,7 +6,8 @@
    空间行的默认标记互斥也只在本空间内(基类 `_clear_defaults` 已带层谓词);
 2. **能力面收窄**:embedding 模型本体内置锁死(`text-embedding-v3`/1024 维),
    空间不能增删 embedding 模型 —— 能配的只有它的 Key;因此空间层 kind 只开放
-   chat 与 rerank,且 kind 必须与供应商协议匹配(`cohere_rerank` 只挂 rerank);
+   chat 与 rerank,且 kind 必须与供应商协议匹配(重排协议只挂 rerank,清单见
+   `registered_rerank_protocols()`,现两种:cohere 形态与百炼原生形态);
 3. **门槛**:读 = 空间成员(Viewer+,前端按角色隐藏写按钮),写 = Admin+(Role 30);
 4. **地址防护**:全局层的 base_url 是运维给的可信值;空间层则不然 —— 任何注册用户都能自助
    建空间、建完就是该空间 Owner,所以空间层多一道 SSRF 闸门(prod 拒内网/回环/元数据地址,dev 放行
@@ -46,13 +47,21 @@ from app.core.model_catalog import (
     ProviderEntry,
 )
 from app.core.model_client import resolve_api_key
-from app.core.model_protocols import ModelCallError, get_protocol, get_rerank_protocol
+from app.core.model_protocols import (
+    ModelCallError,
+    get_protocol,
+    get_rerank_protocol,
+    registered_rerank_protocols,
+)
 from app.core.ssrf import assert_external_http_url
 from app.domain.enums import AuditAction, Role
 from app.domain.interfaces import SpaceRepository
 from app.domain.models import CustomModel, ModelProvider, SpaceModelSettings, User
 
-_RERANK_PROTOCOL = "cohere_rerank"
+_COHERE_RERANK_PROTOCOL = "cohere_rerank"  # 平铺入参 + POST {base}/rerank
+_DASHSCOPE_RERANK_PROTOCOL = "dashscope_rerank"  # input/parameters 嵌套 + 原生服务路径
+# 哪些协议是重排协议取注册表派生,新增协议不用再抄清单
+_RERANK_PROTOCOLS = frozenset(registered_rerank_protocols())
 _CHAT_KIND = "chat"
 
 
@@ -94,17 +103,19 @@ PROVIDER_TYPES: tuple[ProviderType, ...] = (
                  "http://127.0.0.1:11434/v1", "openai_compatible", (_CHAT_KIND,)),
     ProviderType("vllm", "vLLM(本地)", "https://docs.vllm.ai/",
                  "http://127.0.0.1:8000/v1", "openai_compatible", (_CHAT_KIND,)),
-    ProviderType("dashscope_rerank", "阿里云百炼重排(gte-rerank)",
+    # base_url 只到站点根:原生端点的服务路径由协议适配器钉死,预填带 /v1 会拼出两段。
+    # 旧 gte-rerank(无 -v2)2026-05-30 已下线,填它会拿到上游 model_name 类报错。
+    ProviderType("dashscope_rerank", "阿里云百炼重排(gte-rerank-v2)",
                  "https://bailian.console.aliyun.com/",
-                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                 _RERANK_PROTOCOL, ("rerank",)),
+                 "https://dashscope.aliyuncs.com",
+                 _DASHSCOPE_RERANK_PROTOCOL, ("rerank",)),
     ProviderType("siliconflow_rerank", "SiliconFlow 重排",
                  "https://cloud.siliconflow.cn/account/ak",
-                 "https://api.siliconflow.cn/v1", _RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.siliconflow.cn/v1", _COHERE_RERANK_PROTOCOL, ("rerank",)),
     ProviderType("jina_rerank", "Jina 重排", "https://jina.ai/api-dashboard/",
-                 "https://api.jina.ai/v1", _RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.jina.ai/v1", _COHERE_RERANK_PROTOCOL, ("rerank",)),
     ProviderType("cohere_rerank", "Cohere 重排", "https://dashboard.cohere.com/api-keys",
-                 "https://api.cohere.com/v2", _RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.cohere.com/v2", _COHERE_RERANK_PROTOCOL, ("rerank",)),
 )
 
 _TYPES_BY_KEY = {t.key: t for t in PROVIDER_TYPES}
@@ -427,11 +438,11 @@ class SpaceModelAdminService(ModelAdminService):
 
     @staticmethod
     def _assert_kind_matches_protocol(provider: ModelProvider, kind: str) -> None:
-        if provider.protocol == _RERANK_PROTOCOL and kind != "rerank":
+        if provider.protocol in _RERANK_PROTOCOLS and kind != "rerank":
             raise AppError(
                 ErrorCode.VALIDATION, "该供应商是重排协议,只能挂 rerank 模型", http_status=422
             )
-        if provider.protocol != _RERANK_PROTOCOL and kind != _CHAT_KIND:
+        if provider.protocol not in _RERANK_PROTOCOLS and kind != _CHAT_KIND:
             raise AppError(
                 ErrorCode.VALIDATION,
                 "该供应商是对话协议,只能挂 chat 模型(embedding 已内置锁死,不可配置)",

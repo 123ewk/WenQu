@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import CredentialCipher
 from app.core.db import get_session_factory
-from app.core.model_protocols import ModelCallError
+from app.core.model_protocols import ModelCallError, registered_rerank_protocols
 from app.domain.models import (
     AuditLog,
     CustomModel,
@@ -96,8 +96,9 @@ def _provider_body(**overrides) -> dict:
     body = {
         "provider_type": "deepseek",
         "name": f"演示厂{uuid.uuid4().hex[:6]}",
-        "base_url": "https://api.deepseek.com/v1",
         "api_key": "sk-1234567890abcdef",
+        # base_url 留空 = 取该类型的默认地址:写死 deepseek 会把别的类型的行污染成 deepseek 地址
+        "base_url": "",
     }
     body.update(overrides)
     return body
@@ -236,6 +237,49 @@ def _audit_actions(space_id: str) -> set[str]:
 
 
 # ---------------------------- 供应商 / 模型 ----------------------------
+
+
+def test_dashscope_rerank_type_uses_native_protocol(client) -> None:
+    """F2:百炼重排走原生协议,两种重排协议都只挂 rerank。
+
+    旧写法给百炼预填 `compatible-mode/v1` + cohere 平铺协议,上游按 cohere 形状
+    收不到 `input/parameters`,探活一直 424 —— 类型表与真端点对不上就是这条回归。
+    """
+    space_id, owner = _owner(client, "mcrerank", "重排类型空间")
+    base = f"/api/v1/spaces/{space_id}/model-config"
+
+    types = {t["key"]: t for t in client.get(f"{base}/types", headers=owner).json()}
+    native = types["dashscope_rerank"]
+    assert native["protocol"] == "dashscope_rerank"
+    # base_url 只到站点根:原生服务路径由适配器钉死,预填带 /v1 会拼出两段
+    assert native["default_base_url"] == "https://dashscope.aliyuncs.com"
+    assert native["kinds"] == ["rerank"]
+    assert types["jina_rerank"]["protocol"] == "cohere_rerank"
+    # 类型表的重排协议清单由注册表派生(新增协议不用再抄)
+    assert {t["protocol"] for t in types.values() if "rerank" in t["kinds"]} == set(
+        registered_rerank_protocols()
+    )
+
+    provider = _create_provider(
+        client, space_id, owner, provider_type="dashscope_rerank", name="百炼原生厂", base_url=""
+    )
+    assert provider["protocol"] == "dashscope_rerank"
+    assert provider["base_url"] == "https://dashscope.aliyuncs.com"
+
+    model = _create_model(
+        client, space_id, owner, provider["id"],
+        kind="rerank", model_name="gte-rerank-v2", context_tokens=None,
+    )
+    assert model["kind"] == "rerank"  # 新协议接得住 rerank 模型
+
+    # 原生协议同样是"重排协议",不许挂 chat(embedding 一并拒)
+    for kind in ("chat", "embedding"):
+        bad = client.post(
+            f"{base}/models",
+            json=_model_body(provider["id"], kind=kind, context_tokens=4096),
+            headers=owner,
+        )
+        assert bad.status_code == 422 and "重排协议" in bad.text
 
 
 def test_provider_type_prefill_and_masked_list(client) -> None:
