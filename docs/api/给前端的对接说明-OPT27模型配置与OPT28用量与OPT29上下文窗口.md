@@ -1,7 +1,11 @@
 # 给前端的对接说明:OPT-27 模型配置页 / OPT-28 Token 用量 / OPT-29 上下文窗口(2026-09-21)
 
-**状态:v3.1 —— OPT-27 / OPT-28 / OPT-29 三项均已落地并合入契约**(§1、§2、§3 已按**实际实现**
-逐字段核对过,与计划稿的差异都在各节里改到位;§1.8 / §2.4 是可直接照抄的调用序列)。
+**状态:v3.2 —— 按你们《给后端的回复:OPT-27/28/29 联调报告》处置回写**:F2 是后端真 bug 已修
+(**百炼重排走原生协议 `dashscope_rerank`,`/types` 里该类型的 `protocol`/`default_base_url` 值变了**,
+见 §1.5/§1.6;其余三个重排类型不变),F1/F3 是口径没写清(已在 §1.4 补 PATCH 三态与探活 body),
+F2 后半"重排生效不可观测"登记为台账 OPT-34(设计如此,不是缺陷)。**契约路径/方法数不变(52/74)**,
+`/types` 是数据不是 schema。上一版 v3.1:OPT-27 / OPT-28 / OPT-29 三项均已落地并合入契约(§1、§2、§3 已按
+**实际实现**逐字段核对过,与计划稿的差异都在各节里改到位;§1.8 / §2.4 是可直接照抄的调用序列)。
 契约基线:**52 路径 / 74 方法**(OPT-27 后 50/72,OPT-28 新增 2 路径 / 2 方法,
 **OPT-29 只加字段、路径数不变**,全部加法式),
 权威源 `docs/api/openapi.json`,字段/枚举以它为准;
@@ -122,15 +126,23 @@ OPT-29(§3)**已完成**:`done` 帧与 `MessageOut` 的两值都已发出、契�
 
 新建模型字段:`{provider_id, kind, model_name, model_id?, context_tokens?, enabled?, is_default?}`。
 
-- `kind` 必须与所选供应商的协议匹配:`*_rerank` 类型(protocol=`cohere_rerank`)只能挂 rerank,
-  其余类型只能挂 chat;搞错给 422(消息会点名"该供应商是重排协议/对话协议"),
-  所以**区块②③的供应商下拉与区块④的下拉要按 `/types` 的 `kinds` 字段分开渲染**;
+- `kind` 必须与所选供应商的协议匹配:`/types` 里 `kinds` 含 `rerank` 的类型(重排协议,现两种
+  `cohere_rerank`/`dashscope_rerank`)只能挂 rerank,其余类型只能挂 chat;搞错给 422(消息会点名
+  "该供应商是重排协议/对话协议"),所以**区块②③的供应商下拉与区块④的下拉要按 `/types` 的
+  `kinds` 字段分开渲染**(判据用 `kinds`,别判 `protocol` 等值 —— 重排协议有两个值);
 - `model_id` 不传时后端合成 `{供应商 name}/{model_name}`(如 `deepseek/deepseek-chat`),
   前端默认不填、把合成结果回显即可;要自定义再传,撞库给 409 `MODEL_ID_TAKEN`;
 - 编辑(`PATCH /models/{model_pk}`)只开放 `model_name`/`context_tokens`/`enabled`/`is_default`
   —— `provider_id`、`kind`、`model_id` 建好即锁死(改这些等于换模型,前端做"删除后重建");
+- **PATCH 的三态口径(F1,请按这条实现)**:字段**缺省**与**显式传 null 都是"不改"**(后端逐字段
+  `if x is not None` 判定)。所以 `context_tokens` **一经建立无法用 API 清除** —— 想让某模型回到
+  "窗口未配置"态只能删了重建(且 chat 新建必填,重建也填不回空值)。"窗口未配置"因此只会出现在
+  **全局层**(运维建全局 chat 模型时留空,用户 2026-09-20 裁决允许);空间层的这条分支按你们
+  已有的实现保留即可,dev 上用 API 造不出来属预期,不是前端缺陷;
 - 【测试模型】`POST /models/{model_pk}/test`:chat 发一条 `ping` 取首个增量,rerank 试排两条短文档,
-  成功 `{ok:true}`,失败 424(见 §1.7)。
+  成功 `{ok:true}`,失败 424(见 §1.7)。探活三个端点里**只有 `embedding-key/test` 有请求体**
+  (openapi 标 `required`,空体 422 `Field required: body`,发 `{}` 或 `{"api_key":null}` 都可);
+  `providers/{pk}/test` 与 `models/{pk}/test` **没有 body**,发不发都行 —— 前端统一发 `{}` 是最省事的写法;
 
 ### 1.5 区块④:Rerank 重排(开关 + 模型,按需启用)
 
@@ -139,12 +151,23 @@ OPT-29(§3)**已完成**:`done` 帧与 `MessageOut` 的两值都已发出、契�
 | 启用开关 | `rerank.enabled`(bool,默认 false) | Admin+ 可拨;`PUT .../model-config/rerank-switch` 入参 `{"enabled": true}` → `{ok:true}` |
 | 当前默认 | `rerank.default_model`(string\|null) | 有值才说明"开了真会用";null 且开关为 true → 黄色提示 |
 | 开关旁文案 | — | "开启后,检索结果会经由重排模型重新排序;关闭时不参与链路。上游故障时自动降级为不重排,不影响问答" |
-| 供应商/模型 | 与区块②③同款形状,`kind="rerank"` | 复用同一套 providers/models 端点;**只能选 `/types` 里 `kinds` 含 rerank 的 4 个类型**(阿里云百炼重排 / SiliconFlow 重排 / Jina 重排 / Cohere 重排,protocol 固定 `cohere_rerank`);**无需 context_tokens**;模型名如 `gte-rerank-v2` |
+| 供应商/模型 | 与区块②③同款形状,`kind="rerank"` | 复用同一套 providers/models 端点;**只能选 `/types` 里 `kinds` 含 rerank 的 4 个类型**(阿里云百炼重排 / SiliconFlow 重排 / Jina 重排 / Cohere 重排)。**v3.2 变化**:阿里云百炼那条的 `protocol` 已是 **`dashscope_rerank`(原生形态)**,其余三条是 `cohere_rerank`(平铺形态)—— 类型键没变,前端仍按 `kinds` 渲染即可,别把 protocol 写死;**无需 context_tokens**;模型名按厂商填(百炼填 `gte-rerank-v2`,旧的 `gte-rerank` 已于 2026-05-30 下线,填它会 424 `reason=model_name`) |
 | 未配模型就开开关 | — | 后端允许开启但检索时无默认 rerank 模型 = 等同关闭;建议前端在开关打开且无默认模型时给黄色提示 |
 
 注意:开关与模型都属空间级配置;`GET /models` 公开清单里的 `rerank` 数组会包含本空间配置的
 rerank 模型(形状不变),前端模型选择器现逻辑无需改动。重排只在**该空间**开着时生效,
 且是检索链路的固定挂点(融合后取 top-30 候选重排),**没有暴露给 `/ask` 请求参数**,前端不用传任何东西。
+
+两点补充:
+
+1. **修好的是"新建",不是"已存在"**:`protocol` 在建供应商时由类型定死且之后不可改,所以你们 dev
+   空间 A 那把已存在的"百炼重排"供应商仍是 `cohere_rerank` + `/compatible-mode/v1`,继续 424。
+   请**删掉重建**(或新建一个)并取新的 `default_base_url`(站点根),模型名填 `gte-rerank-v2`;
+2. **"重排有没有生效"从检索响应上看不出来**(你们 F2 后半段):重排只改头部**顺序**、不改融合分
+   (`score` 仍是 RRF 值),上游失败时 fail-open 回落 —— 这是设计,不是缺陷。要做可观测得给命中行
+   加法式补字段,已登记台账 **OPT-34**(触发条件:确实需要向用户/调参证明生效),动手前会先发契约变更说明。
+   眼下的验收办法:开关 ON + 配好模型后【测试模型】200,即说明该协议链路通;检索侧看 worker 日志的
+   降级 WARNING(有 rerank 失败才打)。
 
 ### 1.6 表单预置值建议(前端写死即可,后端不拦)
 
@@ -160,6 +183,11 @@ vLLM `http://127.0.0.1:8000/v1`;四类重排见 §1.5。
 
 本地类型(Ollama/vLLM)的默认地址是 `127.0.0.1` —— **开发环境可用,生产会被 §1.7 的
 "地址不安全" 422 拒掉**。建议在 `label` 后加"（本地/开发环境）"小字,免得用户在生产里反复撞。
+
+重排四类的预填地址**不是一样的**:百炼那条(v3.2 起)是站点根 `https://dashscope.aliyuncs.com`
+(原生端点的服务路径由后端适配器钉死,地址里带 `/compatible-mode/v1` 会拼出两段路径),
+SiliconFlow / Jina / Cohere 三条带 `/v1` 或 `/v2` 版本段(平铺形态,后端只往后面接 `/rerank`)。
+所以**输入框初值一律取 `/types` 的 `default_base_url`,别复用 chat 那边的百炼地址**。
 
 ### 1.7 错误码展示口径
 
