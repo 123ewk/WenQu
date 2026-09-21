@@ -33,6 +33,7 @@ import type {
   SpaceProviderOut,
   SpaceProviderUpdateRequest,
 } from '@/api/types'
+import { MODEL_NAME_PRESETS } from './modelPresets'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps<{
@@ -242,6 +243,23 @@ const modelDialog = reactive({
 })
 const savingModel = ref(false)
 const modelError = ref('')
+
+/** 二轮§3:模型名预设提示。供应商行不带 type key,按「类型 default_base_url == 供应商 base_url」
+ *  反推 type key(建供应商时 base_url 就是按此预填/落库);自定义端点反推不到 = 无预设,纯输入框。
+ *  数据源切到 t.model_names 后此推导照用,只换 names 取值(见 modelPresets.ts TODO(OPT-36))。 */
+const selectedModelType = computed(() => {
+  const p = providers.value.find((x) => x.id === modelDialog.providerId)
+  if (!p) return null
+  return typeOptions.value.find((t) => t.default_base_url && t.default_base_url === p.base_url) ?? null
+})
+const modelPreset = computed(() => (selectedModelType.value ? MODEL_NAME_PRESETS[selectedModelType.value.key] : undefined))
+/** 编辑态当前值不在预设里也要正常显示 → unshift 进选项;空清单(本地类型)按无预设走纯输入框 */
+const hasModelPresets = computed(() => (modelPreset.value?.names.length ?? 0) > 0)
+const modelNameOptions = computed(() => {
+  const names = [...(modelPreset.value?.names ?? [])]
+  if (modelDialog.modelName && !names.includes(modelDialog.modelName)) names.unshift(modelDialog.modelName)
+  return names
+})
 
 /** 上下文窗口:chat 新建必填(缺了 422),rerank 不需要;allow-create 允许直接输入 */
 const contextSelectValue = computed({
@@ -570,7 +588,24 @@ async function onTestModel(m: SpaceModelOut) {
           <el-input v-else :model-value="modelDialog.modelId" disabled />
         </el-form-item>
         <el-form-item label="模型名" required>
-          <el-input v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat(允许中文)" />
+          <!-- 二轮§3:有预设 → 可自定义下拉(filterable+allow-create 必须允许任意值);无预设 → 纯输入框 -->
+          <el-select
+            v-if="hasModelPresets"
+            v-model="modelDialog.modelName"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选预设或直接输入自定义名"
+            class="pm-full"
+          >
+            <el-option v-for="n in modelNameOptions" :key="n" :label="n" :value="n" />
+          </el-select>
+          <el-input v-else v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat(允许自定义)" />
+          <div class="pm-hint">
+            清单只是常见提示,后端不校验,不在清单里的名字也能保存;填错时【测试模型】会报上游 model_name 类错误{{
+              modelPreset?.note ? `。${modelPreset.note}` : ''
+            }}
+          </div>
         </el-form-item>
         <el-form-item v-if="kind === 'chat'" label="上下文窗口(tokens)" required>
           <el-select
