@@ -1,13 +1,11 @@
-# 给前端的对接说明:OPT-27 模型配置页 / OPT-28 Token 用量 / OPT-29 上下文窗口(2026-09-20)
+# 给前端的对接说明:OPT-27 模型配置页 / OPT-28 Token 用量 / OPT-29 上下文窗口(2026-09-21)
 
-**状态:v2.1 —— OPT-27 已落地、dev 环境实测通过并合入契约**(本文 §1 已按**实际实现**逐字段核对过,
-与 v1 草案的差异都在 §1 各表里改到位;§1.8 是可直接照抄的调用序列)。
-v2.1 新增(实测后的两处口径补充):`api_key`/`base_url` 的 **ASCII + 无空白** 写入口径与前端预校验建议
-(§1.3"字符口径"、§1.2、§1.7 的 422 行);§1.8 按实际 `response_model` 订正了"哪些写接口只回 `{ok:true}`、
-存 Key/拨开关后必须重拉配置页"。
-契约基线:**50 路径 / 72 方法**(前值 39/59;本轮全部加法式),权威源 `docs/api/openapi.json`,
-字段/枚举以它为准;流程与错误口径另见 `docs/api/m4-模型管理-接口说明.md` §6。
-OPT-28(§2)与 OPT-29(§3)**尚未开工**,那两节仍是计划稿,按 OPT-27 → 28 → 29 顺序各自合并后重导契约。
+**状态:v3.0 —— OPT-27 与 OPT-28 均已落地并合入契约**(§1、§2 已按**实际实现**逐字段核对过,
+与计划稿的差异都在各节里改到位;§1.8 / §2.4 是可直接照抄的调用序列)。
+契约基线:**52 路径 / 74 方法**(OPT-27 后 50/72,OPT-28 新增 2 路径 / 2 方法,全部加法式),
+权威源 `docs/api/openapi.json`,字段/枚举以它为准;
+流程与错误口径另见 `docs/api/m4-模型管理-接口说明.md` §6、§7。
+OPT-29(§3)**尚未开工**,那一节仍是计划稿,合并后重导契约。
 
 用户 2026-09-20 二轮裁决已落进实现:rerank 入口 + 启用开关;embedding 回落全局 Key 仅限开发环境,
 生产必须空间自配。实施计划见 `docs/优化实施计划-OPT27-29.md`。
@@ -200,32 +198,84 @@ PUT    /api/v1/spaces/{sid}/model-config/rerank-switch          {"enabled":true}
 
 ---
 
-## 2. OPT-28 Token 用量页(区块建议挂在 空间设置 › 用量,或成员列表侧栏)
+## 2. OPT-28 Token 用量页(已落地:空间设置 › 用量)
+
+一句话:**后端只交明细汇总,不做任何换算与图表**;两个只读 GET,口径全在响应字段里。
 
 ### 2.1 按成员汇总表(Admin+)
 
-`GET /spaces/{sid}/token-usage?period=30d`,数据形状:
+`GET /api/v1/spaces/{space_id}/token-usage?period=7d|30d|all`(`period` 省略 = `30d`)
 
 ```json
 {
-  "period": "30d", "generated_at": "…",
-  "space_total": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+  "period": "30d",
+  "since": "2026-08-22T01:00:00+00:00",        // period=all → null(不是 0,别当日期用)
+  "generated_at": "2026-09-21T01:00:00+00:00",  // 服务端 UTC 时刻,直接显示"截至 …"
+  "space_total": {"prompt_tokens": 172, "completion_tokens": 40, "total_tokens": 212,
+                  "estimated_tokens": 15, "chat_calls": 2, "embedding_calls": 2},
   "members": [
-    {"user_id": "…", "username": "…", "nickname": "…", "role": 30,
-     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-     "chat_calls": 0, "embedding_calls": 0}
+    {"user_id": "…", "username": "…", "nickname": "…", "role": 40,
+     "prompt_tokens": 130, "completion_tokens": 40, "total_tokens": 170,
+     "estimated_tokens": 0, "chat_calls": 1, "embedding_calls": 1}
   ]
 }
 ```
 
-- 表格列:成员 / 对话次数 / 输入 token / 输出 token / 合计 / 向量化调用;按合计降序;
-- 时间筛选:7d / 30d / 全部;
-- 口径提示文案(必须放):"统计含对话与向量化;个别供应商不回传精确用量,此时为后端估算值"
-  (响应行里有 `source: upstream|estimated`,可打 `≈` 角标)。
+字段口径(逐条都是后端已实现的语义,不是建议):
+
+| 字段 | 含义与前端用法 |
+| --- | --- |
+| `total_tokens` | `prompt + completion` 的合计(对话与向量化**混在同一个数**里,按类别拆看图见 `*_calls`) |
+| `estimated_tokens` | 其中"本地估算"那部分行(`source=estimated`)的 total 之和。**必须在 UI 上区分**:两种口径不可混算 |
+| `chat_calls` / `embedding_calls` | 上游调用**次数**(一次问答可能因 Agent 工具轮打多次上游,故按调用计数,不按提问数) |
+| `members[]` | **当前花名册**,零用量成员也在列表里(全 0);按 `total_tokens` 降序、同分按 `username` |
+| `space_total` | 该空间**全部**事件之和,含 `user_id` 为空的行与**已退空间/已注销成员**的历史行 |
+
+- 因此 `sum(members[].total_tokens) <= space_total.total_tokens`,**不等是设计如此**:
+  差值就是"归属人已在花名册之外"的既成用量(成员被删时 `user_id` 置空,用量不回收)。
+  若要给管理员一个交代,表格底部加一行"其他/历史归属 ≈ N"用 `space_total - Σmembers` 显示即可。
+- `period` 传未知值(如 `1y`)**直接 422**(不静默回落),下拉只有三档就发这三档。
+- 门槛:Viewer/Editor → **403 `FORBIDDEN`**(不是 404);非成员与跨空间 → **404 `SPACE_NOT_FOUND`**。
+  入口按钮按角色隐藏,但**必须处理 403**(角色被降级后旧页面点进来就是)。
 
 ### 2.2 我的用量(所有成员)
 
-`GET /spaces/{sid}/token-usage/me` → 单人对象,同款字段;普通成员只有这个入口。
+`GET /api/v1/spaces/{space_id}/token-usage/me?period=…`
+
+```json
+{"period": "all", "since": null, "generated_at": "…",
+ "usage": {"prompt_tokens": 600, "completion_tokens": 0, "total_tokens": 600,
+           "estimated_tokens": 0, "chat_calls": 1, "embedding_calls": 0}}
+```
+
+- 任意成员可读(含 Viewer),非成员 404;**没有 `members` 字段**,别复用汇总表组件的数据层。
+- 普通成员侧栏**只给这个入口**;后端已挡住别人,前端只需隐藏入口。
+
+### 2.3 口径提示文案(必须放,原文照抄)
+
+> 统计含对话与向量化两类用量。个别供应商不回传精确 token 数,此时后端按"1 汉字≈0.75 token、
+> 1 字母≈0.25 token"估算并单列(标 ≈),与厂商回传的精确值不混算。
+> 用量自 2026-09-21(计量上线)起统计,历史不回填。
+
+### 2.4 最小调用序列(照抄可用)
+
+1. 进页面:`GET /token-usage/me`(所有人都能拿,先渲染"我的用量"卡片);
+2. 角色 ≥30 时再 `GET /token-usage?period=<档位>` 渲染汇总表;拿 403 就只留"我的用量"卡片;
+3. 切档位只重发对应请求;`since`/`generated_at` 直接显示在表头("统计区间 … ~ …")。
+
+### 2.5 已知的"不是 bug"
+
+- **零用量但存在的成员**:成员列表是全花名册,不是"有用量的人";
+- **入库用量记在上传者头上**:`uploaded_by` 为空的历史文档,其向量化用量只进 `space_total`;
+- **API Key 用不了这两个接口**:端点只挂 JWT 依赖且刻意未登记进 Key 能力表,带 `X-API-Key`
+  不带 Bearer → **401 `AUTH_REQUIRED`**(与 `/model-config/*`、`/admin/*` 同一做法:
+  用量与配置都是"人的账");
+- **重排与配置页【测试连接】不计费**:前者是开关的附带开销、不进单次问答账,后者是管理员点按钮;
+- **调没发生就不计费**:模型连不上/鉴权被拒(一字节都没回来)时**不落行**,所以"空间配错了"
+  不会凭空长出用量;中途断流则按已吐出的部分记 `estimated`。
+  2026-09-21 dev 实测:同一问,真上游 = `chat`+`embedding` 两行 `upstream`;
+  把 chat 上游换成死端口 → 只剩 `embedding` 一行,`chat_calls` 为 0;
+- 行是按**上游调用**落的,不是按提问/文档落:Agent 模式一次提问 3 轮 = 3 行 `chat_calls`。
 
 ---
 
@@ -252,11 +302,15 @@ PUT    /api/v1/spaces/{sid}/model-config/rerank-switch          {"enabled":true}
 
 ## 4. 联调与落地节奏
 
-- **OPT-27 已交付**(契约 50 路径 / 72 方法,已重导 `docs/api/openapi.json`),前端可以开工配置页;
-- OPT-28(§2)与 OPT-29(§3)随后各自独立合并,合并时以重导契约为准并在本文勘误,
+- **OPT-27 已交付**(契约 50 路径 / 72 方法)、**OPT-28 已交付**(契约 **52 路径 / 74 方法**,
+  新增 `GET /spaces/{sid}/token-usage` 与 `/token-usage/me`),两次都已重导 `docs/api/openapi.json`,
+  前端可以开工配置页与用量页;
+- OPT-29(§3)随后独立合并,合并时以重导契约为准并在本文勘误,
   路径/方法基线数会出现在这一节;
 - 三批全部为**加法式变更**:既有 `GET /models`、`/admin/*`、API Key、SSE/问答链路契约不变;
   语义变化只有一处对前端透明 —— 模型解析多了"空间优先、全局兜底"(见本文开头的提示框:
-  `GET /models` 内容随活动空间变化,切空间要重拉)。
-- 需要前端配合的只有两件事:① 新页面(配置页);② 模型选择器**要能渲染空清单**并引导去配置页
+  `GET /models` 内容随活动空间变化,切空间要重拉)。OPT-28 另外只往**写入侧**加了旁路记账:
+  问答/入库的响应体、状态码、错误码一律不变(记账失败只打服务端日志,不上契约)。
+- 需要前端配合的只有三件事:① 新页面(配置页);② 新页面/区块(用量页,§2);
+  ③ 模型选择器**要能渲染空清单**并引导去配置页
   (prod 下未配向量化 Key 的空间,`GET /models` 的 `embedding` 就是空的)。
