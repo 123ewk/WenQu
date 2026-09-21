@@ -5435,6 +5435,28 @@
             ],
             "title": "Agent Steps"
           },
+          "context_used_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Used Tokens"
+          },
+          "context_window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Window Tokens"
+          },
           "created_at": {
             "anyOf": [
               {
