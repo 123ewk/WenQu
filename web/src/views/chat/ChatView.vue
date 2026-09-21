@@ -168,13 +168,15 @@ const allKbSelected = computed({
   },
 })
 
-/* ───── 回答模型(GET /models,全局;提交用 id 字段) ───── */
+/* ───── 回答模型(GET /models;OPT-27 后内容 = 当前活动空间的合并清单,提交用 id 字段) ───── */
 
 const catalog = ref<ModelCatalogOut | null>(null)
 /** '' = 默认模型(不传 model_id,由服务端自选);仅当用户显式选择时才提交 */
 const selectedModelId = ref('')
 
 const chatModels = computed(() => catalog.value?.chat ?? [])
+/** 清单拉成功但 chat 为空(prod 下空间没配任何可用对话模型):选择器隐藏不够,要给配置页引导 */
+const chatCatalogEmpty = computed(() => !!catalog.value && chatModels.value.length === 0)
 
 /** provider 是显示名,做下拉分组 */
 const modelGroups = computed(() => {
@@ -191,7 +193,7 @@ const selectedModelLabel = computed(
   () => chatModels.value.find((m) => m.id === selectedModelId.value)?.model ?? '默认模型',
 )
 
-onMounted(async () => {
+async function loadModelCatalog() {
   try {
     catalog.value = await apiGetModelCatalog()
   } catch {
@@ -199,7 +201,9 @@ onMounted(async () => {
   }
   // 默认"默认模型"(不传 model_id,与后端默认一致);显式选择提交 id。
   // 后端已修 model_id 语义冲突(检索向量化改用 KB 的 embedding_model),显式选择即生效。
-})
+}
+
+onMounted(loadModelCatalog)
 
 /* ───── 输入 ───── */
 
@@ -242,12 +246,17 @@ function autoGrow() {
 /* ───── 数据加载 ───── */
 
 // 切换空间:清空当前会话并重新拉列表;首帧挂载不重置(否则会丢掉路由里的会话 id)
+// OPT-27 语义:GET /models 内容 = 当前活动空间的合并清单(形状不变),切空间必须重拉
 watch(
   () => auth.currentSpaceId,
   async (_next, prev) => {
     if (!spaceId.value) return
     abortStream()
-    if (prev !== undefined) resetConversation()
+    if (prev !== undefined) {
+      resetConversation()
+      // 清单内容随活动空间变(形状不变):只在真正切换后重拉,首帧由 onMounted 负责
+      loadModelCatalog()
+    }
     await Promise.all([loadConversations(), loadKbs()])
   },
   { immediate: true },
@@ -395,6 +404,9 @@ async function onSend() {
   let partialAnswer = false
   let streamBroken = false
   let lastSeq = 0
+  // OPT-29:done 帧带回的上下文字段,随本轮助手消息落地,进度条只读不算
+  let ctxUsedEv: number | null = null
+  let ctxWindowEv: number | null = null
   const citedIndexes: number[] = []
 
   const onEvent = (event: AskEvent) => {
@@ -409,6 +421,8 @@ async function onSend() {
     } else if (event.type === 'done') {
       citedIndexes.push(...(event.cited_indexes ?? []))
       if (event.partial) partialAnswer = true // 生成被中断,落库的是部分答案
+      ctxUsedEv = event.context_used_tokens ?? null
+      ctxWindowEv = event.context_window_tokens ?? null
     } else if (event.type === 'error') {
       streamError = streamErrorMessage(event.message, event.code)
     } else if (event.type === 'tool_call') {
@@ -489,6 +503,8 @@ async function onSend() {
         // 工具卡随消息落地,渲染链路与 F5 回放的 agent_steps 同型
         agent_steps: streamTools.value.length ? streamToolsToSteps(streamTools.value) : null,
         partial: (partialAnswer || streamBroken) && !streamError,
+        context_used_tokens: ctxUsedEv,
+        context_window_tokens: ctxWindowEv,
       },
     ]
   } else if (aborted) {
@@ -552,6 +568,26 @@ function onKeydown(event: KeyboardEvent) {
     if (canSend.value) void onSend()
   }
 }
+
+/* ───── OPT-29 上下文窗口使用率(只读不算;数据来自 done 帧与 messages 接口) ───── */
+
+/** 渲染基准 = 该会话最后一条 assistant 消息;流式中沿用上轮 done 落地的值(V1 口径:不做实时爬升,防误导) */
+const lastAssistant = computed(() => [...messages.value].reverse().find((m) => m.role === 'assistant') ?? null)
+const ctxUsed = computed(() => lastAssistant.value?.context_used_tokens ?? null)
+const ctxWindow = computed(() => lastAssistant.value?.context_window_tokens ?? null)
+/** used 为 null(老消息/后端未回传)时没有任何可展示内容,整条隐藏 */
+const ctxVisible = computed(() => ctxUsed.value !== null && !streaming.value)
+const ctxPct = computed(() => {
+  if (ctxUsed.value === null || !ctxWindow.value) return null
+  return Math.min(100, Math.round((ctxUsed.value / ctxWindow.value) * 100))
+})
+/** §3.2 阈值配色:<70% 蓝、70–90% 黄、>90% 红 */
+const ctxColor = computed(() => {
+  const p = ctxPct.value ?? 0
+  if (p > 90) return '#ef4444'
+  if (p >= 70) return '#f59e0b'
+  return '#4f6ef2'
+})
 
 /* ───── 会话操作 ───── */
 
@@ -890,6 +926,16 @@ onUnmounted(abortStream)
         <!-- 输入区 -->
         <div class="chat-input-wrap">
           <div v-if="msgError" class="inline-error">{{ msgError }}</div>
+          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径) -->
+          <div v-if="ctxVisible" class="ctx-row">
+            <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
+            <template v-if="ctxPct !== null">
+              <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
+              <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
+              <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+            </template>
+            <span v-else class="ctx-hint">窗口未配置</span>
+          </div>
           <div class="chat-input-row">
             <!-- 知识库范围 -->
             <el-popover :width="300" trigger="click" popper-class="kb-scope-pop">
@@ -913,19 +959,26 @@ onUnmounted(abortStream)
               </div>
             </el-popover>
 
-            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。默认"默认模型"不传 model_id -->
+            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。二轮§4:无「默认模型」可选项,
+                 不选(清空后为 '')= 不传 model_id,由服务端按空间→全局默认自选 -->
             <el-select
               v-if="chatModels.length"
               v-model="selectedModelId"
               class="model-select"
-              :title="`回答模型:${selectedModelLabel}`"
+              placeholder="默认模型"
+              clearable
+              value-on-clear=""
+              :title="selectedModelId ? `回答模型:${selectedModelLabel}` : '默认模型:不选 = 由服务端按本空间默认模型回答'"
               :disabled="streaming"
             >
-              <el-option label="默认模型" value="" />
               <el-option-group v-for="g in modelGroups" :key="g.label" :label="g.label">
                 <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
               </el-option-group>
             </el-select>
+            <!-- OPT-27:prod 下空间没配任何可用对话模型时清单为空,要给出配置页引导 -->
+            <router-link v-else-if="chatCatalogEmpty" to="/settings/models" class="model-empty-link">
+              本空间未配置对话模型 · 去配置
+            </router-link>
 
             <!-- Agent 模式开关(OPT-10,请求级,默认关):开启后模型自主决定检索,SSE 出工具事件 -->
             <el-tooltip
@@ -1409,6 +1462,42 @@ onUnmounted(abortStream)
   font-size: 12px;
   color: #ef4444;
 }
+/* OPT-29 上下文窗口使用率行 */
+.ctx-row {
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 6px 24px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.ctx-text {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ctx-track {
+  width: 96px;
+  height: 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ctx-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s;
+}
+.ctx-pct {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ctx-hint {
+  color: #9ca3af;
+}
 .chat-input-row {
   max-width: 768px;
   margin: 0 auto;
@@ -1450,6 +1539,21 @@ onUnmounted(abortStream)
   min-height: 36px;
   border-radius: 8px;
   font-size: 13px;
+}
+.model-empty-link {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px dashed #f59e0b;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #d97706;
+  text-decoration: none;
+}
+.model-empty-link:hover {
+  background: rgba(245, 158, 11, 0.06);
 }
 .scope-head {
   display: flex;

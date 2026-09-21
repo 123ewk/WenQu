@@ -257,6 +257,194 @@ export interface ModelCatalogOut {
   defaults: Record<string, string>
 }
 
+/* ───── OPT-27:空间模型配置(挂空间) ─────
+ * 已按 docs/api/openapi.json(52 路径 / 74 方法)逐字段核对。
+ * 读口只有一个聚合 GET .../model-config(没有单独的 providers/models 列表接口);
+ * 写接口分两类:POST/PATCH 供应商与模型回实体行,其余(embedding-key、
+ * rerank-switch、两条 test 探活)只回 OkOut{ok} —— 改完必须重拉聚合才能拿到掩码/默认态。 */
+
+export interface EmbeddingCardOut {
+  /** 内置锁死模型(text-embedding-v3),页面不可改 */
+  model_name: string
+  /** 固定 1024;换模型会使已入库向量失效 */
+  dims: number
+  /** 引导用户去建 API Key 的官网地址 */
+  doc_url: string
+  key_configured: boolean
+  /** 掩码字符串(4+****+4),后端直接给,前端原样显示;未配置为空串 */
+  key_hint: string
+  /** 仅 dev 可能 true(空间没配 Key、全局 Key 顶上);prod 恒 false,不要写死 */
+  fallback_active: boolean
+}
+
+export interface RerankCardOut {
+  /** 开关与"有没有配 rerank 模型"解耦;开了但没默认模型 = 等同关闭 */
+  enabled: boolean
+  default_model: string | null
+}
+
+/** 聚合视图:进页面一次拿全四区块,providers/models 只含本空间层的行(全局合并清单走 GET /models,别混用) */
+export interface SpaceModelConfigOut {
+  embedding: EmbeddingCardOut
+  rerank: RerankCardOut
+  providers: SpaceProviderOut[]
+  models: SpaceModelOut[]
+}
+
+/** GET .../model-config/types 下拉项:key 即提交的 provider_type,base_url 用 default_base_url 预填 */
+export interface ProviderTypeOut {
+  key: string
+  /** 显示名字段就叫 label(不是 display_name) */
+  label: string
+  doc_url: string
+  default_base_url: string
+  /** 协议由类型决定(如 openai_compatible / cohere_rerank / dashscope_rerank);前端不枚举协议,分块看 SpaceProviderOut.kinds */
+  protocol: string
+  /** 该类型可挂的模型类别;供应商下拉按它分开渲染(chat 区排 rerank 类型,反之亦然) */
+  kinds: string[]
+  /** OPT-36:模型名提示清单(非白名单),下拉数据源;[] = 无预设退纯输入框;顺序即下拉顺序 */
+  model_names: string[]
+}
+
+export interface SpaceProviderOut {
+  id: string
+  /** 本空间层内唯一(与全局同名不算冲突,且会遮蔽全局那条);也是 model_id 合成前缀 */
+  name: string
+  /** 由 provider_type 决定,建好锁死(PATCH 不可改) */
+  protocol: string
+  base_url: string
+  key_hint: string
+  /** 关掉后其模型从 GET /models 清单消失 */
+  enabled: boolean
+  /** 该供应商下的模型数;为 0 时【测试连接】会 422,按钮应禁用 */
+  model_count: number
+  /** OPT-35:该供应商允许挂载的模型类别(按 protocol 从类型表派生,非"实际挂了哪些 kind");[] = 未知协议,两区块都不列 */
+  kinds: string[]
+}
+
+export interface SpaceProviderCreateRequest {
+  /** 必须 ∈ /types 的 key(未知 422 并列出可选值) */
+  provider_type: string
+  name: string
+  /** 留空 = 用该类型的 default_base_url;只收不含空白的 ASCII,中间空格/中文 422 */
+  base_url?: string
+  /** 空 = 免密钥本地端点(Ollama/vLLM);明文只在这一跳出现,落库即加密 */
+  api_key?: string
+  enabled?: boolean
+}
+
+export interface SpaceProviderUpdateRequest {
+  name?: string
+  base_url?: string
+  /** 不传 = 不动;空串 = 清除;非空 = 更换(表单"留空即不改"时必须整个字段 omit) */
+  api_key?: string
+  enabled?: boolean
+}
+
+export interface SpaceModelOut {
+  /** 表主键:PATCH/DELETE/test 的路径参数用它,不是 model_id */
+  id: string
+  /** 对外 id(进 GET /models 与 /ask 的那个);本空间层内唯一,与全局同名=遮蔽 */
+  model_id: string
+  provider_id: string
+  provider_name: string
+  /** chat | rerank(空间层没有 embedding) */
+  kind: string
+  /** 实际调上游用的名字,如 deepseek-chat */
+  model_name: string
+  /** chat 新建必填(缺了 422),OPT-29 进度条分母;rerank 不需要 */
+  context_tokens: number | null
+  /** 关掉 = 从 GET /models 清单消失,且不能被设成默认 */
+  enabled: boolean
+  /** 同空间同 kind 仅一个默认(后端互斥,新的顶掉旧的);问答未指定模型时用它 */
+  is_default: boolean
+}
+
+export interface SpaceModelCreateRequest {
+  provider_id: string
+  /** 必须与供应商 protocol 匹配:重排协议(`*_rerank`)只挂 rerank,其余只挂 chat(错给 422) */
+  kind: string
+  model_name: string
+  /** 不传 = 后端合成 `{供应商 name}/{model_name}`;自定义撞库 409 MODEL_ID_TAKEN */
+  model_id?: string
+  context_tokens?: number | null
+  enabled?: boolean
+  is_default?: boolean
+}
+
+/** 只开放 model_name/context_tokens/enabled/is_default;provider_id、kind、model_id 建好即锁死(改=删除重建) */
+export interface SpaceModelUpdateRequest {
+  model_name?: string
+  context_tokens?: number | null
+  enabled?: boolean
+  is_default?: boolean
+}
+
+/** PUT embedding-key 入参;空串 = 清除本空间 Key(prod 清完向量化直接不可用) */
+export interface EmbeddingKeyRequest {
+  api_key?: string
+}
+
+/** POST embedding-key/test 入参;不传 = 测已存 Key */
+export interface EmbeddingKeyTestRequest {
+  api_key?: string | null
+}
+
+export interface RerankSwitchRequest {
+  enabled: boolean
+}
+
+/** 写/探活类端点的统一回包;掩码与默认态只以重拉的聚合为准 */
+export interface OkOut {
+  ok: boolean
+}
+
+/* ───── OPT-28:Token 用量(挂空间) ─────
+ * 已按 openapi.json 核对:响应里没有 `source` 字段(那是库里的列),
+ * 区分厂商实测/本地估算靠 estimated_tokens(估算部分行的 total 之和,>0 必须标 ≈)。 */
+
+/** 时间窗是契约里的 Literal(7d|30d|all),传未知值(如 1y)直接 422,不静默回落 */
+export type UsagePeriod = '7d' | '30d' | 'all'
+
+/** 六项全必填 int;对话与向量化的 token 混在 total 里,按类别看用量用 *_calls */
+export interface UsageOut {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  /** 其中"本地估算"口径那部分的 total 之和;估算与实测不混算 */
+  estimated_tokens: number
+  /** 上游调用次数,不是提问次数(Agent 一轮提问多行) */
+  chat_calls: number
+  embedding_calls: number
+}
+
+/** 当前花名册逐成员行,零用量成员也在(全 0);Σmembers ≤ space_total(差值=已离成员,不等是设计如此) */
+export interface MemberUsageOut extends UsageOut {
+  user_id: string
+  username: string
+  nickname: string
+  role: number
+}
+
+/** GET .../token-usage(Admin+;Viewer/Editor 是 403 不是 404) */
+export interface UsageSummaryOut {
+  period: UsagePeriod
+  /** period=all 时为 null(不是 0),别当日期用 */
+  since: string | null
+  /** 服务端 UTC 时刻,直接显示"截至 …" */
+  generated_at: string
+  space_total: UsageOut
+  members: MemberUsageOut[]
+}
+
+/** GET .../token-usage/me(任意成员可读;没有 members 字段,别复用汇总表数据层) */
+export interface MyUsageOut {
+  period: UsagePeriod
+  since: string | null
+  generated_at: string
+  usage: UsageOut
+}
+
 /* ───── M2:检索 ───── */
 
 export interface SearchRequest {
@@ -317,9 +505,22 @@ export interface ApiKeyOut {
   description: string
   /** 形如 sk-live-****ab12;完整明文只在创建响应里出现一次 */
   key_hint: string
+  /* ───── OPT-26:Key 绑定空间成员,以下字段随列表/创建响应返回 ───── */
+  /** 绑定成员 id;存量旧 Key 回退签发者,账号注销后为 null(实测:被移出空间时 id 仍在) */
+  member_user_id: string | null
+  /** 成员注销或被移出空间后为 null —— 前端以"username 为 null"判定"已注销"并置灰 */
+  member_username: string | null
+  member_nickname: string | null
+  /** 绑定时点的空间角色数值(40/30/20/10),与成员页同一口径 */
+  member_role: number | null
+  /** 签发操作者:仅留痕,不参与运行时身份(签发者被移出不影响 Key) */
+  created_by: string | null
+  created_by_name: string | null
   capabilities: string[]
   /** 空数组 = 全部知识库 */
   kb_ids: string[]
+  /** OPT-31「正在使用」分配标记:同成员至多一把为 true,由 Admin+ 设定;仅管理语义,不影响调用 */
+  is_active: boolean
   /** 非 null 即已吊销 */
   revoked_at: string | null
   last_used_at: string | null
@@ -334,6 +535,8 @@ export interface ApiKeyCreatedOut extends ApiKeyOut {
 export interface CreateApiKeyRequest {
   name: string
   description?: string
+  /** ★ OPT-26 新增必填:该空间的现存成员 user_id;缺失 422,非本空间成员 404 MEMBER_NOT_FOUND */
+  member_user_id: string
   /** 空数组合法但等于"什么都不能做"(后端 fail-closed) */
   capabilities?: string[]
   /** 空数组 = 全部知识库 */
@@ -390,6 +593,9 @@ export interface MessageOut {
   model_id: string | null
   /** OPT-10 agent 模式的工具调用轨迹;直检模式恒为 null/缺省,判空回退 citations 合成 */
   agent_steps?: AgentStepOut[] | null
+  /** OPT-29 上下文窗口进度条数据源(仅 assistant 消息;老消息/后端未合并时缺省) */
+  context_used_tokens?: number | null
+  context_window_tokens?: number | null
   created_at: string | null
 }
 

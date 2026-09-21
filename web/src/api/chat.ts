@@ -43,12 +43,21 @@ export function apiListMessages(spaceId: string, conversationId: string): Promis
  * OPT-10:`agent: true` 时新增 `tool_call`/`tool_result` 两种事件,`id` 配对;
  * `output` 是截断展示文本(≤2000 字),不要当全文数据;工具失败只 `ok:false` 循环继续,
  * 整体失败仍走 `error`。
+ * OPT-29:`done` 帧新增 `context_used_tokens`/`context_window_tokens`(int|null),
+ * 聊天页上下文进度条的实时数据源;老后端无这两字段,判 null 走"窗口未配置"分支。
  */
 export type AskEvent = (
   | { type: 'meta'; conversation_id: string }
   | { type: 'citations'; citations: CitationOut[] }
   | { type: 'delta'; text: string }
-  | { type: 'done'; message_id: string; cited_indexes?: number[]; partial?: boolean }
+  | {
+      type: 'done'
+      message_id: string
+      cited_indexes?: number[]
+      partial?: boolean
+      context_used_tokens?: number | null
+      context_window_tokens?: number | null
+    }
   | { type: 'error'; message: string; code?: string }
   | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; id: string; name: string; ok: boolean; duration_ms: number; output: string }
