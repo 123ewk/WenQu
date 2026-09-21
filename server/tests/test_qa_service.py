@@ -10,9 +10,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.application.service.qa import QAService
+from app.application.service.usage import UsageRecorder
 from app.application.streaming import StreamSupervisor
 from app.core.errors import AppError
 from app.core.model_client import ToolCallRequest
+from app.core.model_usage import ChatTurnUsage
 from app.domain.enums import Role
 from app.domain.models import Conversation, Membership, Message, Space
 from tests.fakes import FakeSpaceRepository, FakeUserRepository, make_user
@@ -106,7 +108,14 @@ def _hit(index_text: str):
     )
 
 
-def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0, grace_seconds=5.0):
+def build_env(
+    hits=None,
+    chat=None,
+    role=Role.VIEWER,
+    heartbeat_seconds=15.0,
+    grace_seconds=5.0,
+    turn_usage=None,
+):
     users = FakeUserRepository()
     spaces = FakeSpaceRepository(users_ref=users.users)
     user = users.create(make_user("u"))
@@ -116,6 +125,7 @@ def build_env(hits=None, chat=None, role=Role.VIEWER, heartbeat_seconds=15.0, gr
         FakeConvRepo(), FakeMsgRepo(), spaces, FakeRetrieval(hits), chat or FakeChat(),
         heartbeat_seconds=heartbeat_seconds,
         supervisor=StreamSupervisor(grace_seconds=grace_seconds),
+        turn_usage=turn_usage,
     )
     return SimpleNamespace(service=svc, user=user, space=space, chat=chat or FakeChat())
 
@@ -276,6 +286,29 @@ class ClosableSlowChat(SlowFakeChat):
             raise
 
 
+class MeteredSlowChat:
+    """UsageAwareChat 形状的慢网关:外壳往里传用量出参,回传固定数字。"""
+
+    def __init__(self, pieces: list[str], gap_seconds: float) -> None:
+        self.pieces = pieces
+        self._gap = gap_seconds
+
+    def chat_stream(self, messages, model_id=None, temperature=0.7, *, usage=None):
+        if usage is not None:
+            usage.bind("metered-fake", "provider-fake", 64000)
+            usage.add_upstream(
+                {"prompt_tokens": 40, "completion_tokens": 5, "total_tokens": 45}
+            )
+        for piece in self.pieces:
+            time.sleep(self._gap)
+            yield piece
+
+
+def _unreachable_session_factory():
+    """本用例不验记账落库(真库覆盖在集成测试):抛错被 UsageRecorder 吞成 warning。"""
+    raise RuntimeError("单元测试不连库")
+
+
 def _parse_frames(stream: list[str]) -> tuple[list[dict], int]:
     """返回 (data 事件列表, 心跳注释帧数)。"""
     events = [
@@ -316,6 +349,40 @@ def test_disconnect_then_grace_expiry_saves_partial_and_releases_upstream() -> N
     assert chat.closed  # 上游模型连接被主动释放
     done = [e for e in _raw_events(env, conv_id) if e.type == "done"][-1]
     assert done.payload["partial"] is True
+
+
+def test_grace_expired_partial_carries_context_window() -> None:
+    """宽限截止的部分答案:done 帧与落库行带同一对窗口值(OPT-29,partial 不豁免)。
+
+    网关经真实计量外壳:close() 时外壳的 finally 才把 sink 喂进收集器,
+    所以本用例同时钉住"落库与 done 帧读到的是已结算的那次调用"。
+    """
+    hits = [_hit("资料")]
+    turn = ChatTurnUsage()
+    chat = UsageRecorder(_unreachable_session_factory).chat(
+        MeteredSlowChat(["部分一", "部分二"], gap_seconds=0.3),
+        uuid.uuid4(),  # 记账会话不可用,这两个身份只是形参
+        uuid.uuid4(),
+        turn=turn,
+    )
+    env = build_env(
+        hits=hits, chat=chat, heartbeat_seconds=0.05, grace_seconds=0.1, turn_usage=turn
+    )
+    gen = env.service.ask_stream(env.user.id, env.space.id, "断线问题")
+    conv_id = uuid.UUID(_next_event(gen)["conversation_id"])
+    _next_event(gen)  # citations
+    _next_event(gen)  # delta 部分一
+    gen.close()
+
+    assert _wait_until(lambda: any(e.type == "done" for e in _raw_events(env, conv_id)))
+    assert len(turn.sinks) == 1  # 外壳在 persist 之前已结算
+    done = [e for e in _raw_events(env, conv_id) if e.type == "done"][-1]
+    assert done.payload["partial"] is True
+    assert done.payload["context_used_tokens"] == 45
+    assert done.payload["context_window_tokens"] == 64000
+    stored = env.service.get_conversation_messages(env.user.id, env.space.id, conv_id)
+    assert stored[-1].context_used_tokens == 45
+    assert stored[-1].context_window_tokens == 64000
 
 
 def test_disconnect_before_any_piece_saves_nothing() -> None:
