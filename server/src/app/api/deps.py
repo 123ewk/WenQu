@@ -38,6 +38,8 @@ from app.application.service.qa import BackgroundDb, QAService
 from app.application.service.retrieval import RetrievalService
 from app.application.service.space_models import SpaceModelAdminService
 from app.application.service.spaces import SpaceService
+from app.application.service.token_usage import UsageService
+from app.application.service.usage import UsageRecorder
 from app.application.streaming import StreamSupervisor
 from app.core.client_ip import resolve_client_ip
 from app.core.config import get_settings
@@ -253,15 +255,29 @@ def get_request_space_id(
         return None
 
 
+def get_usage_recorder() -> UsageRecorder:
+    """用量记账入口(OPT-28):自己开会话写,绝不打断主链路。
+
+    不做进程级单例 —— 它持有 session_factory,而测试会换库(lru_cache 会把记账
+    钉在第一个库上)。对象本身只包一个函数引用,每请求新建零成本。
+    """
+    return UsageRecorder(get_session_factory())
+
+
 def get_embedding_gateway(
     db: Session = Depends(get_db),
     space_id: uuid.UUID | None = Depends(get_request_space_id),
+    caller: Caller = Depends(get_current_actor),
 ) -> EmbeddingGateway:
     """向量化网关:目录每请求从库读(自定义模型即时生效);测试用 dependency_overrides 换假实现。
 
     OPT-27:快照带空间上下文(空间层模型优先;embedding 空间 Key→内置,dev 才回落全局)。
+    OPT-28:归属空间已知时套上计量外壳(取不到空间 = 无租户上下文,不记账)。
     """
-    return EmbeddingClient(ModelCatalog.load_from_db(db, space_id))
+    client = EmbeddingClient(ModelCatalog.load_from_db(db, space_id))
+    if space_id is None:
+        return client
+    return get_usage_recorder().embedding(client, space_id, caller.user.id)
 
 
 def _reranker_for(
@@ -318,6 +334,14 @@ def get_model_admin_service(db: Session = Depends(get_db)) -> ModelAdminService:
     return ModelAdminService(db)
 
 
+def get_usage_service(
+    db: Session = Depends(get_db),
+    spaces: SpaceRepository = Depends(get_space_repository),
+) -> UsageService:
+    """token 用量汇总(OPT-28 读侧):明细表 + 空间花名册,门槛在服务内判。"""
+    return UsageService(db, spaces)
+
+
 def get_space_model_admin_service(
     space_id: uuid.UUID,
     db: Session = Depends(get_db),
@@ -334,11 +358,16 @@ def get_space_model_admin_service(
 def get_chat_gateway(
     db: Session = Depends(get_db),
     space_id: uuid.UUID | None = Depends(get_request_space_id),
+    caller: Caller = Depends(get_current_actor),
 ) -> ToolCallingChat:
     """对话网关:问答直检走 chat_stream,Agent 模式(OPT-10)走 chat_stream_tools;
     目录每请求从库读(OPT-25),OPT-27 起快照带空间上下文(空间默认 chat 优先);
+    OPT-28 起套计量外壳(每次上游调用一行用量,Agent 的多个轮次各记一行);
     测试用 dependency_overrides 换假实现。"""
-    return ChatClient(ModelCatalog.load_from_db(db, space_id))
+    client = ChatClient(ModelCatalog.load_from_db(db, space_id))
+    if space_id is None:
+        return client
+    return get_usage_recorder().chat(client, space_id, caller.user.id)
 
 
 @lru_cache

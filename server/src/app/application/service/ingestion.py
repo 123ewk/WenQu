@@ -38,7 +38,9 @@ class IngestionService:
         chunks: ChunkRepository,
         storage: ObjectStorage,
         parser: ParserGateway,
-        embedder_factory: Callable[[Session, uuid.UUID | None], EmbeddingGateway],
+        embedder_factory: Callable[
+            [Session, uuid.UUID | None, uuid.UUID | None], EmbeddingGateway
+        ],
     ) -> None:
         self._documents = documents
         self._kbs = kbs
@@ -47,6 +49,7 @@ class IngestionService:
         self._storage = storage
         self._parser = parser
         # OPT-27:向量化网关按"任务所属空间"现建 —— 每空间的模型/Key 各不相同
+        # OPT-28:第三个参数是用量归属人(文档上传者),入库 token 要记到成员头上
         self._embedder_factory = embedder_factory
 
     def handle_next(self, db: Session, worker_id: str) -> str | None:
@@ -98,7 +101,7 @@ class IngestionService:
         model_id = kb.embedding_model if kb is not None else None
         # 只有子块进索引;检索命中子块后回取父块组装引用与上下文
         child_texts = [c.content for _parent, children in families for c in children]
-        embedder = self._embedder_factory(db, document.space_id)
+        embedder = self._embedder_factory(db, document.space_id, document.uploaded_by)
         vectors = embedder.embed(child_texts, model_id) if child_texts else []
 
         payload = []

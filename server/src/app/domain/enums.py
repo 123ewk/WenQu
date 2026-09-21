@@ -28,6 +28,24 @@ class AuditResult(StrEnum):
     DENIED = "denied"
 
 
+class UsageKind(StrEnum):
+    """token 用量的计量类别(OPT-28):对哪条上游链路记的账。"""
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+
+
+class UsageSource(StrEnum):
+    """用量数字的出处 —— 两种口径不可混算,所以必须随行落库。
+
+    - `upstream`:厂商 `usage` 回传的原值(精确);
+    - `estimated`:厂商不回传时由 `estimate_tokens()` 估算(近似,前端应打 ≈ 角标)。
+    """
+
+    UPSTREAM = "upstream"
+    ESTIMATED = "estimated"
+
+
 class AuditAction(StrEnum):
     """审计动作全分类;新增动作必须在此注册(40+ 分类为长期目标,见基准 04)。"""
 

@@ -11,6 +11,9 @@
 EmbeddingClient 保留后台并发信号量(入库流水线限速);ChatClient 的
 chat_stream/chat_stream_tools 返回 Generator 是断线清理契约的一部分,
 生成器语义由适配器保持(本层原样透传,不做 list() 固化)。
+
+token 计量(OPT-28)在本层只是**透传可选的 `UsageSink` 出参**:带收集器才计数,
+不带时请求体与计量上线前完全一致;数字的采集与估算全在协议层。
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from app.core.model_protocols import (
     get_protocol,
     get_rerank_protocol,
 )
+from app.core.model_usage import UsageSink
 
 __all__ = [
     "ChatClient",
@@ -57,7 +61,13 @@ class EmbeddingClient:
         self._semaphore = background_semaphore
         self._transport = transport
 
-    def embed(self, texts: list[str], model_id: str | None = None) -> list[list[float]]:
+    def embed(
+        self,
+        texts: list[str],
+        model_id: str | None = None,
+        *,
+        usage: UsageSink | None = None,
+    ) -> list[list[float]]:
         if not texts:
             return []
         model = (
@@ -67,14 +77,24 @@ class EmbeddingClient:
         )
         if model.kind != "embedding":
             raise ModelNotConfigured(f"模型 {model.id} 不是 embedding 类型")
-        return self._dispatch(model, texts)
+        return self._dispatch(model, texts, usage)
 
-    def _dispatch(self, model: ModelEntry, texts: list[str]) -> list[list[float]]:
+    def _dispatch(
+        self, model: ModelEntry, texts: list[str], usage: UsageSink | None
+    ) -> list[list[float]]:
         provider = self._catalog.provider_of(model)
         api_key = resolve_api_key(provider)
         protocol = get_protocol(provider.protocol)
+        if usage is not None:
+            usage.bind(model.id, provider.key)
         return protocol.embed(
-            provider, model, api_key, texts, semaphore=self._semaphore, transport=self._transport
+            provider,
+            model,
+            api_key,
+            texts,
+            semaphore=self._semaphore,
+            transport=self._transport,
+            usage=usage,
         )
 
 
@@ -92,19 +112,23 @@ class ChatClient:
         messages: list[dict[str, str]],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> str:
-        return "".join(self.chat_stream(messages, model_id, temperature))
+        return "".join(self.chat_stream(messages, model_id, temperature, usage=usage))
 
     def chat_stream(
         self,
         messages: list[dict[str, str]],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> Generator[str, None, None]:
-        model, provider, api_key = self._resolve_chat(model_id)
+        model, provider, api_key = self._resolve_chat(model_id, usage)
         protocol = get_protocol(provider.protocol)
         return protocol.chat_stream(
-            provider, model, api_key, messages, temperature, transport=self._transport
+            provider, model, api_key, messages, temperature, transport=self._transport, usage=usage
         )
 
     def chat_stream_tools(
@@ -113,14 +137,25 @@ class ChatClient:
         tools: list[dict],
         model_id: str | None = None,
         temperature: float = 0.7,
+        *,
+        usage: UsageSink | None = None,
     ) -> Generator[str | ToolCallRequest, None, None]:
-        model, provider, api_key = self._resolve_chat(model_id)
+        model, provider, api_key = self._resolve_chat(model_id, usage)
         protocol = get_protocol(provider.protocol)
         return protocol.chat_stream_tools(
-            provider, model, api_key, messages, tools, temperature, transport=self._transport
+            provider,
+            model,
+            api_key,
+            messages,
+            tools,
+            temperature,
+            transport=self._transport,
+            usage=usage,
         )
 
-    def _resolve_chat(self, model_id: str | None) -> tuple[ModelEntry, ProviderEntry, str]:
+    def _resolve_chat(
+        self, model_id: str | None, usage: UsageSink | None = None
+    ) -> tuple[ModelEntry, ProviderEntry, str]:
         model = (
             self._catalog.get_model(model_id)
             if model_id
@@ -129,6 +164,8 @@ class ChatClient:
         if model.kind != "chat":
             raise ModelNotConfigured(f"模型 {model.id} 不是 chat 类型")
         provider = self._catalog.provider_of(model)
+        if usage is not None:
+            usage.bind(model.id, provider.key)
         return model, provider, resolve_api_key(provider)
 
 

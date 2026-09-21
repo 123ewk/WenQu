@@ -500,11 +500,11 @@ class _ProbeAdapter:
         self.fail = fail
         self.calls: list[tuple] = []
 
-    def embed(self, provider, model, api_key, texts, *, semaphore=None, transport=None):
+    def embed(self, provider, model, api_key, texts, *, semaphore=None, transport=None, usage=None):
         return self._hit(provider.key, model.id, api_key)
 
     def chat_stream(
-        self, provider, model, api_key, messages, temperature, *, transport=None
+        self, provider, model, api_key, messages, temperature, *, transport=None, usage=None
     ):
         # 必须保持生成器语义:真实适配器返回 Generator,探活靠 next()+close()
         self._hit(provider.key, model.id, api_key)

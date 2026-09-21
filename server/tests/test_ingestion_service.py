@@ -80,7 +80,7 @@ def build_env(parser: FakeParser | None = None, embedder: FakeEmbedder | None = 
         storage=storage,
         parser=parser
         or FakeParser(blocks=[SimpleNamespace(type="paragraph", text="第一段。第二段。")]),
-        embedder_factory=lambda _db, _space_id: gateway,
+        embedder_factory=lambda _db, _space_id, _user_id: gateway,
     )
     return SimpleNamespace(
         service=service,

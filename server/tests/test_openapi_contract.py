@@ -66,6 +66,9 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/model-config/models",
     "/api/v1/spaces/{space_id}/model-config/models/{model_pk}",
     "/api/v1/spaces/{space_id}/model-config/models/{model_pk}/test",
+    # OPT-28 token 用量(汇总=Admin+,我的=成员)
+    "/api/v1/spaces/{space_id}/token-usage",
+    "/api/v1/spaces/{space_id}/token-usage/me",
     "/health",
     "/system/info",
 }

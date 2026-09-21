@@ -8,7 +8,9 @@
   (`registered_protocols()`),存进库里的键永远可分发;
 - 目前两个适配器:`openai_compatible`(embed/chat)与 `cohere_rerank`(重排,
   两者方法集不同,按 `get_protocol` / `get_rerank_protocol` 分别取),
-  httpx 直连不引 SDK,原 model_client 的请求构造/流解析逻辑整体迁入。
+  httpx 直连不引 SDK,原 model_client 的请求构造/流解析逻辑整体迁入;
+- token 用量(OPT-28)在本层解析:调用方传 `UsageSink` 出参,适配器负责"上游回传
+  照抄 / 没回传按本地口径估算",重排链路不计量。
 """
 
 from __future__ import annotations
@@ -16,18 +18,22 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 import httpx
 
 from app.core.errors import AppError, ErrorCode
 from app.core.model_catalog import ModelEntry, ProviderEntry
+from app.core.model_usage import UsageSink, usage_prompt_text
 
 _EMBED_BATCH_SIZE = 10
 _TIMEOUT = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
 # 重排在问答关键路径上:预算给得紧,超时就 fail-open 回落融合顺序(实施计划 F1-3)
 _RERANK_TIMEOUT = httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0)
+# 厂商拒收 `stream_options` 时的状态码:去掉这个可选字段重试一次(OPT-28 计量降级)
+_STREAM_OPTION_REJECTED = (400, 422)
 
 
 class ModelCallError(AppError):
@@ -61,7 +67,11 @@ class ToolCallRequest:
 
 
 class ModelProtocol(Protocol):
-    """协议适配器接口:入参已解析完(供应商/模型/明文密钥),只管发请求。"""
+    """协议适配器接口:入参已解析完(供应商/模型/明文密钥),只管发请求。
+
+    `usage` 是可选的用量出参(OPT-28):传进来就在请求收尾时写入 token 计数,不传零开销。
+    之所以走出参而不是返回值 —— 流式方法的返回通道是 Generator,那是断线清理契约的一部分。
+    """
 
     def embed(
         self,
@@ -72,6 +82,7 @@ class ModelProtocol(Protocol):
         *,
         semaphore: threading.Semaphore | None = None,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> list[list[float]]: ...
 
     def chat_stream(
@@ -83,6 +94,7 @@ class ModelProtocol(Protocol):
         temperature: float,
         *,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> Generator[str, None, None]: ...
 
     def chat_stream_tools(
@@ -95,6 +107,7 @@ class ModelProtocol(Protocol):
         temperature: float,
         *,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> Generator[str | ToolCallRequest, None, None]: ...
 
 
@@ -161,6 +174,34 @@ def registered_protocols() -> list[str]:
     return sorted(_REGISTRY)
 
 
+_T = TypeVar("_T")
+
+
+def _metered_stream(
+    open_stream: Callable[[bool], Generator[_T, None, None]],
+    usage: UsageSink | None,
+) -> Generator[_T, None, None]:
+    """给流式调用套上用量采集(OPT-28):`open_stream(include_usage)` 负责发请求。
+
+    - 没有收集器时连 `stream_options` 都不带,请求体与计量上线前逐字节相同;
+    - 厂商不认这个可选字段(400/422)时**去掉它重试一次**:计量不能把问答弄挂。
+      重试只可能发生在第一个增量吐出去之前 —— 协议层唯一的 ModelCallError 抛点就是
+      状态码检查,在流式循环之前,所以不存在"说两遍答案"的窗口;
+    - 上游没回 usage 就由内层生成器在收尾时按本地口径估算(见 `UsageSink`)。
+
+    用 `yield from` 而不是显式循环:close() 必须原样透传到内层生成器(断线清理契约)。
+    """
+    if usage is None:
+        yield from open_stream(False)
+        return
+    try:
+        yield from open_stream(True)
+    except ModelCallError as exc:
+        if exc.status not in _STREAM_OPTION_REJECTED:
+            raise
+        yield from open_stream(False)
+
+
 @register_protocol("openai_compatible")
 class OpenAICompatible:
     """OpenAI 协议族:POST {base_url}/embeddings 与 /chat/completions(SSE)。"""
@@ -174,6 +215,7 @@ class OpenAICompatible:
         *,
         semaphore: threading.Semaphore | None = None,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> list[list[float]]:
         vectors: list[list[float]] = []
         with httpx.Client(
@@ -183,12 +225,19 @@ class OpenAICompatible:
                 batch = texts[start : start + _EMBED_BATCH_SIZE]
                 if semaphore is not None:
                     with semaphore:
-                        vectors.extend(self._embed_batch(client, model, provider, api_key, batch))
+                        vectors.extend(
+                            self._embed_batch(client, model, provider, api_key, batch, usage)
+                        )
                 else:
-                    vectors.extend(self._embed_batch(client, model, provider, api_key, batch))
+                    vectors.extend(
+                        self._embed_batch(client, model, provider, api_key, batch, usage)
+                    )
         dims = {len(v) for v in vectors}
         if len(dims) > 1:
             raise ModelCallError(provider.key, None, f"向量维度不一致: {sorted(dims)}")
+        if usage is not None:
+            # 批次数不定,估算按整次调用的输入文本一次算完(未认领上游口径时才生效)
+            usage.estimate_from("\n".join(texts))
         return vectors
 
     @staticmethod
@@ -198,6 +247,7 @@ class OpenAICompatible:
         provider: ProviderEntry,
         api_key: str,
         batch: list[str],
+        usage: UsageSink | None = None,
     ) -> list[list[float]]:
         payload = {"model": model.model, "input": batch}
         response = client.post(
@@ -205,7 +255,10 @@ class OpenAICompatible:
         )
         if response.status_code != 200:
             raise ModelCallError(provider.key, response.status_code, response.text[:200])
-        data = response.json().get("data", [])
+        body = response.json()
+        if usage is not None:
+            usage.add_upstream(body.get("usage"))
+        data = body.get("data", [])
         if len(data) != len(batch):
             raise ModelCallError(provider.key, None, f"返回向量数 {len(data)} != 输入 {len(batch)}")
         ordered = sorted(data, key=lambda item: item.get("index", 0))
@@ -220,31 +273,20 @@ class OpenAICompatible:
         temperature: float,
         *,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> Generator[str, None, None]:
         """返回 Generator 是契约的一部分:断线宽限到点时,泵线程靠 close()
         在当前 yield 点中止生成并触发 with 清理,释放上游连接。"""
-        payload = {
-            "model": model.model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": True,
-        }
-        with httpx.Client(
-            base_url=provider.base_url, timeout=_TIMEOUT, transport=transport
-        ) as client:
-            with client.stream(
-                "POST",
-                "/chat/completions",
-                json=payload,
-                headers={"Authorization": f"Bearer {api_key}"},
-            ) as response:
-                if response.status_code != 200:
-                    body = response.read().decode("utf-8", errors="replace")
-                    raise ModelCallError(provider.key, response.status_code, body[:200])
-                for delta in _iter_sse_deltas(response.iter_lines()):
-                    content = delta.get("content")
-                    if content:
-                        yield content
+        return _metered_stream(
+            lambda include_usage: self._chat_text_stream(
+                provider,
+                api_key,
+                self._chat_payload(model, messages, temperature, None, include_usage),
+                transport,
+                usage,
+            ),
+            usage,
+        )
 
     def chat_stream_tools(
         self,
@@ -256,6 +298,7 @@ class OpenAICompatible:
         temperature: float,
         *,
         transport: httpx.BaseTransport | None = None,
+        usage: UsageSink | None = None,
     ) -> Generator[str | ToolCallRequest, None, None]:
         """带工具的流式对话(OpenAI 兼容 function calling,OPT-10)。
 
@@ -263,13 +306,48 @@ class OpenAICompatible:
         流结束时按 index 序逐个 yield ToolCallRequest(此时流已结束,循环层据此进入
         工具执行段)。
         """
-        payload = {
+        return _metered_stream(
+            lambda include_usage: self._chat_tools_stream(
+                provider,
+                api_key,
+                self._chat_payload(model, messages, temperature, tools, include_usage),
+                transport,
+                usage,
+            ),
+            usage,
+        )
+
+    @staticmethod
+    def _chat_payload(
+        model: ModelEntry,
+        messages: list[dict],
+        temperature: float,
+        tools: list[dict] | None,
+        include_usage: bool,
+    ) -> dict:
+        payload: dict = {
             "model": model.model,
             "messages": messages,
             "temperature": temperature,
             "stream": True,
-            "tools": tools,
         }
+        if tools is not None:
+            payload["tools"] = tools
+        if include_usage:
+            # OpenAI 默认不在流里回 usage,必须显式要;不认这字段的厂商由 `_metered_stream` 降级
+            payload["stream_options"] = {"include_usage": True}
+        return payload
+
+    @contextmanager
+    def _chat_stream(
+        self,
+        provider: ProviderEntry,
+        api_key: str,
+        payload: dict,
+        transport: httpx.BaseTransport | None,
+        usage: UsageSink | None,
+    ) -> Iterator[Iterator[dict]]:
+        """打开 SSE 流并交出 delta 迭代器:非 200 在进循环前抛错(重试的安全前提)。"""
         with httpx.Client(
             base_url=provider.base_url, timeout=_TIMEOUT, transport=transport
         ) as client:
@@ -282,10 +360,43 @@ class OpenAICompatible:
                 if response.status_code != 200:
                     body = response.read().decode("utf-8", errors="replace")
                     raise ModelCallError(provider.key, response.status_code, body[:200])
-                calls: dict[int, dict] = {}
-                for delta in _iter_sse_deltas(response.iter_lines()):
+                yield _iter_sse_deltas(response.iter_lines(), usage)
+
+    def _chat_text_stream(
+        self,
+        provider: ProviderEntry,
+        api_key: str,
+        payload: dict,
+        transport: httpx.BaseTransport | None,
+        usage: UsageSink | None,
+    ) -> Generator[str, None, None]:
+        pieces: list[str] = []
+        try:
+            with self._chat_stream(provider, api_key, payload, transport, usage) as deltas:
+                for delta in deltas:
                     content = delta.get("content")
                     if content:
+                        pieces.append(content)
+                        yield content
+        finally:
+            self._finish_usage(usage, payload, pieces)
+
+    def _chat_tools_stream(
+        self,
+        provider: ProviderEntry,
+        api_key: str,
+        payload: dict,
+        transport: httpx.BaseTransport | None,
+        usage: UsageSink | None,
+    ) -> Generator[str | ToolCallRequest, None, None]:
+        calls: dict[int, dict] = {}
+        pieces: list[str] = []
+        try:
+            with self._chat_stream(provider, api_key, payload, transport, usage) as deltas:
+                for delta in deltas:
+                    content = delta.get("content")
+                    if content:
+                        pieces.append(content)
                         yield content
                     for fragment in delta.get("tool_calls") or []:
                         index = int(fragment.get("index", 0))
@@ -297,13 +408,24 @@ class OpenAICompatible:
                             slot["name"] = function["name"]
                         if function.get("arguments"):
                             slot["args"].append(function["arguments"])
-                for index in sorted(calls):
-                    slot = calls[index]
-                    yield ToolCallRequest(
-                        id=slot["id"] or f"call_{index}",
-                        name=slot["name"],
-                        arguments="".join(slot["args"]),
-                    )
+            for index in sorted(calls):
+                slot = calls[index]
+                arguments = "".join(slot["args"])
+                # 工具调用的名字与参数同样是模型吐出的 token,估算时按产出计入
+                pieces.append(slot["name"] + arguments)
+                yield ToolCallRequest(
+                    id=slot["id"] or f"call_{index}",
+                    name=slot["name"],
+                    arguments=arguments,
+                )
+        finally:
+            self._finish_usage(usage, payload, pieces)
+
+    @staticmethod
+    def _finish_usage(usage: UsageSink | None, payload: dict, pieces: list[str]) -> None:
+        """流收尾(含断线 close)时补估算:上游回了 usage 就什么都不做。"""
+        if usage is not None:
+            usage.estimate_from(usage_prompt_text(payload["messages"]), "".join(pieces))
 
 
 @register_protocol("cohere_rerank")
@@ -358,8 +480,14 @@ class CohereRerank:
         return ranked
 
 
-def _iter_sse_deltas(lines: Iterator[str]) -> Iterator[dict]:
-    """解析 SSE chunk 流,产出每个 chunk 的 delta 对象([DONE] 终止,坏行跳过)。"""
+def _iter_sse_deltas(
+    lines: Iterator[str], usage: UsageSink | None = None
+) -> Iterator[dict]:
+    """解析 SSE chunk 流,产出每个 chunk 的 delta 对象([DONE] 终止,坏行跳过)。
+
+    带 `usage` 时顺手收下 chunk 里的用量:OpenAI 在 `include_usage` 下把 usage 放在
+    **choices 为空**的收尾 chunk 里,按"无 choices 即跳过"的老写法会正好丢掉它。
+    """
     for line in lines:
         line = line.strip()
         if not line.startswith("data:"):
@@ -371,6 +499,8 @@ def _iter_sse_deltas(lines: Iterator[str]) -> Iterator[dict]:
             chunk = json.loads(data)
         except json.JSONDecodeError:
             continue
+        if usage is not None:
+            usage.add_upstream(chunk.get("usage"))
         choices = chunk.get("choices") or []
         if not choices:
             continue

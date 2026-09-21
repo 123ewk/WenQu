@@ -519,3 +519,44 @@ class SpaceModelSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class TokenUsageEvent(Base):
+    """模型 token 用量明细(OPT-28):一次上游调用一行,只追加不改写。
+
+    - `source=upstream` 表示三个数字来自厂商回传的 usage;`estimated` 表示厂商没回传、
+      由 `estimate_tokens()` 按提示词/生成文本估出的近似值(前端可打 ≈ 角标)。
+      两者口径不同、不可混算,所以必须随行带出;
+    - `user_id` 在成员被删后置空(SET NULL):用量是既成事实,不因删人而消失。
+      按成员聚合时这类行仍计入 `space_total`,但不进 `members[]`;
+    - V1 不预聚合:明细行式 + 下面两个索引直接支撑"按空间按时间"与"按空间按成员"两类汇总。
+    """
+
+    __tablename__ = "token_usage_events"
+    __table_args__ = (
+        Index("ix_usage_space_created", "space_id", "created_at"),
+        Index("ix_usage_space_user", "space_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # chat | embedding(见 domain.enums.UsageKind);列是裸字符串,后续加 rerank 不需改表
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    provider: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    source: Mapped[str] = mapped_column(
+        String(16), default="upstream", server_default="upstream"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

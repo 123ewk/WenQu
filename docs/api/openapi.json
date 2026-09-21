@@ -3798,6 +3798,134 @@
           }
         }
       }
+    },
+    "/api/v1/spaces/{space_id}/token-usage": {
+      "get": {
+        "tags": [
+          "token-usage"
+        ],
+        "summary": "Get Token Usage",
+        "description": "按成员汇总本空间用量(Admin+;未知归属人的历史行只进 space_total)。",
+        "operationId": "get_token_usage_api_v1_spaces__space_id__token_usage_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "7d",
+                "30d",
+                "all"
+              ],
+              "type": "string",
+              "default": "30d",
+              "title": "Period"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummaryOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/token-usage/me": {
+      "get": {
+        "tags": [
+          "token-usage"
+        ],
+        "summary": "Get My Token Usage",
+        "description": "我自己的用量(任意成员;非成员 404,与跨空间访问同壳)。",
+        "operationId": "get_my_token_usage_api_v1_spaces__space_id__token_usage_me_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "7d",
+                "30d",
+                "all"
+              ],
+              "type": "string",
+              "default": "30d",
+              "title": "Period"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyUsageOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5197,6 +5325,64 @@
         ],
         "title": "MemberOut"
       },
+      "MemberUsageOut": {
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "chat_calls": {
+            "type": "integer",
+            "title": "Chat Calls"
+          },
+          "embedding_calls": {
+            "type": "integer",
+            "title": "Embedding Calls"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "nickname": {
+            "type": "string",
+            "title": "Nickname"
+          },
+          "role": {
+            "type": "integer",
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens",
+          "estimated_tokens",
+          "chat_calls",
+          "embedding_calls",
+          "user_id",
+          "username",
+          "nickname",
+          "role"
+        ],
+        "title": "MemberUsageOut"
+      },
       "MessageOut": {
         "properties": {
           "id": {
@@ -5575,6 +5761,47 @@
         },
         "type": "object",
         "title": "ModelUpdateIn"
+      },
+      "MyUsageOut": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "enum": [
+              "7d",
+              "30d",
+              "all"
+            ],
+            "title": "Period"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "since",
+          "generated_at",
+          "usage"
+        ],
+        "title": "MyUsageOut"
       },
       "OkOut": {
         "properties": {
@@ -6617,6 +6844,95 @@
           "name"
         ],
         "title": "UpdateSpaceRequest"
+      },
+      "UsageOut": {
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer",
+            "title": "Prompt Tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "title": "Completion Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "chat_calls": {
+            "type": "integer",
+            "title": "Chat Calls"
+          },
+          "embedding_calls": {
+            "type": "integer",
+            "title": "Embedding Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens",
+          "estimated_tokens",
+          "chat_calls",
+          "embedding_calls"
+        ],
+        "title": "UsageOut",
+        "description": "一份用量:三个 token 数 + 两条链路的调用次数 + 估算占比。"
+      },
+      "UsageSummaryOut": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "enum": [
+              "7d",
+              "30d",
+              "all"
+            ],
+            "title": "Period"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "space_total": {
+            "$ref": "#/components/schemas/UsageOut"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/MemberUsageOut"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "since",
+          "generated_at",
+          "space_total",
+          "members"
+        ],
+        "title": "UsageSummaryOut",
+        "description": "Admin+ 视角:空间合计 + 当前花名册逐成员(零用量成员也在列表里)。"
       },
       "UserOut": {
         "properties": {
