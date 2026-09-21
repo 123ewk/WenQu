@@ -6,16 +6,16 @@
 - 存量回填:每成员按 created_at 最新的未吊销 Key 自动标为使用中,上线即有数据可过滤;
 - 部分唯一索引在库层面兜住"一人同时最多一把使用中"。
 
-Revision ID: 0015
-Revises: 0014
+Revision ID: 0016
+Revises: 0015
 Create Date: 2026-09-21
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0015"
-down_revision = "0014"
+revision = "0016"
+down_revision = "0015"
 branch_labels = None
 depends_on = None
 
