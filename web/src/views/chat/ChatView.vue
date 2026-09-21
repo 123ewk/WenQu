@@ -168,15 +168,25 @@ const allKbSelected = computed({
   },
 })
 
-/* ───── 回答模型(GET /models;OPT-27 后内容 = 当前活动空间的合并清单,提交用 id 字段) ───── */
+/* ───── 回答模型(OPT-38:清单 = 本空间模型配置里的对话模型,必须选一把,model_id 必传) ───── */
 
 const catalog = ref<ModelCatalogOut | null>(null)
-/** '' = 默认模型(不传 model_id,由服务端自选);仅当用户显式选择时才提交 */
+/**
+ * 选中模型 id。'' 只可能是两种状态:清单还没到 / 本空间没有可用对话模型 —— 两种都不允许发送,
+ * 不再有"'' = 让服务端自选"这层语义(那正是全局兜底偷偷生效的入口)。
+ */
 const selectedModelId = ref('')
+/** 清单拉取失败(与"空间真的没配模型"区分开:前者给重试,后者给去配置) */
+const catalogFailed = ref(false)
 
 const chatModels = computed(() => catalog.value?.chat ?? [])
-/** 清单拉成功但 chat 为空(prod 下空间没配任何可用对话模型):选择器隐藏不够,要给配置页引导 */
+/** 清单拉成功但 chat 为空:空间没配任何可用对话模型,要给配置页引导 */
 const chatCatalogEmpty = computed(() => !!catalog.value && chatModels.value.length === 0)
+/** 本空间的默认对话模型 id(配置页带「默认」标记那条);清单里没有则视为无 */
+const defaultChatModelId = computed(() => {
+  const def = catalog.value?.defaults?.chat
+  return def && chatModels.value.some((m) => m.id === def) ? def : ''
+})
 
 /** provider 是显示名,做下拉分组 */
 const modelGroups = computed(() => {
@@ -190,18 +200,38 @@ const modelGroups = computed(() => {
 })
 
 const selectedModelLabel = computed(
-  () => chatModels.value.find((m) => m.id === selectedModelId.value)?.model ?? '默认模型',
+  () => chatModels.value.find((m) => m.id === selectedModelId.value)?.model ?? '',
 )
 
+/**
+ * 清单变化后校正选中项:优先本空间默认,否则清单第一项。
+ * 切空间后旧 id 必然不在新清单里 → 自动重选,不会把上一个空间的模型带过去。
+ */
+function syncModelSelection() {
+  const list = chatModels.value
+  if (!list.length) {
+    selectedModelId.value = ''
+    return
+  }
+  if (!list.some((m) => m.id === selectedModelId.value)) {
+    selectedModelId.value = defaultChatModelId.value || list[0].id
+  }
+}
+
 async function loadModelCatalog() {
+  catalogFailed.value = false
   try {
     catalog.value = await apiGetModelCatalog()
   } catch {
-    catalog.value = null // 清单拉不到则不渲染选择器,后端用空间默认模型
+    catalog.value = null
+    catalogFailed.value = true // 拉不到就不猜模型:选择器位置给重试,发送一并禁掉
+    return
   }
-  // 默认"默认模型"(不传 model_id,与后端默认一致);显式选择提交 id。
-  // 后端已修 model_id 语义冲突(检索向量化改用 KB 的 embedding_model),显式选择即生效。
+  syncModelSelection()
 }
+
+/** 清单里被删/被停用之后,选中项可能失效:发送前再校正一次 */
+watch(chatModels, syncModelSelection)
 
 onMounted(loadModelCatalog)
 
@@ -209,7 +239,15 @@ onMounted(loadModelCatalog)
 
 const draft = ref('')
 const textarea = ref<HTMLTextAreaElement>()
-const canSend = computed(() => draft.value.trim().length > 0 && !streaming.value)
+const canSend = computed(
+  () => draft.value.trim().length > 0 && !streaming.value && !!selectedModelId.value,
+)
+/** 发送被禁时,用 placeholder 说清为什么禁(别只给一个点不动的按钮) */
+const inputPlaceholder = computed(() => {
+  if (catalogFailed.value) return '模型清单加载失败,点右侧「模型清单加载失败 · 重试」后再提问'
+  if (chatCatalogEmpty.value) return '本空间未配置对话模型:先到 模型配置 › 对话模型 添加并启用,再回来提问'
+  return '向知识库提问…'
+})
 /** 展开的检索工具卡片(按消息 id) */
 const expandedTool = ref<string | null>(null)
 
@@ -374,7 +412,8 @@ function streamErrorMessage(message: string, code?: string): string {
 
 async function onSend() {
   const question = draft.value.trim()
-  if (!question || streaming.value) return
+  // 没有可用模型就不发:回车路径也要挡住,不能只禁按钮(禁的是"让服务端兜底选"这条退路)
+  if (!question || streaming.value || !selectedModelId.value) return
 
   draft.value = ''
   nextTick(autoGrow)
@@ -453,7 +492,7 @@ async function onSend() {
         conversation_id: conversationId,
         kb_ids: selectedKbIds.value.length === kbs.value.length ? null : selectedKbIds.value,
         top_k: 6,
-        model_id: selectedModelId.value || null,
+        model_id: selectedModelId.value,
         agent: agentMode.value,
       },
       onEvent,
@@ -959,26 +998,34 @@ onUnmounted(abortStream)
               </div>
             </el-popover>
 
-            <!-- 回答模型(清单来自 GET /models;提交 id 字段)。二轮§4:无「默认模型」可选项,
-                 不选(清空后为 '')= 不传 model_id,由服务端按空间→全局默认自选 -->
+            <!-- 回答模型(OPT-38):清单 = 本空间「模型配置 › 对话模型」里启用的那些,必选一把并随请求传 model_id。
+                 没有「默认模型」这一态 —— 那一态等于把选模型的决定权交回服务端的全局兜底。 -->
             <el-select
               v-if="chatModels.length"
               v-model="selectedModelId"
               class="model-select"
-              placeholder="默认模型"
-              clearable
-              value-on-clear=""
-              :title="selectedModelId ? `回答模型:${selectedModelLabel}` : '默认模型:不选 = 由服务端按本空间默认模型回答'"
+              placeholder="选择模型"
+              :title="`回答模型:${selectedModelLabel}(来自本空间模型配置)`"
               :disabled="streaming"
             >
               <el-option-group v-for="g in modelGroups" :key="g.label" :label="g.label">
-                <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id" />
+                <el-option v-for="m in g.options" :key="m.id" :label="m.model" :value="m.id">
+                  <div class="model-opt">
+                    <span class="model-opt-name">{{ m.model }}</span>
+                    <span v-if="m.id === defaultChatModelId" class="model-opt-tag">默认</span>
+                  </div>
+                  <!-- 同名模型(不同供应商的上游名可能一样)靠 id 区分 -->
+                  <div class="model-opt-sub mono">{{ m.id }}</div>
+                </el-option>
               </el-option-group>
             </el-select>
-            <!-- OPT-27:prod 下空间没配任何可用对话模型时清单为空,要给出配置页引导 -->
+            <!-- 空清单 = 本空间没配对话模型:fail-closed,不给"让服务端自己挑一个"的退路 -->
             <router-link v-else-if="chatCatalogEmpty" to="/settings/models" class="model-empty-link">
               本空间未配置对话模型 · 去配置
             </router-link>
+            <button v-else-if="catalogFailed" type="button" class="model-empty-link" @click="loadModelCatalog">
+              模型清单加载失败 · 重试
+            </button>
 
             <!-- Agent 模式开关(OPT-10,请求级,默认关):开启后模型自主决定检索,SSE 出工具事件 -->
             <el-tooltip
@@ -996,7 +1043,7 @@ onUnmounted(abortStream)
               v-model="draft"
               rows="1"
               class="chat-textarea"
-              placeholder="向知识库提问…"
+              :placeholder="inputPlaceholder"
               @input="autoGrow"
               @keydown="onKeydown"
             ></textarea>
@@ -1531,7 +1578,7 @@ onUnmounted(abortStream)
   min-width: 0;
 }
 .model-select {
-  width: 168px;
+  width: 200px;
   flex-shrink: 0;
 }
 .model-select :deep(.el-select__wrapper) {
@@ -1539,6 +1586,31 @@ onUnmounted(abortStream)
   min-height: 36px;
   border-radius: 8px;
   font-size: 13px;
+}
+/* 下拉项:上游模型名 + 默认徽标,副行给模型 id(不同供应商可能同名模型) */
+.model-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-opt-name {
+  font-size: 13px;
+  color: #111827;
+}
+.model-opt-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: #eef1fe;
+  font-size: 11px;
+  color: #4f6ef2;
+}
+.model-opt-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.4;
 }
 .model-empty-link {
   display: inline-flex;
@@ -1548,9 +1620,12 @@ onUnmounted(abortStream)
   padding: 0 12px;
   border: 1px dashed #f59e0b;
   border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
   font-size: 12px;
   color: #d97706;
   text-decoration: none;
+  cursor: pointer;
 }
 .model-empty-link:hover {
   background: rgba(245, 158, 11, 0.06);
