@@ -70,6 +70,8 @@ class ProviderType:
     """前端【供应商名字】下拉的一项(后端只给名字与预填值,不是白名单)。
 
     `default_base_url` 仅用于预填输入框,用户可以改成任何 http(s) 地址。
+    `model_names` 是模型名的**提示清单**(前端下拉数据源),后端不校验、自定义必须可用;
+    空元组 = 没有有意义的预设(本地/自建端点),前端渲染成纯输入框。
     """
 
     key: str
@@ -78,29 +80,38 @@ class ProviderType:
     default_base_url: str
     protocol: str
     kinds: tuple[str, ...]
+    model_names: tuple[str, ...] = ()
 
 
 PROVIDER_TYPES: tuple[ProviderType, ...] = (
     ProviderType("deepseek", "DeepSeek", "https://platform.deepseek.com/api_keys",
-                 "https://api.deepseek.com/v1", "openai_compatible", (_CHAT_KIND,)),
+                 "https://api.deepseek.com/v1", "openai_compatible", (_CHAT_KIND,),
+                 ("deepseek-chat", "deepseek-reasoner")),
     ProviderType("dashscope", "阿里云百炼", "https://bailian.console.aliyun.com/",
                  "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                 "openai_compatible", (_CHAT_KIND,)),
+                 "openai_compatible", (_CHAT_KIND,),
+                 ("qwen-plus", "qwen-max", "qwen-turbo")),
     ProviderType("zhipu", "智谱 GLM", "https://open.bigmodel.cn/usercenter/apikeys",
-                 "https://open.bigmodel.cn/api/paas/v4", "openai_compatible", (_CHAT_KIND,)),
+                 "https://open.bigmodel.cn/api/paas/v4", "openai_compatible", (_CHAT_KIND,),
+                 ("glm-4-plus", "glm-4-flash")),
     ProviderType("moonshot", "Kimi", "https://platform.moonshot.cn/console/api-keys",
-                 "https://api.moonshot.cn/v1", "openai_compatible", (_CHAT_KIND,)),
+                 "https://api.moonshot.cn/v1", "openai_compatible", (_CHAT_KIND,),
+                 ("kimi-k2-0711-preview", "moonshot-v1-8k")),
+    # 豆包要填的是控制台自建"接入点 id"(逐账号不同),给预设等于给错值
     ProviderType("doubao", "豆包",
                  "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
                  "https://ark.cn-beijing.volces.com/api/v3", "openai_compatible",
                  (_CHAT_KIND,)),
     ProviderType("minimax", "MiniMax",
                  "https://platform.minimaxi.com/user-center/basic-information/interface-key",
-                 "https://api.minimax.chat/v1", "openai_compatible", (_CHAT_KIND,)),
+                 "https://api.minimax.chat/v1", "openai_compatible", (_CHAT_KIND,),
+                 ("MiniMax-Text-01",)),
     ProviderType("openai_compatible", "OpenAI 兼容自建", "",
-                 "https://api.openai.com/v1", "openai_compatible", (_CHAT_KIND,)),
+                 "https://api.openai.com/v1", "openai_compatible", (_CHAT_KIND,),
+                 ("gpt-4o-mini", "gpt-4o")),
     ProviderType("ollama", "Ollama(本地)", "https://ollama.com/library",
-                 "http://127.0.0.1:11434/v1", "openai_compatible", (_CHAT_KIND,)),
+                 "http://127.0.0.1:11434/v1", "openai_compatible", (_CHAT_KIND,),
+                 ("qwen2.5:7b", "llama3.1:8b")),
     ProviderType("vllm", "vLLM(本地)", "https://docs.vllm.ai/",
                  "http://127.0.0.1:8000/v1", "openai_compatible", (_CHAT_KIND,)),
     # base_url 只到站点根:原生端点的服务路径由协议适配器钉死,预填带 /v1 会拼出两段。
@@ -108,14 +119,17 @@ PROVIDER_TYPES: tuple[ProviderType, ...] = (
     ProviderType("dashscope_rerank", "阿里云百炼重排(gte-rerank-v2)",
                  "https://bailian.console.aliyun.com/",
                  "https://dashscope.aliyuncs.com",
-                 _DASHSCOPE_RERANK_PROTOCOL, ("rerank",)),
+                 _DASHSCOPE_RERANK_PROTOCOL, ("rerank",), ("gte-rerank-v2", "qwen3-rerank")),
     ProviderType("siliconflow_rerank", "SiliconFlow 重排",
                  "https://cloud.siliconflow.cn/account/ak",
-                 "https://api.siliconflow.cn/v1", _COHERE_RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.siliconflow.cn/v1", _COHERE_RERANK_PROTOCOL, ("rerank",),
+                 ("BAAI/bge-reranker-v2-m3",)),
     ProviderType("jina_rerank", "Jina 重排", "https://jina.ai/api-dashboard/",
-                 "https://api.jina.ai/v1", _COHERE_RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.jina.ai/v1", _COHERE_RERANK_PROTOCOL, ("rerank",),
+                 ("jina-reranker-v2-base-multilingual",)),
     ProviderType("cohere_rerank", "Cohere 重排", "https://dashboard.cohere.com/api-keys",
-                 "https://api.cohere.com/v2", _COHERE_RERANK_PROTOCOL, ("rerank",)),
+                 "https://api.cohere.com/v2", _COHERE_RERANK_PROTOCOL, ("rerank",),
+                 ("rerank-v3.5", "bge-reranker-v2-m3")),
 )
 
 _TYPES_BY_KEY = {t.key: t for t in PROVIDER_TYPES}
@@ -234,6 +248,7 @@ class SpaceModelAdminService(ModelAdminService):
                 "default_base_url": t.default_base_url,
                 "protocol": t.protocol,
                 "kinds": list(t.kinds),
+                "model_names": list(t.model_names),
             }
             for t in PROVIDER_TYPES
         ]

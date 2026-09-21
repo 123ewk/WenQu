@@ -85,6 +85,7 @@ class ProviderTypeOut(BaseModel):
     default_base_url: str
     protocol: str
     kinds: list[str]
+    model_names: list[str]  # 模型名提示清单,不是白名单(后端不校验自定义值)
 
 
 class OkOut(BaseModel):

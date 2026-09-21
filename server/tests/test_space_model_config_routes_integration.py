@@ -332,6 +332,32 @@ def test_provider_rows_carry_kinds_so_frontend_stops_guessing_protocol(client) -
     assert named["历史遗留厂"]["kinds"] == []
 
 
+def test_provider_types_carry_model_name_presets_without_gating(client) -> None:
+    """OPT-36:/types 下发模型名提示清单,后端不校验 —— 自定义值必须照样能存。
+
+    预设只是"人类常见的填法";填错的表现不变(探活/真实调用时上游报 model_name)。
+    """
+    space_id, owner = _owner(client, "mcpreset", "预设空间")
+    base = f"/api/v1/spaces/{space_id}/model-config"
+
+    types = {t["key"]: t for t in client.get(f"{base}/types", headers=owner).json()}
+    assert types["deepseek"]["model_names"][:1] == ["deepseek-chat"]
+    # 已下线的名字不许进表(gte-rerank 无 -v2 于 2026-05-30 下线)
+    assert types["dashscope_rerank"]["model_names"][:1] == ["gte-rerank-v2"]
+    assert "gte-rerank" not in types["dashscope_rerank"]["model_names"]
+    # 豆包要填逐账号自建的接入点 id、vLLM 完全取决于部署方 → 空预设,前端渲染纯输入框
+    assert types["doubao"]["model_names"] == [] and types["vllm"]["model_names"] == []
+    assert all(
+        t["model_names"] for key, t in types.items() if key not in ("doubao", "vllm")
+    )
+
+    provider = _create_provider(client, space_id, owner)
+    custom = _create_model(
+        client, space_id, owner, provider["id"], model_name="公司自研网关-v3"
+    )
+    assert custom["model_name"] == "公司自研网关-v3"  # 清单里没有也照样收
+
+
 def test_provider_type_prefill_and_masked_list(client) -> None:
     space_id, owner = _owner(client, "mcprov", "供应商空间")
     base = f"/api/v1/spaces/{space_id}/model-config"
