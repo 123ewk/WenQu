@@ -164,6 +164,9 @@ class FakePermissionGroupRepository:
         self.groups[group.id] = group
         return group
 
+    def delete(self, group_id: uuid.UUID) -> None:
+        self.groups.pop(group_id, None)
+
     def list_for_space(self, space_id: uuid.UUID) -> list[PermissionGroup]:
         return [g for g in self.groups.values() if g.space_id == space_id]
 

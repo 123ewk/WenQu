@@ -38,6 +38,13 @@ class PermissionGroupRepositoryImpl:
         self._db.flush()
         return group
 
+    def delete(self, group_id: uuid.UUID) -> None:
+        """只删档位行;成员挂载与凭据的连带风险由服务层的删除门槛管住,不做隐式级联。"""
+        group = self._db.get(PermissionGroup, group_id)
+        if group is not None:
+            self._db.delete(group)
+            self._db.flush()
+
     def list_for_space(self, space_id: uuid.UUID) -> list[PermissionGroup]:
         return list(
             self._db.scalars(

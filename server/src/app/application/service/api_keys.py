@@ -102,8 +102,8 @@ class ApiKeyService:
             raise AppError(
                 ErrorCode.MEMBER_NOT_FOUND, "目标用户不是该空间成员", http_status=404
             )
-        caps = self._normalize_capabilities(capabilities)
-        self._assert_kbs_in_space(space_id, kb_ids)
+        caps = normalize_capabilities(capabilities)
+        assert_kbs_in_space(self._kbs, space_id, kb_ids)
 
         plaintext = _PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
         # 先建档位再插 Key:api_keys.group_id 是 NOT NULL 外键,顺序反了插入即失败。
@@ -344,32 +344,6 @@ class ApiKeyService:
         if Role(membership.role) < minimum:
             raise AppError(ErrorCode.FORBIDDEN, "权限不足", http_status=403)
 
-    @staticmethod
-    def _normalize_capabilities(
-        raw: list[ApiCapability | str],
-    ) -> list[ApiCapability]:
-        """拒绝未知能力名(拼错的能力名不能变成"静默失效")。"""
-        try:
-            return [ApiCapability(str(item)) for item in raw]
-        except ValueError as exc:
-            allowed = ", ".join(str(c) for c in ApiCapability)
-            raise AppError(
-                ErrorCode.VALIDATION,
-                f"未知的能力名;允许值:{allowed}",
-                http_status=422,
-            ) from exc
-
-    def _assert_kbs_in_space(
-        self, space_id: uuid.UUID, kb_ids: list[uuid.UUID]
-    ) -> None:
-        """KB 范围必须落在本空间内,否则等于把一个租户的 Key 指向另一个租户的数据。"""
-        for kb_id in kb_ids:
-            kb = self._kbs.get(kb_id)
-            if kb is None or kb.space_id != space_id:
-                raise AppError(
-                    ErrorCode.KB_NOT_FOUND, f"知识库不存在:{kb_id}", http_status=404
-                )
-
     def _log(
         self,
         actor_id: uuid.UUID,
@@ -400,6 +374,29 @@ _CAPABILITY_LABELS: dict[ApiCapability, str] = {
 def hash_api_key(plaintext: str) -> str:
     """认证查找键:SHA-256(明文)。Key 本身是高熵随机串,无需加盐/慢哈希。"""
     return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+
+
+def normalize_capabilities(raw: list[ApiCapability | str]) -> list[ApiCapability]:
+    """拒绝未知能力名(拼错的能力名不能变成"静默失效")。Key 与权限档位共用这一份。"""
+    try:
+        return [ApiCapability(str(item)) for item in raw]
+    except ValueError as exc:
+        allowed = ", ".join(str(c) for c in ApiCapability)
+        raise AppError(
+            ErrorCode.VALIDATION,
+            f"未知的能力名;允许值:{allowed}",
+            http_status=422,
+        ) from exc
+
+
+def assert_kbs_in_space(
+    kbs: KnowledgeBaseRepository, space_id: uuid.UUID, kb_ids: list[uuid.UUID]
+) -> None:
+    """范围里的知识库必须落在本空间内,否则等于把一个租户的凭据指向另一个租户的数据。"""
+    for kb_id in kb_ids:
+        kb = kbs.get(kb_id)
+        if kb is None or kb.space_id != space_id:
+            raise AppError(ErrorCode.KB_NOT_FOUND, f"知识库不存在:{kb_id}", http_status=404)
 
 
 def _hint(plaintext: str) -> str:
