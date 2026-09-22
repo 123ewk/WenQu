@@ -49,6 +49,7 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
     "/api/v1/spaces/{space_id}/api-keys",
     "/api/v1/spaces/{space_id}/api-keys/{key_id}",
+    "/api/v1/spaces/{space_id}/api-keys/{key_id}/activate",
     "/api/v1/admin/model-protocols",
     "/api/v1/admin/model-providers",
     "/api/v1/admin/model-providers/{provider_id}",

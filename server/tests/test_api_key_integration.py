@@ -561,3 +561,85 @@ def test_revoke_requires_admin(client) -> None:
     assert resp.status_code == 403
     resp = client.delete(f"/api/v1/spaces/{space_id}/api-keys/{key['id']}", headers=auth)
     assert resp.status_code == 204
+
+
+# ---------------------------- 生效标记 activate(OPT-31) ----------------------------
+
+
+def _activate(client, auth: dict, space_id: str, key_id: str) -> dict:
+    resp = client.put(
+        f"/api/v1/spaces/{space_id}/api-keys/{key_id}/activate", headers=auth
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_activate_flags_single_active_and_switches_exclusively(client) -> None:
+    """两把 Key 先后激活:同成员至多一把 is_active(真库部分唯一索引链路)。"""
+    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    a = _create_key(client, auth, space_id, ["chat"], [kb_a], name="a")
+    b = _create_key(client, auth, space_id, ["chat"], [kb_a], name="b")
+    assert a["is_active"] is False and b["is_active"] is False
+
+    _activate(client, auth, space_id, b["id"])
+    out = _activate(client, auth, space_id, a["id"])  # 换绑到 a
+    assert out["id"] == a["id"] and out["is_active"] is True
+    flags = {
+        k["name"]: k["is_active"]
+        for k in client.get(
+            f"/api/v1/spaces/{space_id}/api-keys", headers=auth
+        ).json()
+    }
+    assert flags == {"a": True, "b": False}
+
+    logs = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["items"]
+    assert any(item["action"] == "api_key.activated" for item in logs)
+
+
+def test_activate_requires_admin(client) -> None:
+    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    editor_name = _uname("keyactivator")
+    editor = _register(client, editor_name)
+    client.post(
+        f"/api/v1/spaces/{space_id}/members",
+        json={"username": editor_name, "role": 20},
+        headers=auth,
+    )
+    key = _create_key(
+        client, auth, space_id, ["chat"], member_user_id=editor["user"]["id"]
+    )
+    resp = client.put(
+        f"/api/v1/spaces/{space_id}/api-keys/{key['id']}/activate",
+        headers={"Authorization": f"Bearer {editor['access_token']}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_activate_revoked_key_rejected(client) -> None:
+    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    key = _create_key(client, auth, space_id, ["chat"])
+    assert (
+        client.delete(
+            f"/api/v1/spaces/{space_id}/api-keys/{key['id']}", headers=auth
+        ).status_code
+        == 204
+    )
+    resp = client.put(
+        f"/api/v1/spaces/{space_id}/api-keys/{key['id']}/activate", headers=auth
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_inactive_key_still_authenticates_over_http(client) -> None:
+    """"换着用"语义:没被标为「正在使用」的 Key,HTTP 调用照常放行。"""
+    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    a = _create_key(client, auth, space_id, ["documents"], [kb_a], name="a")
+    b = _create_key(client, auth, space_id, ["documents"], [kb_a], name="b")
+    _activate(client, auth, space_id, b["id"])
+    base = f"/api/v1/spaces/{space_id}/knowledge-bases"
+    assert client.get(base, headers=_key_header(a["plaintext"])).status_code == 200
