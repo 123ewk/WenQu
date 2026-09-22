@@ -11,7 +11,7 @@
  *    写入门槛 Admin+,读入门槛 Viewer+。
  */
 import { http } from './http'
-import type { PermissionGroupOut, UpsertPermissionGroupRequest } from './types'
+import type { GroupMemberOut, PermissionGroupOut, UpsertPermissionGroupRequest } from './types'
 
 export function apiListPermissionGroups(spaceId: string): Promise<PermissionGroupOut[]> {
   return http.get<PermissionGroupOut[]>(`/spaces/${spaceId}/permission-groups`).then((r) => r.data)

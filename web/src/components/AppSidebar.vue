@@ -11,6 +11,7 @@ import {
   Expand,
   Fold,
   Key,
+  Lock,
   OfficeBuilding,
   Plus,
   Setting,
@@ -131,6 +132,9 @@ async function onLogout() {
       </router-link>
       <router-link to="/api-keys" class="nav-item" active-class="nav-active">
         <el-icon><Key /></el-icon><span class="sb-text">API Key</span>
+      </router-link>
+      <router-link to="/permission-groups" class="nav-item" active-class="nav-active">
+        <el-icon><Lock /></el-icon><span class="sb-text">权限档位</span>
       </router-link>
       <router-link to="/settings/models" class="nav-item" active-class="nav-active">
         <el-icon><Cpu /></el-icon><span class="sb-text">模型配置</span>
