@@ -21,7 +21,7 @@ from app.application.service.api_keys import ApiKeyService
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import ApiCapability, AuditAction, Role
 from app.domain.models import KnowledgeBase, PermissionGroup
-from tests.fakes import FakeKnowledgeBaseRepository, FakePermissionGroupRepository
+from tests.fakes import FakeKnowledgeBaseRepository
 from tests.test_auth_service import make_services
 
 _FORBIDDEN = ErrorCode.FORBIDDEN[1]
@@ -69,7 +69,9 @@ def make_api_env() -> SimpleNamespace:
     env.space_svc.add_member(space.id, owner.user, "editor", Role.EDITOR)
     api_keys = FakeApiKeyRepository()
     kbs = FakeKnowledgeBaseRepository()
-    groups = FakePermissionGroupRepository()
+    # 档位仓储与 SpaceService 用的是同一个 fake 实例:生产形态就是一套仓储,
+    # 而且"移出成员要顺带清挂载"这条链路必须跨两个服务看到同一份数据。
+    groups = env.groups
     svc = ApiKeyService(api_keys, env.spaces, kbs, env.audit, env.users, groups=groups)
     return SimpleNamespace(
         env=env,
@@ -141,6 +143,11 @@ def _create(scene: SimpleNamespace, **overrides):
         name=params["name"],
         description=params["description"],
     )
+
+
+def _perm(scene: SimpleNamespace, api_key):
+    """取 Key 的生效权限(OPT-41 N4)—— 每次重新读档位,判定的唯一入口。"""
+    return scene.svc.effective_permission(api_key)
 
 
 # ---------------------------- 创建与存储 ----------------------------
@@ -361,7 +368,7 @@ def test_owner_of_reports_current_role() -> None:
 def test_capability_check_allows_declared() -> None:
     scene = make_api_env()
     created = _create(scene, capabilities=[ApiCapability.CHAT])
-    scene.svc.require_capability(created.api_key, ApiCapability.CHAT)
+    _perm(scene, created.api_key).require_capability(ApiCapability.CHAT)
 
 
 def test_capability_check_denies_undeclared() -> None:
@@ -369,7 +376,7 @@ def test_capability_check_denies_undeclared() -> None:
     scene = make_api_env()
     created = _create(scene, capabilities=[ApiCapability.CHAT])
     with pytest.raises(AppError) as exc:
-        scene.svc.require_capability(created.api_key, ApiCapability.DOCUMENTS)
+        _perm(scene, created.api_key).require_capability(ApiCapability.DOCUMENTS)
     assert exc.value.code_str == _CAPABILITY_DENIED
     assert exc.value.http_status == 403
 
@@ -380,7 +387,7 @@ def test_empty_capabilities_denies_everything() -> None:
     created = _create(scene, capabilities=[])
     for cap in ApiCapability:
         with pytest.raises(AppError):
-            scene.svc.require_capability(created.api_key, cap)
+            _perm(scene, created.api_key).require_capability(cap)
 
 
 # ---------------------------- KB 范围二次收窄(读档位) ----------------------------
@@ -390,7 +397,7 @@ def test_group_with_all_kbs_does_not_restrict() -> None:
     """`all_kbs=true` 是显式勾选的"全部库" → None(不限制)。"""
     scene = make_api_env()
     created = _create(scene, all_kbs=True)
-    assert scene.svc.resolve_kb_scope(created.api_key, None) is None
+    assert _perm(scene, created.api_key).resolve_kb_scope(None) is None
 
 
 def test_group_without_any_kb_denies() -> None:
@@ -398,7 +405,7 @@ def test_group_without_any_kb_denies() -> None:
     scene = make_api_env()
     created = _create(scene, all_kbs=False, kb_ids=[])
     with pytest.raises(AppError) as exc:
-        scene.svc.resolve_kb_scope(created.api_key, None)
+        _perm(scene, created.api_key).resolve_kb_scope(None)
     assert exc.value.code_str == _SCOPE_DENIED
 
 
@@ -408,7 +415,7 @@ def test_kb_scope_narrows_requested_list() -> None:
     allowed = _add_kb(scene, "允许库")
     other = _add_kb(scene, "禁止库")
     created = _create(scene, all_kbs=False, kb_ids=[allowed])
-    assert scene.svc.resolve_kb_scope(created.api_key, [allowed, other]) == [allowed]
+    assert _perm(scene, created.api_key).resolve_kb_scope([allowed, other]) == [allowed]
 
 
 def test_kb_scope_outside_only_request_denied() -> None:
@@ -418,7 +425,7 @@ def test_kb_scope_outside_only_request_denied() -> None:
     other = _add_kb(scene, "禁止库")
     created = _create(scene, all_kbs=False, kb_ids=[allowed])
     with pytest.raises(AppError) as exc:
-        scene.svc.resolve_kb_scope(created.api_key, [other])
+        _perm(scene, created.api_key).resolve_kb_scope([other])
     assert exc.value.code_str == _SCOPE_DENIED
 
 
@@ -429,12 +436,12 @@ def test_permission_reads_the_group_live_not_a_snapshot() -> None:
     kb_b = _add_kb(scene, "B库")
     group = _group(scene, kb_ids=[kb_a], all_kbs=False)
     created = _create(scene, group_id=group.id)
-    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_a]
+    assert _perm(scene, created.api_key).resolve_kb_scope([kb_a, kb_b]) == [kb_a]
     group.kb_ids = [str(kb_b)]
-    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_b]
+    assert _perm(scene, created.api_key).resolve_kb_scope([kb_a, kb_b]) == [kb_b]
     group.capabilities = []
     with pytest.raises(AppError) as exc:
-        scene.svc.require_capability(created.api_key, ApiCapability.CHAT)
+        _perm(scene, created.api_key).require_capability(ApiCapability.CHAT)
     assert exc.value.code_str == _CAPABILITY_DENIED
 
 

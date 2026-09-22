@@ -886,6 +886,18 @@
               "format": "uuid",
               "title": "Member User Id"
             }
+          },
+          {
+            "name": "keep_mounts",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "OPT-41:true=保留此人的权限档位挂载行(再拉回来即恢复),false=一并删除(默认)",
+              "default": false,
+              "title": "Keep Mounts"
+            },
+            "description": "OPT-41:true=保留此人的权限档位挂载行(再拉回来即恢复),false=一并删除(默认)"
           }
         ],
         "responses": {

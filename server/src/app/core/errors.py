@@ -44,6 +44,9 @@ class ErrorCode:
     API_KEY_SCOPE_DENIED = (2012, "API_KEY_SCOPE_DENIED")
     # OPT-41 N2:Key 只能打它所属空间 —— 绑定成员在别的空间也是成员,只查成员身份挡不住
     API_KEY_SPACE_MISMATCH = (2013, "API_KEY_SPACE_MISMATCH")
+    # OPT-41 N1:核心接口(问答/检索/文档增删)必须有"生效档位"才能调 —— 403 不是 401:
+    # 人确实登录了,报 401 会把前端踢成"重新登录",而真正缺的是管理员还没给他配权限。
+    PERMISSION_GROUP_REQUIRED = (2014, "PERMISSION_GROUP_REQUIRED")
     # 3xxx 知识库与空间
     SPACE_NOT_FOUND = (3000, "SPACE_NOT_FOUND")
     MEMBER_NOT_FOUND = (3001, "MEMBER_NOT_FOUND")

@@ -437,10 +437,9 @@ class PermissionGroupMember(Base):
     - 一行 = "这个成员可以用这个档位";`is_current` 行 = 他**当前生效**的那一档;
     - 每人每空间至多一档 current(部分唯一索引 `uq_permission_group_one_current_per_member`);
     - 切换档位 = Admin+ 改 current 指针(成员不可自助,否则等于自己给自己提权);
-    - **移出空间不清挂载行**(移出不等于删用户,FK 也管不到 membership):他的 Key 在
-      认证阶段就因"人不在空间"失效,人链路同样按成员身份实时判定,所以留行不构成越权,
-      只是移出前的痕迹。代价是**重新入空间会带回原档位(含 current 指针)**,想让他换档
-      由 Admin 显式解除分配。
+    - **移出空间默认连带删掉挂载行**(`remove_member(keep_mounts=True)` 才保留):留着的挂载
+      是一行"没人管也看不见的权限",日后重新入空间会悄悄带回原档位。自己退空间没有可问的人,
+      恒清。保留下来的行在成员列表里 role 取不到 → 前端置灰展示。
     """
 
     __tablename__ = "permission_group_members"

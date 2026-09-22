@@ -22,7 +22,7 @@ from app.application.service.permission_groups import PermissionGroupService
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import ApiCapability, AuditAction, Role
 from app.domain.models import KnowledgeBase
-from tests.test_api_key_service import make_api_env
+from tests.test_api_key_service import _perm, make_api_env
 
 _FORBIDDEN = ErrorCode.FORBIDDEN[1]
 _NOT_FOUND = ErrorCode.NOT_FOUND[1]
@@ -164,7 +164,7 @@ def test_update_changes_a_key_that_is_already_in_use() -> None:
     created = scene.svc.create(
         scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="ci"
     )
-    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_a]
+    assert _perm(scene, created.api_key).resolve_kb_scope([kb_a, kb_b]) == [kb_a]
     scene.group_svc.update(
         scene.space_id,
         scene.owner,
@@ -175,7 +175,7 @@ def test_update_changes_a_key_that_is_already_in_use() -> None:
         kb_ids=[kb_b],
         all_kbs=False,
     )
-    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_b]
+    assert _perm(scene, created.api_key).resolve_kb_scope([kb_a, kb_b]) == [kb_b]
 
 
 def test_update_other_space_group_404() -> None:
@@ -346,12 +346,27 @@ def test_list_view_shows_members_with_live_role_and_current_flag() -> None:
     assert member.is_current is True
 
 
-def test_list_view_marks_removed_member_with_none_role() -> None:
-    """成员被移出后挂载行还在(移出 ≠ 删用户),role 取不到 → 前端据此置灰。"""
+def test_removal_clears_mounts_by_default() -> None:
+    """OPT-41:移出成员默认连带删掉档位挂载(留着的挂载是"没人能看见的权限")。
+
+    想保留(比如只是临时移出、之后拉回来即恢复)必须显式 `keep_mounts=True`,
+    这条选择由前端弹窗问操作者,服务端默认走安全的一侧。
+    """
     scene = make_group_env()
     group = _create(scene)
     scene.group_svc.assign(scene.space_id, scene.owner, group.id, scene.editor.id)
     scene.env.space_svc.remove_member(group.space_id, scene.owner, scene.editor.id)
+    assert scene.groups.members == {}
+
+
+def test_removal_can_keep_mounts_on_request() -> None:
+    """保留时挂载行还在,但人已不是成员 → 列表 role 取不到,前端据此置灰。"""
+    scene = make_group_env()
+    group = _create(scene)
+    scene.group_svc.assign(scene.space_id, scene.owner, group.id, scene.editor.id)
+    scene.env.space_svc.remove_member(
+        group.space_id, scene.owner, scene.editor.id, keep_mounts=True
+    )
     view = scene.group_svc.get(scene.space_id, scene.owner, group.id)
     (member,) = view.members
     assert member.role is None

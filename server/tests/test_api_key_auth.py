@@ -1,4 +1,4 @@
-"""API Key 路由授权表单测(OPT-6):fail-closed 语义。
+"""API Key 路由授权表单测(OPT-6 fail-closed;OPT-41 N1 人这一侧的两道闸)。
 
 测试意图:
 - 表内路由 → 返回对应能力;
@@ -6,14 +6,20 @@
 - 方法不匹配(用 Key GET 只读的 /ask)→ None;
 - 路径段数不同的相似路径 → None(模板匹配不能被追加段绕过);
 - 授权表与实际注册路由保持一致:表里登记的每条 (方法,路径) 都必须真实存在,
-  防止"表里写了个不存在的路由"这种假覆盖(用 OpenAPI 契约核对)。
+  防止"表里写了个不存在的路由"这种假覆盖(用 OpenAPI 契约核对);
+- OPT-41:同一张表派生"双凭据强制清单",人这一侧再分**动作闸**(六条会改数据/花额度
+  的路由)与**范围闸**(清单内全部路由),两张表必须同源 —— 有测试钉住子集关系。
 """
 
 from __future__ import annotations
 
 import uuid
 
-from app.api.api_key_auth import resolve_route_capability
+from app.api.api_key_auth import (
+    resolve_member_route_capability,
+    resolve_route_capability,
+    route_in_dual_list,
+)
 from app.domain.enums import ApiCapability
 
 _SPACE = str(uuid.uuid4())
@@ -162,3 +168,78 @@ def _same_shape(template: str, actual: str) -> bool:
         or (t_seg == a_seg and not t_seg.startswith("{"))
         for t_seg, a_seg in zip(t, a, strict=True)
     )
+
+
+# ---------------------------- OPT-41 N1:人这一侧的两道闸 ----------------------------
+
+
+def test_member_capability_routes_are_subset_of_grant_table() -> None:
+    """两道闸同源:动作闸子集必须真在授权表里,否则人链路的"要哪个能力"永远查不到(假闸)。
+
+    模板是字符串,拼错一个字符不会报错、只会静默少一道闸 —— 这条测试是唯一的兜底。
+    """
+    from app.api.api_key_auth import _MEMBER_CAPABILITY_ROUTES, _ROUTE_CAPABILITIES
+
+    granted = {route for allowed in _ROUTE_CAPABILITIES.values() for route in allowed}
+    assert _MEMBER_CAPABILITY_ROUTES <= granted, _MEMBER_CAPABILITY_ROUTES - granted
+
+
+def test_member_capability_gate_covers_writes_and_spend_routes() -> None:
+    """会改数据/花额度的六条:人也必须档位里有对应能力(口径 A,网页上不是法外之地)。"""
+    space = f"/api/v1/spaces/{_SPACE}"
+    kb_docs = f"{space}/knowledge-bases/{_KB}/documents"
+    gated = [
+        (f"{space}/ask", "POST", ApiCapability.CHAT),
+        (f"{space}/retrieval/search", "POST", ApiCapability.CHAT),
+        (f"{space}/conversations/{_DOC}/stream", "GET", ApiCapability.CHAT),
+        (kb_docs, "POST", ApiCapability.DOCUMENTS),
+        (f"{kb_docs}/{_DOC}", "DELETE", ApiCapability.DOCUMENTS),
+        (f"{kb_docs}/{_DOC}/reparse", "POST", ApiCapability.DOCUMENTS),
+    ]
+    for path, verb, cap in gated:
+        assert resolve_member_route_capability(path, verb) == cap, f"{verb} {path}"
+
+
+def test_readonly_list_routes_are_scope_only_for_members() -> None:
+    """只读路由(库列表/详情/文档列表/分块)不管动作,只受范围闸。
+
+    否则只有 chat 档位的成员打不开问答页的知识库下拉、看不了引用原文 —— 那是 UI 死锁,
+    不是安全收益(它照样只能看到档位范围内的库)。
+    """
+    space = f"/api/v1/spaces/{_SPACE}"
+    kb_docs = f"{space}/knowledge-bases/{_KB}/documents"
+    scope_only = [
+        (f"{space}/knowledge-bases", "GET"),
+        (f"{space}/knowledge-bases/{_KB}", "GET"),
+        (kb_docs, "GET"),
+        (f"{kb_docs}/{_DOC}", "GET"),
+        (f"{kb_docs}/{_DOC}/chunks", "GET"),
+        (f"{kb_docs}/{_DOC}/chunks/{_KB}", "GET"),
+    ]
+    for path, verb in scope_only:
+        assert route_in_dual_list(path, verb) is True, f"{verb} {path}"
+        assert resolve_member_route_capability(path, verb) is None, f"{verb} {path}"
+
+
+def test_management_routes_are_outside_the_dual_list() -> None:
+    """§4.2 边界:空间/成员/档位/Key/模型配置/admin 都不在清单内 → 人链路只看角色。
+
+    清单外还要看档位的话,一个还没被配档位的 Admin 连"给自己建一档"的入口都没有,
+    整个空间就失去管理了。
+    """
+    space = f"/api/v1/spaces/{_SPACE}"
+    outside = [
+        (space, "PATCH"),
+        (f"{space}/members", "POST"),
+        (f"{space}/permission-groups", "GET"),
+        (f"{space}/permission-groups", "POST"),
+        (f"{space}/api-keys", "GET"),
+        (f"{space}/api-keys", "POST"),
+        (f"{space}/conversations", "GET"),
+        ("/api/v1/users/me", "GET"),
+        ("/api/v1/admin/models", "GET"),
+    ]
+    for path, verb in outside:
+        assert route_in_dual_list(path, verb) is False, f"{verb} {path}"
+        assert resolve_member_route_capability(path, verb) is None, f"{verb} {path}"
+

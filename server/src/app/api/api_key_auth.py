@@ -18,6 +18,16 @@
    检索/问答服务,不能只在这里判断而不传递。
 5. **Key 与所属空间绑定(OPT-41 N2)**:路径 `{space_id}` 与 `api_key.space_id`
    不一致一律 403 —— 归因成员在别的空间里也是成员,只查成员身份挡不住跨空间。
+6. **OPT-41 N1:同一张表也是"双凭据强制清单"的来源**(口径 A,见 §4.2 的边界)。
+   表里登记的路由 = 一期要求"人也必须有生效档位"的路由,表外的管理接口(空间、成员、
+   档位、Key、模型配置、`/admin/*`)**只看角色**,不看档位 —— 否则 Admin 在还没配档位时
+   连"给自己建一档"的入口都没有。人这一侧再分两道闸:
+   - **动作闸**(`resolve_member_route_capability`):只在真正会改动数据或花额度的路由上
+     要求能力,即 `_MEMBER_CAPABILITY_ROUTES` 那六条(问答/检索/续流 + 文档增删/重解析);
+   - **范围闸**(`route_in_dual_list`):清单内**全部**路由都受档位知识库范围约束,包括
+     只读的 KB 列表/详情/文档列表/分块 —— 因为问答页的知识库下拉吃的就是
+     `GET /knowledge-bases`,若连它也要 `documents` 能力,只有 `chat` 档位的成员就打不开
+     自己的问答页(读引用原文同理)。只读路由放范围闸、不放动作闸,是刻意的。
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ from app.application.repository.permission_groups import PermissionGroupReposito
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.api_keys import ApiKeyService
+from app.application.service.effective_permission import EffectivePermission
 from app.core.db import get_db
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import ApiCapability
@@ -92,11 +103,55 @@ _ROUTE_CAPABILITIES: dict[ApiCapability, set[tuple[str, str]]] = {
 }
 
 
+# 「双凭据强制清单」里**人也受能力闸**约束的路由子集(Q2 一期口径:问答、检索、
+# 文档增删/重解析)。清单内的只读路由只受范围闸(见模块文档第 6 点),否则只有 chat
+# 档位的成员连问答页的知识库下拉和引用原文都打不开。必须是 _ROUTE_CAPABILITIES 的
+# 子集 —— 有测试钉住,防止两张表各改一半。
+_MEMBER_CAPABILITY_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("/api/v1/spaces/{space_id}/ask", "POST"),
+        ("/api/v1/spaces/{space_id}/retrieval/search", "POST"),
+        ("/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream", "GET"),
+        ("/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents", "POST"),
+        (
+            "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}",
+            "DELETE",
+        ),
+        (
+            "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}"
+            "/reparse",
+            "POST",
+        ),
+    }
+)
+
+
 def resolve_route_capability(path: str, method: str) -> ApiCapability | None:
-    """查表:该路由允许哪个能力访问;None = 未登记 → 用 Key 访问一律拒绝。"""
+    """程序链路查表:该路由允许哪个能力访问;None = 未登记 → 用 Key 访问一律拒绝。"""
+    return _lookup(path, method, None)
+
+
+def resolve_member_route_capability(path: str, method: str) -> ApiCapability | None:
+    """人链路的能力闸:只认 _MEMBER_CAPABILITY_ROUTES 子集;None = 该路由不管动作。"""
+    return _lookup(path, method, _MEMBER_CAPABILITY_ROUTES)
+
+
+def route_in_dual_list(path: str, method: str) -> bool:
+    """该路由是否在「双凭据强制清单」内(人也要有生效档位 + 数据范围受档位约束)。"""
+    return resolve_route_capability(path, method) is not None
+
+
+def _lookup(
+    path: str,
+    method: str,
+    restrict: frozenset[tuple[str, str]] | None,
+) -> ApiCapability | None:
+    """按能力表查路由;`restrict` 给出时只看子集(人链路)。"""
     verb = method.upper()
     for capability, allowed in _ROUTE_CAPABILITIES.items():
         for template, allowed_verb in allowed:
+            if restrict is not None and (template, allowed_verb) not in restrict:
+                continue
             if allowed_verb == verb and _template_matches(template, path):
                 return capability
     return None
@@ -121,11 +176,16 @@ def _template_matches(template: str, actual: str) -> bool:
 
 @dataclass(frozen=True)
 class ApiKeyPrincipal:
-    """以 API Key 身份发起的调用主体(Key 以绑定成员身份行事,OPT-26)。"""
+    """以 API Key 身份发起的调用主体(Key 以绑定成员身份行事,OPT-26)。
+
+    `perm` 是这次调用的生效权限(来自 Key 所属档位),认证阶段就算好带出来 —— 路由只
+    消费它,不再回头查 Key 的权限(合成器 N4 的第一处落点)。
+    """
 
     api_key: ApiKey
     space_id: uuid.UUID
     actor_id: uuid.UUID
+    perm: EffectivePermission
 
 
 def build_api_key_service(db: Session) -> ApiKeyService:
@@ -188,10 +248,13 @@ def get_api_key_principal(
             http_status=403,
             details={"route": request.url.path, "reason": "route_not_grantable"},
         )
-    service.require_capability(api_key, required)
+    perm = service.effective_permission(api_key)
+    perm.require_capability(required)
 
     # 主体 = 归因成员(存量旧 Key 回退 created_by,authenticate 已保证非空)
     actor_id = api_key.owner_user_id or api_key.created_by
     if actor_id is None:
         raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
-    return ApiKeyPrincipal(api_key=api_key, space_id=api_key.space_id, actor_id=actor_id)
+    return ApiKeyPrincipal(
+        api_key=api_key, space_id=api_key.space_id, actor_id=actor_id, perm=perm
+    )

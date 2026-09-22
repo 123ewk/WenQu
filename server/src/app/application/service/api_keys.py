@@ -12,11 +12,9 @@
   服务层 403,权限实时收敛;
 - **明文只出现一次**:签发时返回完整 Key,库里只留 SHA-256 哈希与截断提示串;
 - **认证 = 哈希等值查找**,不做明文比对,不遍历库;
-- **能力级授权 fail-closed**:档位能力清单为空 = 什么都不允许;路由授权表里没有的路由
-  用 Key 访问一律拒绝(表见 `app/api/api_key_auth.py`);
-- **KB 范围二次收窄**:档位勾了具体库时,请求里落在范围外的 KB 被剔除;若请求只要范围外
-  的 KB,直接拒绝,绝不静默降级成"全部";`all_kbs=false` 且没勾库 = **一个都不给**(403),
-  与"空能力清单 = 什么都不允许"同构 —— 想放开全部库必须显式勾 `all_kbs`。
+- **授权判定不在本服务里**:`effective_permission(api_key)` 只负责把 Key 的档位交给
+  生效权限合成器(见 `effective_permission.py`),能力闸与 KB 范围收窄由它统一实现 ——
+  人(JWT)链路走同一个合成器,两条链路口径必然一致,不会再各改各的。
 
 档位读取按请求缓存(`_group_cache`):一次请求内 Key → 档位最多查一次库,列表接口
 不为每把 Key 各查一遍。
@@ -30,6 +28,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.application.service.effective_permission import (
+    SOURCE_API_KEY,
+    EffectivePermission,
+    permission_of_group,
+)
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import ApiCapability, AuditAction, Role
 from app.domain.interfaces import (
@@ -215,44 +218,11 @@ class ApiKeyService:
 
     # ---------------------------- 授权判定 ----------------------------
 
-    def require_capability(self, api_key: ApiKey, capability: ApiCapability) -> None:
-        """能力级授权:看档位,不看 Key(空清单什么都不允许)。"""
-        if str(capability) not in (self._group_of(api_key).capabilities or []):
-            raise AppError(
-                ErrorCode.API_KEY_CAPABILITY_DENIED,
-                f"该 API Key 的档位未授予「{_CAPABILITY_LABELS.get(capability, capability)}」能力",
-                http_status=403,
-            )
-
-    def resolve_kb_scope(
-        self, api_key: ApiKey, requested: list[uuid.UUID] | None
-    ) -> list[uuid.UUID] | None:
-        """把请求的 KB 列表按**档位范围**收窄。
-
-        - `all_kbs=true` → None(不限制;每次请求实时展开,新建的库自动在范围内);
-        - 勾了具体库 → 与请求求交;请求为空时取全部范围;交集为空 → 403;
-        - `all_kbs=false` 且没勾库 → 403,一个都不给(fail-closed,见模块文档)。
-        """
-        group = self._group_of(api_key)
-        if group.all_kbs:
-            return None
-        scope = _parse_uuid_list(group.kb_ids)
-        if not scope:
-            raise AppError(
-                ErrorCode.API_KEY_SCOPE_DENIED,
-                "该 API Key 的档位没有勾选任何知识库",
-                http_status=403,
-            )
-        if not requested:
-            return scope
-        narrowed = [kb_id for kb_id in requested if kb_id in scope]
-        if not narrowed:
-            raise AppError(
-                ErrorCode.API_KEY_SCOPE_DENIED,
-                "该 API Key 无权访问请求的知识库",
-                http_status=403,
-            )
-        return narrowed
+    def effective_permission(self, api_key: ApiKey) -> EffectivePermission:
+        """Key 的生效权限快照:权限来自它所属的档位(判定全在合成器里,N4)。"""
+        return permission_of_group(
+            self._group_of(api_key), source=SOURCE_API_KEY, api_key_id=api_key.id
+        )
 
     # ---------------------------- 内部 ----------------------------
 
@@ -329,12 +299,6 @@ class ApiKeyService:
         )
 
 
-_CAPABILITY_LABELS: dict[ApiCapability, str] = {
-    ApiCapability.CHAT: "对话检索",
-    ApiCapability.DOCUMENTS: "文档管理",
-}
-
-
 def hash_api_key(plaintext: str) -> str:
     """认证查找键:SHA-256(明文)。Key 本身是高熵随机串,无需加盐/慢哈希。"""
     return hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
@@ -368,14 +332,3 @@ def _hint(plaintext: str) -> str:
     if len(plaintext) <= _HINT_HEAD + _HINT_TAIL:
         return plaintext
     return f"{plaintext[:_HINT_HEAD]}****{plaintext[-_HINT_TAIL:]}"
-
-
-def _parse_uuid_list(raw: list | None) -> list[uuid.UUID]:
-    """JSONB 里存的是字符串;解析失败的值直接丢弃(视为不在范围内)。"""
-    result: list[uuid.UUID] = []
-    for item in raw or []:
-        try:
-            result.append(uuid.UUID(str(item)))
-        except ValueError:
-            continue
-    return result

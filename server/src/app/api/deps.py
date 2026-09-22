@@ -10,7 +10,12 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.api.api_key_auth import build_api_key_service, get_api_key_principal
+from app.api.api_key_auth import (
+    build_api_key_service,
+    get_api_key_principal,
+    resolve_member_route_capability,
+    route_in_dual_list,
+)
 from app.application.agent.loop import ToolCallingChat
 from app.application.repository.api_keys import ApiKeyRepositoryImpl
 from app.application.repository.audit import AuditRepositoryImpl
@@ -33,6 +38,10 @@ from app.application.repository.tokens import RefreshTokenRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.api_keys import ApiKeyService
 from app.application.service.auth import AuthService
+from app.application.service.effective_permission import (
+    EffectivePermission,
+    permission_of_member,
+)
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.model_admin import ModelAdminService
 from app.application.service.permission_groups import PermissionGroupService
@@ -103,13 +112,18 @@ def get_current_superuser(user: User = Depends(get_current_user)) -> User:
 
 @dataclass(frozen=True)
 class Caller:
-    """统一调用主体:人(JWT)或程序(API Key,以创建者身份行事)。
+    """统一调用主体:人(JWT)或程序(API Key,以归因成员身份行事)。
 
-    api_key 为 None = JWT 调用;非 None 时路由须按 Key 的 KB 范围收窄 kb_ids。
+    `perm` = 这次调用的**生效权限**(OPT-41 N4 合成器的唯一输出):
+    - 程序链路:一定非 None(一直如此),来自 Key 所属档位;
+    - 人链路:只在「双凭据强制清单」内的路由、且灰度开关打开时才非 None;
+      None = 这条路由不看档位,只看成员角色(§4.2 边界,管理接口据此不受影响)。
+    路由要收窄知识库一律读 `caller.perm`,不要再写 `if caller.api_key is not None`。
     """
 
     user: User
     api_key: ApiKey | None
+    perm: EffectivePermission | None = None
 
 
 def get_current_actor(
@@ -119,8 +133,9 @@ def get_current_actor(
 ) -> Caller:
     """双认证入口:优先 X-API-Key(程序化调用),否则 Bearer JWT(人)。
 
-    - API Key 链路:认证 + 路由授权表(fail-closed,见 api_key_auth)都在
-      get_api_key_principal 里完成;Key 只在其授权表登记的路由上可用;
+    - API Key 链路:认证 + 路由授权表 + 生效权限都在 get_api_key_principal 里完成;
+      Key 只在其授权表登记的路由上可用;
+    - 人链路:按 §4.2 只给「双凭据强制清单」内的路由解析档位(见 _member_perm_for);
     - 只带 JWT / 只带 Key / 都带(Key 优先)三种情况行为明确,不静默混合。
     """
     if request.headers.get("x-api-key", "").strip():
@@ -128,8 +143,52 @@ def get_current_actor(
         user = db.get(User, principal.actor_id)
         if user is None:  # 创建者被删除;authenticate 已挡 created_by 为空的情况
             raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
-        return Caller(user=user, api_key=principal.api_key)
-    return Caller(user=get_current_user(credentials, db), api_key=None)
+        return Caller(user=user, api_key=principal.api_key, perm=principal.perm)
+    return Caller(
+        user=get_current_user(credentials, db),
+        api_key=None,
+        perm=_member_perm_for(request, credentials, db),
+    )
+
+
+def _member_perm_for(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+    db: Session,
+) -> EffectivePermission | None:
+    """人这条链路的生效档位:服务端按 JWT 成员解析,明文永不进浏览器(N1)。
+
+    返回 None 的两种情况都刻意为之(§4.2 边界):
+    - 灰度开关未打开 —— 上线那一刻若全员没配好档位,真人用户会集体掉进禁用态;
+    - 路由不在「双凭据强制清单」内 —— 空间/成员/档位/Key/模型配置和 `/admin/*` 只看角色,
+      否则 Admin 在还没配档位时会连建档位的入口都没有,空间失去管理。
+    """
+    if not get_settings().require_permission_group_for_core:
+        return None
+    if not route_in_dual_list(request.url.path, request.method):
+        return None
+    space_id = _path_space_id(request)
+    if space_id is None:  # 清单内路由恒带 {space_id};真取不到就退回"只看角色"
+        return None
+    user = get_current_user(credentials, db)
+    perm = permission_of_member(
+        PermissionGroupRepositoryImpl(db), SpaceRepositoryImpl(db), space_id, user.id
+    )
+    capability = resolve_member_route_capability(request.url.path, request.method)
+    if capability is not None:
+        perm.require_capability(capability)
+    return perm
+
+
+def _path_space_id(request: Request) -> uuid.UUID | None:
+    """路径里的 {space_id}(已匹配路由的 path_params,不是查询串);取不到或畸形 → None。"""
+    raw = request.path_params.get("space_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
 
 
 # ---------------------------- 仓储与服务 ----------------------------
@@ -164,8 +223,10 @@ def get_space_service(
     spaces: SpaceRepository = Depends(get_space_repository),
     users: UserRepository = Depends(get_user_repository),
     audit: AuditRepository = Depends(get_audit_repository),
+    db: Session = Depends(get_db),
 ) -> SpaceService:
-    return SpaceService(spaces, users, audit)
+    # mounts:移出成员时要一并清掉他的档位挂载(OPT-41),默认不保留
+    return SpaceService(spaces, users, audit, mounts=PermissionGroupRepositoryImpl(db))
 
 
 # ---------------------------- M2 知识域 ----------------------------
