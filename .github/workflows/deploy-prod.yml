@@ -1,0 +1,54 @@
+name: deploy-prod
+
+# 发布链:打 v* tag → 复用三条 CI 门禁(全绿)→ production 环境人工审批 → 生产机 runner 本机构建并部署。
+# merge 到 main 不触发任何东西;dev 栈不在本工作流职责内。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false # 部署中途不取消:半发布状态比排队更危险
+
+jobs:
+  gate-server:
+    name: 门禁 server
+    uses: ./.github/workflows/server.yml
+  gate-parser:
+    name: 门禁 parser
+    uses: ./.github/workflows/parser.yml
+  gate-web:
+    name: 门禁 web
+    uses: ./.github/workflows/web.yml
+
+  deploy:
+    name: 发布生产
+    needs: [gate-server, gate-parser, gate-web]
+    runs-on: [self-hosted, prod, wenqu-deploy]
+    environment:
+      name: production # 该 Environment 配了 required reviewers:不点批准就不会落到生产
+    env:
+      ACR_HOST: registry.cn-hangzhou.aliyuncs.com
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+      WENQU_IMAGE_PREFIX: registry.cn-hangzhou.aliyuncs.com/${{ secrets.ACR_NAMESPACE }}
+      WENQU_ENV_FILE: /home/ubuntu/wenqu/.env # 业务密钥只在服务器上,CD 链路不接触
+      WENQU_STATE_FILE: /home/ubuntu/wenqu/.deploy-state
+      BACKUP_DIR: /home/ubuntu/wenqu/backups
+      WEB_URL: http://127.0.0.1 # runner 与栈同机,走宿主回环经 nginx 入口
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 登录 ACR(归档位;失败不阻断部署)
+        continue-on-error: true
+        run: printf '%s' "$ACR_PASSWORD" | docker login "$ACR_HOST" -u "$ACR_USERNAME" --password-stdin
+
+      - name: 构建并部署 ${{ github.ref_name }}
+        run: bash deploy/deploy.sh "${GITHUB_REF_NAME}"
+
+      - name: 部署后快照(排障用)
+        if: always()
+        run: docker compose ls && docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
