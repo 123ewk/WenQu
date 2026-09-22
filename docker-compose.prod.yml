@@ -1,0 +1,145 @@
+# WenQu 生产部署 compose(由根目录生产模板 docker-compose.yml 改造,对应工单 8 条要求)。
+# 用法:docker compose -f docker-compose.prod.yml --env-file .env up -d
+# 与模板的差异:restart 一律 always;migrate 保留(翻转项 #12:迁移失败阻断启动)。
+# 口径不变项:web 镜像是 nginx-unprivileged 非 root,容器内监听 8080,宿主机映射为 80:8080;
+#   server/worker 除 env_file 外必须用 environment 覆盖网络坐标(MINIO/PARSER 默认值是 localhost,容器内不可达);
+#   口令/密钥全部 ${...:?} fail-closed,.env 留空即 compose 拒起。
+# 上线前请先完成 docs/上线手册.md 的 Go-Live 翻转项并双人复核。
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-10m}"
+    max-file: "${LOG_MAX_FILE:-5}"
+
+# server/worker 共用的应用环境变量(容器网络内的权威坐标,优先于 .env 同名项)
+x-app-env: &app-env
+  APP_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-wenqu}"
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:?}"
+  MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:?}"
+  PARSER_GRPC_ADDR: "parser:50051"
+  PARSER_GRPC_TOKEN: "${PARSER_GRPC_TOKEN:?}"
+
+services:
+  web:
+    build: ./web # 多阶段:node 构建 → nginx-unprivileged 托管,SPA fallback + /api 反代 + SSE buffering off
+    ports:
+      - "${WEB_HTTP_PORT:-80}:8080" # 唯一对外入口;容器内监听 8080,不是 80
+    depends_on:
+      - server
+    restart: always
+    logging: *default-logging
+
+  migrate:
+    build:
+      context: . # server 依赖同仓 wenqu-parser 路径包,上下文为仓库根
+      dockerfile: server/Dockerfile
+    command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
+    env_file: .env
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no" # 一次性任务:exit 0 后 server/worker 才起;非零即阻断
+    logging: *default-logging
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file: .env
+    environment: *app-env
+    expose:
+      - "8000" # 不映射宿主端口,仅 web 反代可达
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      parser:
+        condition: service_healthy
+    restart: always
+    logging: *default-logging
+
+  worker:
+    build:
+      context: . # 与 server 同一镜像(同 build 规格,compose 会复用同一构建缓存)
+      dockerfile: server/Dockerfile
+    command: ["uv", "run", "--no-sync", "python", "-m", "app.worker"]
+    env_file: .env
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      parser:
+        condition: service_healthy
+    restart: always
+    logging: *default-logging
+
+  parser:
+    build: ./parser
+    environment:
+      PARSER_LISTEN_ADDR: "0.0.0.0:50051" # gRPC 不接受裸 ":50051"(host must not be empty)
+      PARSER_REQUIRE_TOKEN: "1" # 生产强制 Token(镜像不内置默认,fail-closed 由 compose 注入)
+      PARSER_GRPC_TOKEN: "${PARSER_GRPC_TOKEN:?请在 .env 设置解析服务 Token}"
+    expose:
+      - "50051" # 仅内网可达,不映射宿主端口
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;socket.create_connection(('127.0.0.1',50051),3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: always
+    logging: *default-logging
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?请在 .env 设置数据库用户}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?请在 .env 设置数据库强口令}"
+      POSTGRES_DB: "${POSTGRES_DB:-wenqu}"
+    volumes:
+      - wenqu_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?} -d ${POSTGRES_DB:-wenqu}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # 不映射宿主端口,仅容器网络内可达
+    restart: always
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z # 钉 tag 而非 latest;升级时按基准改用 digest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?请在 .env 设置对象存储用户}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?请在 .env 设置对象存储强口令}"
+    volumes:
+      - wenqu_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 不映射宿主端口;9001 控制台仅内网,需要时临时 docker exec 或加 SSH 隧道
+    restart: always
+    logging: *default-logging
+
+volumes:
+  wenqu_pgdata:
+  wenqu_minio:
