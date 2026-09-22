@@ -176,6 +176,47 @@ class ApiKeyService:
             )
         return api_key
 
+    def activate(
+        self, space_id: uuid.UUID, user: User, key_id: uuid.UUID, ip: str = ""
+    ) -> ApiKey:
+        """把 Key 标为绑定成员的「正在使用」(OPT-31,Admin+ 分配语义)。
+
+        - 同成员原生效 Key 自动置 false(库层部分唯一索引兜底互斥);
+        - 纯管理标记:不参与 authenticate 热路径,未标记的未吊销 Key 仍可调用;
+        - 对已是生效态的 Key 重复调用 = 幂等无操作。
+        """
+        self._require_role(space_id, user.id, Role.ADMIN)
+        api_key = self._keys.get(key_id)
+        if api_key is None or api_key.space_id != space_id:
+            raise AppError(ErrorCode.NOT_FOUND, "API Key 不存在", http_status=404)
+        if api_key.revoked_at is not None:
+            raise AppError(ErrorCode.VALIDATION, "已吊销的 Key 不能设为正在使用", http_status=400)
+        bound = api_key.member_user_id or api_key.created_by
+        if bound is None:
+            raise AppError(
+                ErrorCode.VALIDATION, "绑定成员已注销的 Key 不能设为正在使用", http_status=400
+            )
+        if not api_key.is_active:
+            for sibling in self._keys.list_for_space(space_id):
+                if (
+                    sibling.id != api_key.id
+                    and sibling.is_active
+                    and (sibling.member_user_id or sibling.created_by) == bound
+                ):
+                    sibling.is_active = False
+                    self._keys.save(sibling)
+            api_key.is_active = True
+            self._keys.save(api_key)
+            self._log(
+                actor_id=user.id,
+                space_id=space_id,
+                action=AuditAction.API_KEY_ACTIVATED,
+                target=api_key.name,
+                detail={"member_user_id": str(bound)},
+                ip=ip,
+            )
+        return api_key
+
     # ---------------------------- 认证(热路径) ----------------------------
 
     def member_of(self, api_key: ApiKey) -> tuple[User | None, int | None]:

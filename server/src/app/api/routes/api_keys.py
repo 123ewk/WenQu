@@ -6,6 +6,8 @@
 - **签发/吊销要求 Admin+**(与拉成员同权),创建 body 必须指定 `member_user_id`
   (该空间的现存成员);列表 Viewer+;
 - Key 以绑定成员身份行事:成员被移出 = Key 即时失效,成员降级 = 高权限路由被拒;
+- `is_active`「正在使用」标记(OPT-31):Admin+ 经 `PUT /{key_id}/activate` 分配,
+  同成员至多一把;**仅管理语义,不参与认证**——未标记的未吊销 Key 照常可用;
 - capability 取值:chat(对话检索)/ documents(文档管理);kb_ids 为空 = 全部知识库。
 """
 
@@ -53,6 +55,7 @@ class ApiKeyOut(BaseModel):
     created_by_name: str | None = None
     capabilities: list[str]
     kb_ids: list[str]
+    is_active: bool = False  # 「正在使用」分配标记(OPT-31,Admin+ 设定,成员互斥)
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
     created_at: datetime | None = None
@@ -82,6 +85,7 @@ def _out(view: ApiKeyWithMember) -> ApiKeyOut:
         created_by_name=view.created_by_name,
         capabilities=list(api_key.capabilities or []),
         kb_ids=[str(kb) for kb in (api_key.kb_ids or [])],
+        is_active=bool(api_key.is_active),
         revoked_at=api_key.revoked_at,
         last_used_at=api_key.last_used_at,
         created_at=api_key.created_at,
@@ -135,3 +139,24 @@ def revoke_api_key(
     ip: str = Depends(get_client_ip),
 ) -> None:
     service.revoke(space_id, user, key_id, ip)
+
+
+@router.put("/{key_id}/activate", response_model=ApiKeyOut)
+def activate_api_key(
+    space_id: uuid.UUID,
+    key_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: ApiKeyService = Depends(get_api_key_service),
+    ip: str = Depends(get_client_ip),
+) -> ApiKeyOut:
+    # 设为「正在使用」(OPT-31):Admin+ 分配,同成员原生效 Key 自动置 false;幂等
+    activated = service.activate(space_id, user, key_id, ip)
+    member, member_role = service.member_of(activated)
+    return _out(
+        ApiKeyWithMember(
+            api_key=activated,
+            member=member,
+            member_role=member_role,
+            created_by_name=None,
+        )
+    )

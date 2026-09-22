@@ -71,6 +71,7 @@ class AuditAction(StrEnum):
     DOCUMENT_REPARSED = "document.reparsed"
     API_KEY_CREATED = "api_key.created"
     API_KEY_REVOKED = "api_key.revoked"
+    API_KEY_ACTIVATED = "api_key.activated"  # OPT-31 设为"正在使用"(成员互斥切换)
     # OPT-25 自定义模型管理(superuser 操作,全部留痕)
     MODEL_PROVIDER_CREATED = "model_provider.created"
     MODEL_PROVIDER_UPDATED = "model_provider.updated"

@@ -703,6 +703,9 @@ def test_probes_success_and_upstream_reason_mapping(
     assert "鉴权" in _message_for(401)
     assert "不可用" in _message_for(403)
     assert "upstream" not in _message_for(403)  # 厂商响应体不外泄
+    # 兜底桶那支(dev 没有稳定返回 429 的上游,只能在这里钉):status 必须进 message,
+    # 否则前端透显后用户只会看到"上游返回异常"四个字。
+    assert "status=429" in _message_for(429)
 
     _patch_protocol(monkeypatch, _ProbeAdapter(fail=httpx.ConnectError("no route")))
     resp = client.post(f"{base}/providers/{pid}/test", headers=owner)
