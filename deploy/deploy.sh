@@ -28,6 +28,8 @@ die() { printf '[deploy][失败] %s\n' "$*" >&2; exit 1; }
 
 [ -f "$ROOT/$COMPOSE_FILE" ] || die "找不到 $ROOT/$COMPOSE_FILE"
 [ -f "$ENV_FILE" ] || die "找不到生产 .env: $ENV_FILE(用 WENQU_ENV_FILE 指定)"
+# 缺 curl 会让门 3 空转 HEALTH_TRIES 次才失败,提前拒;此时可退化为 docker compose exec 探活
+command -v curl >/dev/null || die "本机缺 curl,无法做健康校验(门 3 会空转到超时,先装 curl)"
 
 # 存量卷前缀探测:卷名形如 <project>_wenqu_pgdata,每行一个拥有数据卷的候选项目。
 detect_project() {
