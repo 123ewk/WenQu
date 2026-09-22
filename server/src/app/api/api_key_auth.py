@@ -13,6 +13,8 @@
    不用正则(易写错且难读)。
 4. **KB 范围收窄在服务调用前完成**:调用方拿到收窄后的 `kb_ids` 必须传给
    检索/问答服务,不能只在这里判断而不传递。
+5. **Key 与所属空间绑定(OPT-41 N2)**:路径 `{space_id}` 与 `api_key.space_id`
+   不一致一律 403 —— 绑定成员在别的空间里也是成员,只查成员身份挡不住跨空间。
 """
 
 from __future__ import annotations
@@ -133,6 +135,17 @@ def build_api_key_service(db: Session) -> ApiKeyService:
     )
 
 
+def _request_space_id(request: Request) -> uuid.UUID | None:
+    """路径里的 {space_id};没有该段或畸形 → None(由路由自身的参数校验处理)。"""
+    raw = request.path_params.get("space_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        return None
+
+
 def get_api_key_principal(
     request: Request,
     db: Session = Depends(get_db),
@@ -150,6 +163,17 @@ def get_api_key_principal(
     api_key = service.authenticate(raw)
     if api_key is None:
         raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
+
+    # OPT-41 N2:Key 只能打它所属的空间。绑定成员在别的空间里同样是成员,
+    # 只校验"成员 ∈ 路径空间"挡不住跨空间;路径空间与 Key 空间不一致就拒。
+    path_space_id = _request_space_id(request)
+    if path_space_id is not None and path_space_id != api_key.space_id:
+        raise AppError(
+            ErrorCode.API_KEY_SPACE_MISMATCH,
+            "该 API Key 不属于这个空间",
+            http_status=403,
+            details={"reason": "space_mismatch"},
+        )
 
     required = resolve_route_capability(request.url.path, request.method)
     if required is None:

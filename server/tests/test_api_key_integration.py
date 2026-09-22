@@ -228,6 +228,37 @@ def test_search_capability_and_scope(client) -> None:
     assert resp.status_code == 503
 
 
+def test_key_cannot_cross_into_another_space_of_the_same_member(client) -> None:
+    """OPT-41 N2:Key 只能打它所属的空间 —— 同一个人两个空间也挡得住。
+
+    修复前:A 空间签发、kb_ids 为空(=不限制)的 Key 打 B 空间的 KB 列表会 **200 返回 B 的库**,
+    因为认证只校验"绑定成员 ∈ 路径空间",而 Key 自己的 space_id 从未参与判断。
+    """
+    owner, space_a, kb_a, kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_b = client.post("/api/v1/spaces", json={"name": "另一空间"}, headers=auth).json()["id"]
+    kb_b2 = client.post(
+        f"/api/v1/spaces/{space_b}/knowledge-bases", json={"name": "B的库"}, headers=auth
+    ).json()["id"]
+
+    key_a = _create_key(client, auth, space_a, ["documents"], [], name="A空间Key")
+
+    # A 空间本身 → 放行,空范围 = A 的两个库都看得到
+    listed_a = client.get(
+        f"/api/v1/spaces/{space_a}/knowledge-bases", headers=_key_header(key_a["plaintext"])
+    )
+    assert listed_a.status_code == 200, listed_a.text
+    assert {kb["id"] for kb in listed_a.json()} == {kb_a, kb_b}
+
+    # 同一把 Key 打 B 空间 → 403(修复前是 200 并泄露 B 的库)
+    resp = client.get(
+        f"/api/v1/spaces/{space_b}/knowledge-bases", headers=_key_header(key_a["plaintext"])
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "API_KEY_SPACE_MISMATCH"
+    assert kb_b2 not in resp.text
+
+
 def test_search_in_scope_returns_hits_with_stub_embedder(client) -> None:
     """范围 + 能力 + 认证三道闸全过后,真库检索返回命中(带假 embedder)。"""
     import app.main as main_module
