@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.application.repository.api_keys import ApiKeyRepositoryImpl
 from app.application.repository.audit import AuditRepositoryImpl
 from app.application.repository.knowledge import KnowledgeBaseRepositoryImpl
+from app.application.repository.permission_groups import PermissionGroupRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.users import UserRepositoryImpl
 from app.application.service.api_keys import ApiKeyService
@@ -132,6 +133,7 @@ def build_api_key_service(db: Session) -> ApiKeyService:
         KnowledgeBaseRepositoryImpl(db),
         AuditRepositoryImpl(db),
         UserRepositoryImpl(db),
+        groups=PermissionGroupRepositoryImpl(db),
     )
 
 

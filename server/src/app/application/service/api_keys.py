@@ -13,7 +13,10 @@
 - **能力级授权 fail-closed**:能力清单为空 = 什么都不允许;路由授权表里没有的路由
   用 Key 访问一律拒绝(表见 `app/api/api_key_auth.py`);
 - **KB 范围二次收窄**:范围非空时,请求里落在范围外的 KB 被剔除;若请求只要范围外
-  的 KB,直接拒绝,绝不静默降级成"全部"。
+  的 KB,直接拒绝,绝不静默降级成"全部";
+- **OPT-41 双写(迁移期)**:签发与分配时同步写"权限档位"(`permission_groups`)及其成员
+  挂载行,Key 的 `group_id` 指向该档位。旧列(`capabilities`/`kb_ids`/`is_active`)此阶段
+  仍照常写入,读取口径在后续切片统一切到档位,期间两套真相必须保持一致。
 """
 
 from __future__ import annotations
@@ -30,10 +33,11 @@ from app.domain.interfaces import (
     ApiKeyRepository,
     AuditRepository,
     KnowledgeBaseRepository,
+    PermissionGroupRepository,
     SpaceRepository,
     UserRepository,
 )
-from app.domain.models import ApiKey, AuditLog, User
+from app.domain.models import ApiKey, AuditLog, PermissionGroup, PermissionGroupMember, User
 
 _TOKEN_BYTES = 32  # 256 bit 熵;sha256 哈希后 64 位十六进制
 _PREFIX = "sk-live-"
@@ -67,13 +71,16 @@ class ApiKeyService:
         kbs: KnowledgeBaseRepository,
         audit: AuditRepository,
         users: UserRepository | None = None,
+        *,
+        groups: PermissionGroupRepository,
     ) -> None:
-        # users 为 OPT-26 新增依赖;允许缺省以兼容旧装配(仅绑定成员相关的接口会用到)
+        # users 为 OPT-26 新增依赖;groups 为 OPT-41 权限档位依赖(签发时同步派生一档)
         self._keys = api_keys
         self._spaces = spaces
         self._kbs = kbs
         self._audit = audit
         self._users = users
+        self._groups = groups
 
     # ---------------------------- 签发与管理 ----------------------------
 
@@ -99,10 +106,24 @@ class ApiKeyService:
         self._assert_kbs_in_space(space_id, kb_ids)
 
         plaintext = _PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
+        # 先建档位再插 Key:api_keys.group_id 是 NOT NULL 外键,顺序反了插入即失败。
+        # 旧列(caps/kb_ids)与档位同源写入,两套真相在迁移期必须逐字一致。
+        group = self._groups.create(
+            PermissionGroup(
+                space_id=space_id,
+                name=name,
+                description=description,
+                capabilities=[str(c) for c in caps],
+                kb_ids=[str(kb_id) for kb_id in kb_ids],
+                all_kbs=not kb_ids,
+                created_by=user.id,
+            )
+        )
         api_key = ApiKey(
             space_id=space_id,
             created_by=user.id,
             member_user_id=member_user_id,
+            group_id=group.id,
             name=name,
             description=description,
             key_hash=hash_api_key(plaintext),
@@ -111,6 +132,14 @@ class ApiKeyService:
             kb_ids=[str(kb_id) for kb_id in kb_ids],
         )
         self._keys.create(api_key)
+        # 挂载行建为非 current,与 is_active=False 的旧口径对齐(分配动作才置 current)
+        self._groups.add_member(
+            PermissionGroupMember(
+                group_id=group.id,
+                space_id=space_id,
+                user_id=member_user_id,
+            )
+        )
         self._log(
             actor_id=user.id,
             space_id=space_id,
@@ -207,12 +236,16 @@ class ApiKeyService:
                     self._keys.save(sibling)
             api_key.is_active = True
             self._keys.save(api_key)
+            self._set_current_group(space_id, api_key.group_id, bound)
             self._log(
                 actor_id=user.id,
                 space_id=space_id,
                 action=AuditAction.API_KEY_ACTIVATED,
                 target=api_key.name,
-                detail={"member_user_id": str(bound)},
+                detail={
+                    "member_user_id": str(bound),
+                    "group_id": str(api_key.group_id),
+                },
                 ip=ip,
             )
         return api_key
@@ -283,6 +316,21 @@ class ApiKeyService:
         return narrowed
 
     # ---------------------------- 内部 ----------------------------
+
+    def _set_current_group(
+        self, space_id: uuid.UUID, group_id: uuid.UUID, user_id: uuid.UUID
+    ) -> None:
+        """把成员的"当前档位"指针指向该 Key 的档位(OPT-41 双写,与 is_active 同义)。
+
+        挂载行可能因成员被移出时清理过而缺失;此时补一行,保证指针与标记一致。
+        """
+        member = self._groups.get_member(group_id, user_id)
+        if member is None:
+            member = self._groups.add_member(
+                PermissionGroupMember(group_id=group_id, space_id=space_id, user_id=user_id)
+            )
+        self._groups.clear_current(space_id, user_id)
+        member.is_current = True
 
     def _require_role(
         self, space_id: uuid.UUID, user_id: uuid.UUID, minimum: Role

@@ -379,6 +379,11 @@ class ApiKey(Base):
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)
     key_hint: Mapped[str] = mapped_column(String(32))
+    # 所属权限档位(OPT-41):能力与知识库范围由档位承载,Key 只是它的程序化凭据
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("permission_groups.id", ondelete="RESTRICT")
+    )
+    # ⚠️ 以下三列 + is_active 是 OPT-41 待删的旧口径(迁移 0018 移除),现由 group 承载
     capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     # "正在使用"分配标记(OPT-31):Admin+ 设定,成员每把未吊销 Key 仍可调用
@@ -394,6 +399,77 @@ class ApiKey(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PermissionGroup(Base):
+    """权限档位(OPT-41 R6-b):一个空间内的"一种权限"。
+
+    为什么需要它:成员身份只有角色阶梯(Viewer/Editor/Admin/Owner),**分不出
+    "能检索哪些知识库**;而 OPT-41 之前那套"一把 Key 绑一个成员"让权限跟着凭据走,
+    既不能复用也不能改。档位把两者拆开:
+    - 权限(能力 + 知识库范围)只在 `permission_groups` 一处真相;
+    - `api_keys` 退化成档位的**程序化凭据**(一个档位可多把,轮换互不影响);
+    - 成员通过 `permission_group_members` 挂到档位上,`is_current` 标出他当前在用哪一档
+      (取代 OPT-31 的 `api_keys.is_active`;每人每空间至多一档,部分唯一索引兜底)。
+
+    `all_kbs = true` 表示"本空间全部知识库",**每次请求实时展开**,不落快照
+    (存快照会让新建的库永远进不了范围)。`all_kbs = false` 时范围就是 `kb_ids`,
+    空数组 = 一个都不允许(fail-closed,与 `capabilities` 同构)。
+
+    档位名**不要求唯一**(回填期每把 Key 派生一档,而 Key 名本就可重名);管理按 id 定位。
+    """
+
+    __tablename__ = "permission_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    all_kbs: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PermissionGroupMember(Base):
+    """成员 ↔ 档位的挂载关系(OPT-41)。
+
+    - 一行 = "这个成员可以用这个档位";`is_current` 行 = 他**当前生效**的那一档;
+    - 每人每空间至多一档 current(部分唯一索引 `uq_permission_group_one_current_per_member`);
+    - 切换档位 = Admin+ 改 current 指针(成员不可自助,否则等于自己给自己提权);
+    - 成员被移出空间时他的挂载行由服务层显式清理(移出空间 ≠ 删用户,不能靠 FK 级联)。
+    """
+
+    __tablename__ = "permission_group_members"
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="uq_permission_group_member_user"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("permission_groups.id", ondelete="CASCADE")
+    )
+    # 冗余 space_id:租户谓词 + "每人每空间至多一档 current" 的唯一索引都要它
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

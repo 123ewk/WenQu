@@ -20,7 +20,7 @@ from app.application.service.api_keys import ApiKeyService
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import ApiCapability, AuditAction, Role
 from app.domain.models import KnowledgeBase
-from tests.fakes import FakeKnowledgeBaseRepository
+from tests.fakes import FakeKnowledgeBaseRepository, FakePermissionGroupRepository
 from tests.test_auth_service import make_services
 
 _FORBIDDEN = ErrorCode.FORBIDDEN[1]
@@ -70,12 +70,14 @@ def make_api_env() -> SimpleNamespace:
     env.space_svc.add_member(space.id, owner.user, "editor", Role.EDITOR)
     api_keys = FakeApiKeyRepository()
     kbs = FakeKnowledgeBaseRepository()
-    svc = ApiKeyService(api_keys, env.spaces, kbs, env.audit, env.users)
+    groups = FakePermissionGroupRepository()
+    svc = ApiKeyService(api_keys, env.spaces, kbs, env.audit, env.users, groups=groups)
     return SimpleNamespace(
         env=env,
         svc=svc,
         api_keys=api_keys,
         kbs=kbs,
+        groups=groups,
         owner=owner.user,
         admin=admin.user,
         editor=editor.user,
@@ -545,3 +547,75 @@ def test_inactive_key_still_authenticates() -> None:
     _activated(scene, b.api_key.id)  # a 被挤下"正在使用"
     assert scene.svc.authenticate(a.plaintext) is not None
     assert scene.svc.authenticate(b.plaintext) is not None
+
+
+# ---------------------------- 权限档位双写(OPT-41 迁移期) ----------------------------
+
+
+def test_create_derives_group_with_identical_permissions() -> None:
+    """签发即派生一档:能力/范围与旧列逐字一致,空范围翻译成显式 all_kbs。"""
+    scene = make_api_env()
+    kb = _add_kb(scene, "产品手册")
+    created = _create(
+        scene,
+        capabilities=[ApiCapability.CHAT, ApiCapability.DOCUMENTS],
+        kb_ids=[kb],
+    )
+    key = created.api_key
+    group = scene.groups.get(key.group_id)
+    assert group is not None
+    assert group.space_id == scene.space_id
+    assert group.name == key.name and group.description == key.description
+    assert group.capabilities == key.capabilities
+    assert group.kb_ids == key.kb_ids
+    assert group.all_kbs is False
+    assert group.created_by == scene.owner.id
+
+
+def test_create_with_empty_scope_translates_to_all_kbs() -> None:
+    """旧语义"空范围 = 不限制"必须变成档位上的显式全部,而不是"一个都不给"。"""
+    scene = make_api_env()
+    created = _create(scene)
+    group = scene.groups.get(created.api_key.group_id)
+    assert group.all_kbs is True and group.kb_ids == []
+
+
+def test_create_mounts_member_as_not_current() -> None:
+    """挂载行建了但不是 current —— 分配动作才决定成员当前用哪一档。"""
+    scene = make_api_env()
+    created = _create(scene)
+    members = scene.groups.list_members(created.api_key.group_id)
+    assert [(m.user_id, m.is_current) for m in members] == [(scene.owner.id, False)]
+
+
+def test_activate_moves_current_group_pointer() -> None:
+    """分配 = 切 current 指针,与 is_active 同批生效;同人旧档位自动落位。"""
+    scene = make_api_env()
+    a = _create(scene, name="a")
+    b = _create(scene, name="b")
+    _activated(scene, a.api_key.id)
+    _activated(scene, b.api_key.id)
+    current = scene.groups.get_current(scene.space_id, scene.owner.id)
+    assert current is not None and current.group_id == b.api_key.group_id
+    assert scene.groups.get_member(a.api_key.group_id, scene.owner.id).is_current is False
+
+
+def test_activate_does_not_duplicate_mount() -> None:
+    """重复分配同一把 Key 不产生第二行挂载(唯一约束 group+user)。"""
+    scene = make_api_env()
+    created = _create(scene)
+    _activated(scene, created.api_key.id)
+    _activated(scene, created.api_key.id)
+    assert len(scene.groups.list_members(created.api_key.group_id)) == 1
+
+
+def test_activate_recreates_missing_mount() -> None:
+    """挂载曾被清理(成员移出过)时补回一行,不留"生效但无指针"的 Key。"""
+    scene = make_api_env()
+    created = _create(scene)
+    group_id = created.api_key.group_id
+    mount = scene.groups.get_member(group_id, scene.owner.id)
+    scene.groups.delete_member(mount.id)
+    _activated(scene, created.api_key.id)
+    current = scene.groups.get_current(scene.space_id, scene.owner.id)
+    assert current is not None and current.group_id == group_id
