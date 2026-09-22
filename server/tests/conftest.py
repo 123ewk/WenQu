@@ -74,3 +74,67 @@ def register(client, username: str) -> dict:
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
+
+
+# ---------------------------- OPT-41 两件套:先档位后凭据 ----------------------------
+#
+# 新契约下 Key 的权限(能力 + 知识库范围)全部来自档位,所以"建一把能用 chat 的 Key"
+# 在集成测试里恒为两步。收在这里,免得四个文件各写一遍、改契约时漏改。
+
+
+def create_group(
+    client,
+    auth: dict,
+    space_id: str,
+    *,
+    name: str = "档位",
+    capabilities: list[str] | tuple[str, ...] = ("chat",),
+    kb_ids: list[str] | tuple[str, ...] = (),
+    all_kbs: bool | None = None,
+    description: str = "",
+) -> dict:
+    """建一个权限档位并返回详情。
+
+    `all_kbs` 缺省沿用旧直觉"没勾库 = 全部";要测 fail-closed 的"一个库都不给"必须
+    显式传 `all_kbs=False`(与生产口径一致:放开全部库是显式动作)。
+    """
+    kb_list = list(kb_ids)
+    body = {
+        "name": name,
+        "description": description,
+        "capabilities": list(capabilities),
+        "kb_ids": kb_list,
+        "all_kbs": (not kb_list) if all_kbs is None else all_kbs,
+    }
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/permission-groups", json=body, headers=auth
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def create_key(
+    client,
+    auth: dict,
+    space_id: str,
+    group_id: str,
+    *,
+    name: str = "ci-key",
+    owner_user_id: str | None = None,
+    description: str = "",
+) -> dict:
+    """给一个档位配一把凭据(归因成员缺省为调用者本人)。"""
+    if owner_user_id is None:
+        owner_user_id = client.get("/api/v1/users/me", headers=auth).json()["id"]
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/api-keys",
+        json={
+            "name": name,
+            "description": description,
+            "group_id": group_id,
+            "owner_user_id": owner_user_id,
+        },
+        headers=auth,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()

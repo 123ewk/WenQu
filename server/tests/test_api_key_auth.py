@@ -53,7 +53,7 @@ def test_reparse_maps_to_documents() -> None:
 
 
 def test_unregistered_routes_denied() -> None:
-    """表外路由:用户资料、成员管理、审计、会话管理、空间删除……一律 None。"""
+    """表外路由:用户资料、成员管理、审计、会话管理、空间删除、档位管理……一律 None。"""
     denied = [
         ("/api/v1/users/me", "GET"),
         ("/api/v1/users/me/password", "POST"),
@@ -66,6 +66,22 @@ def test_unregistered_routes_denied() -> None:
         ("/api/v1/auth/login", "POST"),
     ]
     for path, method in denied:
+        assert resolve_route_capability(path, method) is None, f"{method} {path}"
+
+
+def test_permission_group_routes_never_grantable() -> None:
+    """OPT-41:档位管理端点不进授权表 —— Key 用 X-API-Key 改自己的档位 = 提权,一律拒。"""
+    groups = f"/api/v1/spaces/{_SPACE}/permission-groups"
+    for path, method in [
+        (groups, "GET"),
+        (groups, "POST"),
+        (f"{groups}/{_KB}", "GET"),
+        (f"{groups}/{_KB}", "PATCH"),
+        (f"{groups}/{_KB}", "DELETE"),
+        (f"{groups}/{_KB}/members", "POST"),
+        (f"{groups}/{_KB}/members/{_DOC}", "DELETE"),
+        (f"{groups}/{_KB}/current", "PUT"),
+    ]:
         assert resolve_route_capability(path, method) is None, f"{method} {path}"
 
 

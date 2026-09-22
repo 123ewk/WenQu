@@ -215,7 +215,9 @@ def backfilled() -> Iterator[sa.Engine]:
         try:
             with engine.begin() as conn:
                 _seed_legacy(conn)
-            command.upgrade(_alembic_config(), "head")
+            # 钉死在 0017 而不是 head:0018 会删掉旧列,而本模块的断言正是要拿
+            # api_keys.capabilities/kb_ids/is_active 与档位逐行比对(0018 之后旧列已不存在)。
+            command.upgrade(_alembic_config(), "0017")
             yield engine
         finally:
             engine.dispose()
@@ -340,5 +342,5 @@ def test_downgrade_is_clean_and_re_upgradable(backfilled: sa.Engine) -> None:
         assert "permission_group_members" not in tables
         assert "group_id" not in key_cols
     finally:
-        command.upgrade(_alembic_config(), "head")
+        command.upgrade(_alembic_config(), "0017")
     assert "permission_groups" in _inspect(url)[0]

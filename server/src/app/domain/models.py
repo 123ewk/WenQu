@@ -337,33 +337,26 @@ class Message(Base):
 
 
 class ApiKey(Base):
-    """程序化接入凭据(OPT-6,OPT-26 起绑定成员):只存 SHA-256 哈希,明文仅创建时回显一次。
+    """程序化接入凭据(OPT-6;OPT-26 起绑成员;OPT-41 起权限只来自档位)。
+
+    只存 SHA-256 哈希,明文仅创建时回显一次。
 
     - `key_hash` 唯一索引:认证时按哈希等值查找,不需要遍历解密;
-    - `member_user_id`:Key 以**该成员**身份行事(OPT-26)。签发者须有拉成员权限
-      (Admin+);校验 = Key 本身有效 ∧ 绑定成员仍在空间,路由权限随成员角色实时变化
-      (被移出 = Key 失效,降级 = 高权限路由被服务层拦下)。
-      旧数据/旧语义回退 `created_by`(迁移 0012 已回填,列可空仅因 users SET NULL);
-    - `created_by`:签发操作者(审计 actor),不再参与运行时身份;
-    - `capabilities`:能力级授权(路由授权表 fail-closed),空数组 = 无任何能力;
-    - `kb_ids`:二次收窄的知识库范围,空数组 = 全部 KB(仍受绑定成员身份约束);
-    - `is_active`:「正在使用」分配标记(OPT-31),Admin+ 为成员设定,同成员至多
-      一把生效(部分唯一索引);**仅管理语义,不参与认证**,未标记的未吊销 Key 仍可调用;
+    - `group_id`:能力清单与知识库范围的**唯一真相**在 `permission_groups`(该类文档
+      说明了为什么要拆这一层)。一个档位可挂多把明文,轮换互不影响;改档位权限即时
+      作用于其下全部 Key —— 这是"吊销重签"做不到的。外键 RESTRICT:档位下还有凭据时
+      不可删,删档位不会留下"权限凭空消失的 Key";
+    - `owner_user_id`:这把 Key **以谁的身份行事**(OPT-26)。OPT-41 起它只剩两件事:
+      ① 调用归因(审计 actor、消息归属、用量记账都落在此人身上);② 身份有效性 ——
+      本人被移出空间即 401(人走 Key 停),被降级则高权限路由被服务层角色闸拦下。
+      它**不再决定权限**(旧 `capabilities`/`kb_ids` 列已删,见迁移 0018);
+      列可空仅因 FK 是 SET NULL,存量行取值回退 `created_by`(迁移 0012 已回填);
+    - `created_by`:签发操作者(审计留痕),不参与运行时判定;
     - 吊销 = 置 `revoked_at`(保留行,审计与"最近使用"仍有据可查)。
     """
 
     __tablename__ = "api_keys"
-    __table_args__ = (
-        Index("ix_api_keys_space_created", "space_id", "created_at"),
-        # 同空间同成员至多一把"正在使用"(分配标记,不参与认证热路径)
-        Index(
-            "uq_api_keys_one_active_per_member",
-            "space_id",
-            "member_user_id",
-            unique=True,
-            postgresql_where=text("is_active AND revoked_at IS NULL"),
-        ),
-    )
+    __table_args__ = (Index("ix_api_keys_space_created", "space_id", "created_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     space_id: Mapped[uuid.UUID] = mapped_column(
@@ -372,22 +365,18 @@ class ApiKey(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    member_user_id: Mapped[uuid.UUID | None] = mapped_column(
+    # 身份锚点:Key 以此人在空间内的身份行事(权限不看这一列,看 group_id)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)
     key_hint: Mapped[str] = mapped_column(String(32))
-    # 所属权限档位(OPT-41):能力与知识库范围由档位承载,Key 只是它的程序化凭据
+    # 所属权限档位(OPT-41):能力与知识库范围全在档位上
     group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("permission_groups.id", ondelete="RESTRICT")
     )
-    # ⚠️ 以下三列 + is_active 是 OPT-41 待删的旧口径(迁移 0018 移除),现由 group 承载
-    capabilities: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
-    kb_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
-    # "正在使用"分配标记(OPT-31):Admin+ 设定,成员每把未吊销 Key 仍可调用
-    is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -448,7 +437,10 @@ class PermissionGroupMember(Base):
     - 一行 = "这个成员可以用这个档位";`is_current` 行 = 他**当前生效**的那一档;
     - 每人每空间至多一档 current(部分唯一索引 `uq_permission_group_one_current_per_member`);
     - 切换档位 = Admin+ 改 current 指针(成员不可自助,否则等于自己给自己提权);
-    - 成员被移出空间时他的挂载行由服务层显式清理(移出空间 ≠ 删用户,不能靠 FK 级联)。
+    - **移出空间不清挂载行**(移出不等于删用户,FK 也管不到 membership):他的 Key 在
+      认证阶段就因"人不在空间"失效,人链路同样按成员身份实时判定,所以留行不构成越权,
+      只是移出前的痕迹。代价是**重新入空间会带回原档位(含 current 指针)**,想让他换档
+      由 Admin 显式解除分配。
     """
 
     __tablename__ = "permission_group_members"

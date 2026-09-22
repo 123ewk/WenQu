@@ -49,7 +49,12 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
     "/api/v1/spaces/{space_id}/api-keys",
     "/api/v1/spaces/{space_id}/api-keys/{key_id}",
-    "/api/v1/spaces/{space_id}/api-keys/{key_id}/activate",
+    # OPT-41 权限档位:Key 只是凭据,权限全部由档位承载
+    "/api/v1/spaces/{space_id}/permission-groups",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members/{user_id}",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/current",
     "/api/v1/admin/model-protocols",
     "/api/v1/admin/model-providers",
     "/api/v1/admin/model-providers/{provider_id}",
@@ -255,6 +260,8 @@ def test_unified_error_shell_on_protected_endpoints() -> None:
         ("GET", f"/api/v1/spaces/{space}/conversations/{_uuid.uuid4()}/stream"),
         ("POST", f"/api/v1/spaces/{space}/knowledge-bases"),
         ("DELETE", f"/api/v1/spaces/{space}/api-keys/{_uuid.uuid4()}"),
+        ("GET", f"/api/v1/spaces/{space}/permission-groups"),
+        ("DELETE", f"/api/v1/spaces/{space}/permission-groups/{_uuid.uuid4()}"),
     ]
     client = TestClient(create_app(), raise_server_exceptions=False)
     for method, path in protected:

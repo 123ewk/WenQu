@@ -1,22 +1,25 @@
-"""API Key 服务(OPT-6,OPT-26 起绑定成员):签发、认证、能力级授权、KB 范围收窄、吊销。
+"""API Key 服务(OPT-6;OPT-26 起绑成员;OPT-41 起权限只读档位):签发、认证、授权、吊销。
 
-安全语义(与 `docs/架构设计.md` §8 对齐):
-- **绑定成员,Admin+ 签发**:签发 Key 必须指定空间成员 `member_user_id`,操作者须具备
-  与"拉成员"同级的权限(Role.ADMIN+)——能拉人进来的人才能替这个人配程序化凭据;
-  `created_by` 只作签发操作者留痕,不再参与运行时身份;
-- **双重校验**:`authenticate` = ① Key 本身有效(哈希命中、未吊销)② 绑定成员身份仍在
-  空间(get_member 命中);此后路由授权天然跟随**成员自己的角色**(各业务服务的
-  `_require_role` 以 Caller.user = 绑定成员判定):成员被移出 → Key 立即 401;
-  成员被降级 → 高权限路由被服务层 403,权限实时收敛;
+安全语义(与 `docs/架构设计.md` §8、`docs/需求单` OPT-41 对齐):
+- **权限只有一处真相**:能力清单与知识库范围都从 Key 的 `group_id` 读(见
+  `PermissionGroupService`);Key 本身只剩"凭据 + 归因"。改一次档位,其下全部凭据
+  即时生效或收窄,不需要重发明文;
+- **签发 = 给一个档位配凭据**,Admin+ 才能做(与"拉成员"同闸);`owner_user_id` 只是
+  这把凭据以谁的身份行事,不再决定他能做什么;
+- **双重校验**:`authenticate` = ① Key 本身有效(哈希命中、未吊销)② 归因成员身份仍在
+  空间(get_membership 命中);此后路由授权天然跟随**该成员自己的角色**(各业务服务的
+  `_require_role` 以 Caller.user 判定):人被移出 → Key 立即 401,降级 → 高权限路由被
+  服务层 403,权限实时收敛;
 - **明文只出现一次**:签发时返回完整 Key,库里只留 SHA-256 哈希与截断提示串;
 - **认证 = 哈希等值查找**,不做明文比对,不遍历库;
-- **能力级授权 fail-closed**:能力清单为空 = 什么都不允许;路由授权表里没有的路由
+- **能力级授权 fail-closed**:档位能力清单为空 = 什么都不允许;路由授权表里没有的路由
   用 Key 访问一律拒绝(表见 `app/api/api_key_auth.py`);
-- **KB 范围二次收窄**:范围非空时,请求里落在范围外的 KB 被剔除;若请求只要范围外
-  的 KB,直接拒绝,绝不静默降级成"全部";
-- **OPT-41 双写(迁移期)**:签发与分配时同步写"权限档位"(`permission_groups`)及其成员
-  挂载行,Key 的 `group_id` 指向该档位。旧列(`capabilities`/`kb_ids`/`is_active`)此阶段
-  仍照常写入,读取口径在后续切片统一切到档位,期间两套真相必须保持一致。
+- **KB 范围二次收窄**:档位勾了具体库时,请求里落在范围外的 KB 被剔除;若请求只要范围外
+  的 KB,直接拒绝,绝不静默降级成"全部";`all_kbs=false` 且没勾库 = **一个都不给**(403),
+  与"空能力清单 = 什么都不允许"同构 —— 想放开全部库必须显式勾 `all_kbs`。
+
+档位读取按请求缓存(`_group_cache`):一次请求内 Key → 档位最多查一次库,列表接口
+不为每把 Key 各查一遍。
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from app.domain.interfaces import (
     SpaceRepository,
     UserRepository,
 )
-from app.domain.models import ApiKey, AuditLog, PermissionGroup, PermissionGroupMember, User
+from app.domain.models import ApiKey, AuditLog, PermissionGroup, User
 
 _TOKEN_BYTES = 32  # 256 bit 熵;sha256 哈希后 64 位十六进制
 _PREFIX = "sk-live-"
@@ -54,12 +57,16 @@ class CreatedApiKey:
 
 
 @dataclass(frozen=True)
-class ApiKeyWithMember:
-    """列表视图:Key + 绑定成员(可能已被删除用户,置灰展示)+ 签发者名字。"""
+class ApiKeyWithOwner:
+    """列表/详情视图:凭据 + 所属档位 + 归因成员(可能已被移出)+ 签发者名字。
+
+    `group` 是这张视图里唯一的权限来源 —— 响应 DTO 直接照它出字段,旧列已无。
+    """
 
     api_key: ApiKey
-    member: User | None
-    member_role: int | None
+    group: PermissionGroup
+    owner: User | None
+    owner_role: int | None
     created_by_name: str | None
 
 
@@ -74,13 +81,15 @@ class ApiKeyService:
         *,
         groups: PermissionGroupRepository,
     ) -> None:
-        # users 为 OPT-26 新增依赖;groups 为 OPT-41 权限档位依赖(签发时同步派生一档)
+        # users 为 OPT-26 新增依赖;groups 为 OPT-41 权限档位依赖(权限的唯一来源)
         self._keys = api_keys
         self._spaces = spaces
         self._kbs = kbs
         self._audit = audit
         self._users = users
         self._groups = groups
+        # 服务实例按请求组装,所以这份缓存的作用域就是单个请求
+        self._group_cache: dict[uuid.UUID, PermissionGroup] = {}
 
     # ---------------------------- 签发与管理 ----------------------------
 
@@ -88,102 +97,70 @@ class ApiKeyService:
         self,
         space_id: uuid.UUID,
         user: User,
-        member_user_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        group_id: uuid.UUID,
         name: str,
-        description: str,
-        capabilities: list[ApiCapability | str],
-        kb_ids: list[uuid.UUID],
+        description: str = "",
         ip: str = "",
     ) -> CreatedApiKey:
+        """给一个档位配一把凭据。
+
+        这里**不**把 owner 挂到档位的成员列表上:成员列表表达的是"哪些人可以把这档
+        设成自己的当前档"(Admin 显式分配),而 Key 是程序化凭据。签发时顺手加人,
+        会让"给共享档位再签一把 Key"这个动作静默扩掉一档的成员集合。
+        """
         # "能拉成员的身份才能配 API":门槛与拉成员一致(Admin+),且签发留痕
         self._require_role(space_id, user.id, Role.ADMIN)
-        membership = self._spaces.get_member(space_id, member_user_id)
-        if membership is None:
+        if self._spaces.get_member(space_id, owner_user_id) is None:
             raise AppError(
                 ErrorCode.MEMBER_NOT_FOUND, "目标用户不是该空间成员", http_status=404
             )
-        caps = normalize_capabilities(capabilities)
-        assert_kbs_in_space(self._kbs, space_id, kb_ids)
+        group = self._groups.get(group_id)
+        # 跨空间的档位一律 404:把 A 空间的凭据指向 B 空间的权限就是串租户
+        if group is None or group.space_id != space_id:
+            raise AppError(ErrorCode.NOT_FOUND, "权限档位不存在", http_status=404)
 
         plaintext = _PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
-        # 先建档位再插 Key:api_keys.group_id 是 NOT NULL 外键,顺序反了插入即失败。
-        # 旧列(caps/kb_ids)与档位同源写入,两套真相在迁移期必须逐字一致。
-        group = self._groups.create(
-            PermissionGroup(
-                space_id=space_id,
-                name=name,
-                description=description,
-                capabilities=[str(c) for c in caps],
-                kb_ids=[str(kb_id) for kb_id in kb_ids],
-                all_kbs=not kb_ids,
-                created_by=user.id,
-            )
-        )
         api_key = ApiKey(
             space_id=space_id,
             created_by=user.id,
-            member_user_id=member_user_id,
+            owner_user_id=owner_user_id,
             group_id=group.id,
             name=name,
             description=description,
             key_hash=hash_api_key(plaintext),
             key_hint=_hint(plaintext),
-            capabilities=[str(c) for c in caps],
-            kb_ids=[str(kb_id) for kb_id in kb_ids],
         )
+        self._group_cache[group.id] = group
         self._keys.create(api_key)
-        # 挂载行建为非 current,与 is_active=False 的旧口径对齐(分配动作才置 current)
-        self._groups.add_member(
-            PermissionGroupMember(
-                group_id=group.id,
-                space_id=space_id,
-                user_id=member_user_id,
-            )
-        )
         self._log(
             actor_id=user.id,
             space_id=space_id,
             action=AuditAction.API_KEY_CREATED,
             target=name,
             detail={
-                "member_user_id": str(member_user_id),
-                "capabilities": [str(c) for c in caps],
-                "kb_scope": len(kb_ids),
+                "owner_user_id": str(owner_user_id),
+                "group_id": str(group.id),
+                "capabilities": list(group.capabilities or []),
+                "kb_scope": "all" if group.all_kbs else str(len(group.kb_ids or [])),
             },
             ip=ip,
         )
         return CreatedApiKey(api_key=api_key, plaintext=plaintext)
 
-    def list_for_space(self, space_id: uuid.UUID, user: User) -> list[ApiKeyWithMember]:
+    def list_for_space(self, space_id: uuid.UUID, user: User) -> list[ApiKeyWithOwner]:
         self._require_role(space_id, user.id, Role.VIEWER)
         keys = self._keys.list_for_space(space_id)
+        self._prefetch_groups(keys)
+        members = {u.id: (m, u) for m, u in self._spaces.list_members(space_id)}
+        return [self._view(key, members) for key in keys]
+
+    def describe(self, api_key: ApiKey) -> ApiKeyWithOwner:
+        """单条视图:签发响应与详情页共用(响应字段与列表完全一致,前端不用两套映射)。"""
         members = {
-            u.id: (m, u) for m, u in self._spaces.list_members(space_id)
+            u.id: (m, u) for m, u in self._spaces.list_members(api_key.space_id)
         }
-        creator_names: dict[uuid.UUID, str] = {}
-        if self._users is not None:
-            for k in keys:
-                if k.created_by is not None and k.created_by not in creator_names:
-                    creator = self._users.get(k.created_by)
-                    creator_names[k.created_by] = creator.username if creator else ""
-        views: list[ApiKeyWithMember] = []
-        for key in keys:
-            bound = key.member_user_id or key.created_by
-            entry = members.get(bound) if bound is not None else None
-            member, role = (entry[1], entry[0].role) if entry is not None else (None, None)
-            views.append(
-                ApiKeyWithMember(
-                    api_key=key,
-                    member=member,
-                    member_role=role,
-                    created_by_name=(
-                        creator_names.get(key.created_by)
-                        if key.created_by is not None
-                        else None
-                    ),
-                )
-            )
-        return views
+        return self._view(api_key, members)
 
     def revoke(
         self, space_id: uuid.UUID, user: User, key_id: uuid.UUID, ip: str = ""
@@ -205,56 +182,11 @@ class ApiKeyService:
             )
         return api_key
 
-    def activate(
-        self, space_id: uuid.UUID, user: User, key_id: uuid.UUID, ip: str = ""
-    ) -> ApiKey:
-        """把 Key 标为绑定成员的「正在使用」(OPT-31,Admin+ 分配语义)。
-
-        - 同成员原生效 Key 自动置 false(库层部分唯一索引兜底互斥);
-        - 纯管理标记:不参与 authenticate 热路径,未标记的未吊销 Key 仍可调用;
-        - 对已是生效态的 Key 重复调用 = 幂等无操作。
-        """
-        self._require_role(space_id, user.id, Role.ADMIN)
-        api_key = self._keys.get(key_id)
-        if api_key is None or api_key.space_id != space_id:
-            raise AppError(ErrorCode.NOT_FOUND, "API Key 不存在", http_status=404)
-        if api_key.revoked_at is not None:
-            raise AppError(ErrorCode.VALIDATION, "已吊销的 Key 不能设为正在使用", http_status=400)
-        bound = api_key.member_user_id or api_key.created_by
-        if bound is None:
-            raise AppError(
-                ErrorCode.VALIDATION, "绑定成员已注销的 Key 不能设为正在使用", http_status=400
-            )
-        if not api_key.is_active:
-            for sibling in self._keys.list_for_space(space_id):
-                if (
-                    sibling.id != api_key.id
-                    and sibling.is_active
-                    and (sibling.member_user_id or sibling.created_by) == bound
-                ):
-                    sibling.is_active = False
-                    self._keys.save(sibling)
-            api_key.is_active = True
-            self._keys.save(api_key)
-            self._set_current_group(space_id, api_key.group_id, bound)
-            self._log(
-                actor_id=user.id,
-                space_id=space_id,
-                action=AuditAction.API_KEY_ACTIVATED,
-                target=api_key.name,
-                detail={
-                    "member_user_id": str(bound),
-                    "group_id": str(api_key.group_id),
-                },
-                ip=ip,
-            )
-        return api_key
-
     # ---------------------------- 认证(热路径) ----------------------------
 
-    def member_of(self, api_key: ApiKey) -> tuple[User | None, int | None]:
-        """绑定成员当前档案与角色(成员已注销/已移出时对应项为 None)。"""
-        bound = api_key.member_user_id or api_key.created_by
+    def owner_of(self, api_key: ApiKey) -> tuple[User | None, int | None]:
+        """归因成员当前档案与角色(已被移出时对应项为 None)。"""
+        bound = api_key.owner_user_id or api_key.created_by
         if bound is None or self._users is None:
             return None, None
         membership = self._spaces.get_member(api_key.space_id, bound)
@@ -263,16 +195,16 @@ class ApiKeyService:
     def authenticate(self, plaintext: str) -> ApiKey | None:
         """按哈希查找并校验可用性;任何不通过都返回 None(调用方归一为 401)。
 
-        校验顺序刻意如此:格式 → 哈希命中 → 未吊销 → **绑定成员仍是成员**。
+        校验顺序刻意如此:格式 → 哈希命中 → 未吊销 → **归因成员仍是成员**。
         最后一步保证"人被移出/删除但 Key 还在跑"不会发生;存量旧 Key 无
-        member_user_id 时回退 created_by(迁移 0012 已回填,双保险)。
+        owner_user_id 时回退 created_by(迁移 0012 已回填,双保险)。
         """
         if not plaintext.startswith(_PREFIX):
             return None
         api_key = self._keys.get_by_hash(hash_api_key(plaintext))
         if api_key is None or api_key.revoked_at is not None:
             return None
-        bound = api_key.member_user_id or api_key.created_by
+        bound = api_key.owner_user_id or api_key.created_by
         if bound is None:
             return None
         if self._spaces.get_membership(api_key.space_id, bound) is None:
@@ -284,26 +216,33 @@ class ApiKeyService:
     # ---------------------------- 授权判定 ----------------------------
 
     def require_capability(self, api_key: ApiKey, capability: ApiCapability) -> None:
-        """能力级授权:未声明即拒绝(空清单什么都不允许)。"""
-        if str(capability) not in (api_key.capabilities or []):
+        """能力级授权:看档位,不看 Key(空清单什么都不允许)。"""
+        if str(capability) not in (self._group_of(api_key).capabilities or []):
             raise AppError(
                 ErrorCode.API_KEY_CAPABILITY_DENIED,
-                f"该 API Key 未授予「{_CAPABILITY_LABELS.get(capability, capability)}」能力",
+                f"该 API Key 的档位未授予「{_CAPABILITY_LABELS.get(capability, capability)}」能力",
                 http_status=403,
             )
 
     def resolve_kb_scope(
         self, api_key: ApiKey, requested: list[uuid.UUID] | None
     ) -> list[uuid.UUID] | None:
-        """把请求的 KB 列表按 Key 范围收窄。
+        """把请求的 KB 列表按**档位范围**收窄。
 
-        - 范围为空 → 返回 None(不限制,再交给空间成员身份把关);
-        - 范围非空 → 与请求求交;请求为空时取全部范围;
-        - 交集为空 → 403,不静默降级成"全部"。
+        - `all_kbs=true` → None(不限制;每次请求实时展开,新建的库自动在范围内);
+        - 勾了具体库 → 与请求求交;请求为空时取全部范围;交集为空 → 403;
+        - `all_kbs=false` 且没勾库 → 403,一个都不给(fail-closed,见模块文档)。
         """
-        scope = _parse_uuid_list(api_key.kb_ids)
-        if not scope:
+        group = self._group_of(api_key)
+        if group.all_kbs:
             return None
+        scope = _parse_uuid_list(group.kb_ids)
+        if not scope:
+            raise AppError(
+                ErrorCode.API_KEY_SCOPE_DENIED,
+                "该 API Key 的档位没有勾选任何知识库",
+                http_status=403,
+            )
         if not requested:
             return scope
         narrowed = [kb_id for kb_id in requested if kb_id in scope]
@@ -317,20 +256,45 @@ class ApiKeyService:
 
     # ---------------------------- 内部 ----------------------------
 
-    def _set_current_group(
-        self, space_id: uuid.UUID, group_id: uuid.UUID, user_id: uuid.UUID
-    ) -> None:
-        """把成员的"当前档位"指针指向该 Key 的档位(OPT-41 双写,与 is_active 同义)。
+    def _prefetch_groups(self, keys: list[ApiKey]) -> None:
+        """列表接口按 id 批量取档位,避免每把 Key 各查一次(N+1)。"""
+        missing = {k.group_id for k in keys if k.group_id not in self._group_cache}
+        if not missing:
+            return
+        for group in self._groups.list_by_ids(list(missing)):
+            self._group_cache[group.id] = group
 
-        挂载行可能因成员被移出时清理过而缺失;此时补一行,保证指针与标记一致。
-        """
-        member = self._groups.get_member(group_id, user_id)
-        if member is None:
-            member = self._groups.add_member(
-                PermissionGroupMember(group_id=group_id, space_id=space_id, user_id=user_id)
-            )
-        self._groups.clear_current(space_id, user_id)
-        member.is_current = True
+    def _group_of(self, api_key: ApiKey) -> PermissionGroup:
+        """Key 的权限来源。FK 是 RESTRICT,档位不可能先于引用它的 Key 消失。"""
+        group = self._group_cache.get(api_key.group_id)
+        if group is None:
+            group = self._groups.get(api_key.group_id)
+            if group is None:
+                raise AppError(
+                    ErrorCode.API_KEY_CAPABILITY_DENIED,
+                    "该 API Key 的权限档位不存在",
+                    http_status=403,
+                )
+            self._group_cache[group.id] = group
+        return group
+
+    def _view(self, api_key: ApiKey, members: dict) -> ApiKeyWithOwner:
+        bound = api_key.owner_user_id or api_key.created_by
+        entry = members.get(bound) if bound is not None else None
+        owner, role = (entry[1], entry[0].role) if entry is not None else (None, None)
+        return ApiKeyWithOwner(
+            api_key=api_key,
+            group=self._group_of(api_key),
+            owner=owner,
+            owner_role=role,
+            created_by_name=self._creator_name(api_key.created_by),
+        )
+
+    def _creator_name(self, created_by: uuid.UUID | None) -> str | None:
+        if created_by is None or self._users is None:
+            return None
+        creator = self._users.get(created_by)
+        return creator.username if creator else ""
 
     def _require_role(
         self, space_id: uuid.UUID, user_id: uuid.UUID, minimum: Role
@@ -392,7 +356,7 @@ def normalize_capabilities(raw: list[ApiCapability | str]) -> list[ApiCapability
 def assert_kbs_in_space(
     kbs: KnowledgeBaseRepository, space_id: uuid.UUID, kb_ids: list[uuid.UUID]
 ) -> None:
-    """范围里的知识库必须落在本空间内,否则等于把一个租户的凭据指向另一个租户的数据。"""
+    """范围里的库必须落在本空间内,否则等于把一个租户的凭据指向另一个租户的数据。"""
     for kb_id in kb_ids:
         kb = kbs.get(kb_id)
         if kb is None or kb.space_id != space_id:

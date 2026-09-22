@@ -155,6 +155,29 @@ def test_update_records_before_and_after_scope() -> None:
     ]
 
 
+def test_update_changes_a_key_that_is_already_in_use() -> None:
+    """"修复权限"的落点:改档位即时作用于其下已签发的 Key,不必吊销重签。"""
+    scene = make_group_env()
+    kb_a = _add_kb(scene, "A库")
+    kb_b = _add_kb(scene, "B库")
+    group = _create(scene, all_kbs=False, kb_ids=[kb_a])
+    created = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="ci"
+    )
+    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_a]
+    scene.group_svc.update(
+        scene.space_id,
+        scene.owner,
+        group.id,
+        name=group.name,
+        description="",
+        capabilities=[ApiCapability.CHAT],
+        kb_ids=[kb_b],
+        all_kbs=False,
+    )
+    assert scene.svc.resolve_kb_scope(created.api_key, [kb_a, kb_b]) == [kb_b]
+
+
 def test_update_other_space_group_404() -> None:
     scene = make_group_env()
     group = _create(scene)
@@ -204,11 +227,12 @@ def test_delete_clean_group_writes_audit() -> None:
 def test_delete_refused_while_keys_attached() -> None:
     """档位下还有凭据就不许删:FK 是 RESTRICT,服务层要先给出可读错误而不是 500。"""
     scene = make_group_env()
-    created = scene.svc.create(
-        scene.space_id, scene.owner, scene.owner.id, "ci", "", [ApiCapability.CHAT], []
+    group = _create(scene)
+    scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="ci"
     )
     with pytest.raises(AppError) as exc:
-        scene.group_svc.delete(scene.space_id, scene.owner, created.api_key.group_id)
+        scene.group_svc.delete(scene.space_id, scene.owner, group.id)
     assert exc.value.code_str == _VALIDATION
     assert exc.value.details["key_count"] == 1
 

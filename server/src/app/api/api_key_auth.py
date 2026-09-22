@@ -1,20 +1,23 @@
-"""API Key 的认证与路由授权表(OPT-6;OPT-26 起 Key 以绑定成员身份行事)。
+"""API Key 的认证与路由授权表(OPT-6;OPT-26 起以成员身份行事;OPT-41 起权限看档位)。
 
 设计要点(与 `docs/架构设计.md` §8 对齐):
 
 1. **两个认证入口并存**:JWT(人用)与 API Key(程序用,`X-API-Key` 头)。
-   Key 以**绑定成员身份**行事(OPT-26)—— 空间成员校验、消息归属、审计 actor
-   都落到绑定成员;成员被移出空间,Key 在认证阶段即失效(见 ApiKeyService.authenticate),
-   成员被降级则高权限路由被服务层的角色检查实时拦下;
+   Key 以**归因成员身份**行事(OPT-26)—— 空间成员校验、消息归属、审计 actor
+   都落到 `api_keys.owner_user_id`;人被移出空间,Key 在认证阶段即失效(见
+   ApiKeyService.authenticate),被降级则高权限路由被服务层的角色检查实时拦下。
+   OPT-41 起这一列**只决定身份,不决定权限**;权限(能力 + 知识库范围)在档位上。
 2. **授权表 fail-closed**:`_ROUTE_CAPABILITIES` 是"能力 → 允许的路由"白名单。
    用 Key 访问**表里没有的路由**一律 403 —— 新增路由不会自动对 Key 开放,
    必须显式登记。"漏登记"与"误放开"之间刻意选了前一个失败方向。
+   权限档位的管理端点(`/permission-groups`)刻意**不登记**:改权限只能是人(JWT),
+   否则一把外泄的 Key 就能给自己加能力。
 3. **路径模板匹配**:路由带 `{space_id}` 这类参数,按段数相同 + 参数段通配比较,
    不用正则(易写错且难读)。
 4. **KB 范围收窄在服务调用前完成**:调用方拿到收窄后的 `kb_ids` 必须传给
    检索/问答服务,不能只在这里判断而不传递。
 5. **Key 与所属空间绑定(OPT-41 N2)**:路径 `{space_id}` 与 `api_key.space_id`
-   不一致一律 403 —— 绑定成员在别的空间里也是成员,只查成员身份挡不住跨空间。
+   不一致一律 403 —— 归因成员在别的空间里也是成员,只查成员身份挡不住跨空间。
 """
 
 from __future__ import annotations
@@ -166,7 +169,7 @@ def get_api_key_principal(
     if api_key is None:
         raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
 
-    # OPT-41 N2:Key 只能打它所属的空间。绑定成员在别的空间里同样是成员,
+    # OPT-41 N2:Key 只能打它所属的空间。归因成员在别的空间里同样是成员,
     # 只校验"成员 ∈ 路径空间"挡不住跨空间;路径空间与 Key 空间不一致就拒。
     path_space_id = _request_space_id(request)
     if path_space_id is not None and path_space_id != api_key.space_id:
@@ -187,8 +190,8 @@ def get_api_key_principal(
         )
     service.require_capability(api_key, required)
 
-    # 主体 = 绑定成员(存量旧 Key 回退 created_by,authenticate 已保证非空)
-    actor_id = api_key.member_user_id or api_key.created_by
+    # 主体 = 归因成员(存量旧 Key 回退 created_by,authenticate 已保证非空)
+    actor_id = api_key.owner_user_id or api_key.created_by
     if actor_id is None:
         raise AppError(ErrorCode.API_KEY_INVALID, "API Key 无效或已吊销", http_status=401)
     return ApiKeyPrincipal(api_key=api_key, space_id=api_key.space_id, actor_id=actor_id)

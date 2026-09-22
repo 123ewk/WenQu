@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.api.api_key_auth import build_api_key_service, get_api_key_principal
 from app.application.agent.loop import ToolCallingChat
+from app.application.repository.api_keys import ApiKeyRepositoryImpl
 from app.application.repository.audit import AuditRepositoryImpl
 from app.application.repository.conversations import (
     ConversationRepositoryImpl,
@@ -24,6 +25,7 @@ from app.application.repository.knowledge import (
     KbStatsRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.permission_groups import PermissionGroupRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.tasks import TaskRepositoryImpl
@@ -33,6 +35,7 @@ from app.application.service.api_keys import ApiKeyService
 from app.application.service.auth import AuthService
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.model_admin import ModelAdminService
+from app.application.service.permission_groups import PermissionGroupService
 from app.application.service.profile import ProfileService
 from app.application.service.qa import BackgroundDb, QAService
 from app.application.service.retrieval import RetrievalService
@@ -61,6 +64,7 @@ from app.domain.interfaces import (
     KbStatsRepository,
     KnowledgeBaseRepository,
     MessageRepository,
+    PermissionGroupRepository,
     RefreshTokenRepository,
     RerankGateway,
     RetrievalRepository,
@@ -321,6 +325,29 @@ def get_message_repository(db: Session = Depends(get_db)) -> MessageRepository:
 
 def get_api_key_service(db: Session = Depends(get_db)) -> ApiKeyService:
     return build_api_key_service(db)
+
+
+def get_permission_group_repository(
+    db: Session = Depends(get_db),
+) -> PermissionGroupRepository:
+    return PermissionGroupRepositoryImpl(db)
+
+
+def get_permission_group_service(
+    db: Session = Depends(get_db),
+    groups: PermissionGroupRepository = Depends(get_permission_group_repository),
+    spaces: SpaceRepository = Depends(get_space_repository),
+    kbs: KnowledgeBaseRepository = Depends(get_kb_repository),
+    audit: AuditRepository = Depends(get_audit_repository),
+    users: UserRepository = Depends(get_user_repository),
+) -> PermissionGroupService:
+    """权限档位服务(OPT-41):档位是能力与知识库范围的唯一来源,Key 只引用它。
+
+    `api_keys` 依赖是给"删档位前先看还有几把凭据挂着"用的(不做静默级联)。
+    """
+    return PermissionGroupService(
+        groups, spaces, kbs, audit, ApiKeyRepositoryImpl(db), users
+    )
 
 
 def get_model_catalog(
