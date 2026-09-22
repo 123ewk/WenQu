@@ -124,7 +124,7 @@
 | W3 | A4 文案与 types 注释 | 后端 N1/N2 回信 | 同上 |
 | W4 | 文档(本工单 + 需求单) | — | 无 |
 
-- **不 push**:等用户点头;上批 OPT-31(`web-l0 3565252` + `feat/api-keys-active`)仍未推送,别混在一起推。
+- **push 状态(2026-09-22 更新)**:本工单四片已随 `web-l0` 推到 `origin/web-l0`(`3b33e36..072fbfb`);OPT-31 后端分支 `feat/api-keys-active` 已并入 `main`(`e4e8148`,门禁 415 passed / ruff+mypy / openapi 逐字一致),`main` 侧尚未推送,等用户点头。
 - 若发现 `web/src/api/types.ts`、`ModelConfigView.vue`、`ProvidersModelsBlock.vue` 有别的会话 in-flight 改动:照旧用隔离 worktree 验证构建(先例:OPT-31 的 `web-akverify`),提交用逐文件 `git add` + 必要时 git plumbing 只提自己的 hunk。
 
 ## 5. 验收标准(逐条可判)
