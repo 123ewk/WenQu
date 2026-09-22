@@ -499,28 +499,69 @@ export interface ChunkPreviewItem {
  */
 export type ApiCapability = 'chat' | 'documents'
 
+/* ───── OPT-41:权限档位(权限的唯一真相,人与 Key 共用) ───── */
+
+/** 档位上的一个成员挂载行;`is_current` = 此人此刻生效的就是这一档 */
+export interface GroupMemberOut {
+  user_id: string
+  username: string | null
+  nickname: string | null
+  /** null = 人已不在本空间(只在"移出时选择保留挂载"下出现),展示置灰 */
+  role: number | null
+  is_current: boolean
+}
+
+export interface PermissionGroupOut {
+  id: string
+  name: string
+  description: string
+  /** 空数组合法但含义是"什么都不能做"(fail-closed),不是"全部允许" */
+  capabilities: string[]
+  /** all_kbs=false 时的白名单;`[]` + `all_kbs=false` = 一个库都不给 */
+  kb_ids: string[]
+  /** 放开全部库必须是显式勾选;为真时每次请求实时展开(新建库自动在范围内) */
+  all_kbs: boolean
+  members: GroupMemberOut[]
+  created_at: string | null
+}
+
+/** 建档与改档共用(PATCH 走整组替换语义,不做半字段补丁) */
+export interface UpsertPermissionGroupRequest {
+  name: string
+  description?: string
+  capabilities?: string[]
+  kb_ids?: string[]
+  all_kbs?: boolean
+}
+
+/** Key 响应里内联的档位快照:要看/要改权限去档位页,Key 这边只读 */
+export interface ApiKeyGroupRef {
+  id: string
+  name: string
+  capabilities: string[]
+  kb_ids: string[]
+  all_kbs: boolean
+}
+
 export interface ApiKeyOut {
   id: string
   name: string
   description: string
   /** 形如 sk-live-****ab12;完整明文只在创建响应里出现一次 */
   key_hint: string
-  /* ───── OPT-26:Key 绑定空间成员,以下字段随列表/创建响应返回 ───── */
-  /** 绑定成员 id;存量旧 Key 回退签发者,账号注销后为 null(实测:被移出空间时 id 仍在) */
-  member_user_id: string | null
-  /** 成员注销或被移出空间后为 null —— 前端以"username 为 null"判定"已注销"并置灰 */
-  member_username: string | null
-  member_nickname: string | null
-  /** 绑定时点的空间角色数值(40/30/20/10),与成员页同一口径 */
-  member_role: number | null
+  /** ★ OPT-41:能力与知识库范围都在档位上,Key 行不再带权限字段 */
+  group: ApiKeyGroupRef
+  /* ───── OPT-26 起 Key 以某个成员身份行事;OPT-41 明确这组字段只管身份不管权限 ───── */
+  /** 归因成员 id;存量旧 Key 回退签发者 */
+  owner_user_id: string | null
+  /** 成员注销或被移出空间后为 null —— 以"username 为 null"判定"已失效"并置灰 */
+  owner_username: string | null
+  owner_nickname: string | null
+  /** 归因成员的角色数值(40/30/20/10),与成员页同一口径 */
+  owner_role: number | null
   /** 签发操作者:仅留痕,不参与运行时身份(签发者被移出不影响 Key) */
   created_by: string | null
   created_by_name: string | null
-  capabilities: string[]
-  /** 空数组 = 全部知识库 */
-  kb_ids: string[]
-  /** OPT-31「正在使用」分配标记:同成员至多一把为 true,由 Admin+ 设定;仅管理语义,不影响调用 */
-  is_active: boolean
   /** 非 null 即已吊销 */
   revoked_at: string | null
   last_used_at: string | null
@@ -535,12 +576,10 @@ export interface ApiKeyCreatedOut extends ApiKeyOut {
 export interface CreateApiKeyRequest {
   name: string
   description?: string
-  /** ★ OPT-26 新增必填:该空间的现存成员 user_id;缺失 422,非本空间成员 404 MEMBER_NOT_FOUND */
-  member_user_id: string
-  /** 空数组合法但等于"什么都不能做"(后端 fail-closed) */
-  capabilities?: string[]
-  /** 空数组 = 全部知识库 */
-  kb_ids?: string[]
+  /** ★ OPT-41 必填:权限档位 id;档位不属于本空间 → 404 */
+  group_id: string
+  /** ★ 归因成员(该空间现存成员);只决定身份与用量归因,不决定权限 */
+  owner_user_id: string
 }
 
 /* ───── M2:会话与问答 ───── */
