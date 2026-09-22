@@ -154,8 +154,11 @@ function closeDrawer() {
 
 const kbs = ref<KnowledgeBaseOut[]>([])
 const selectedKbIds = ref<string[]>([])
+/** 灰度开关开启后,没挂档位的成员连库列表都是 403:不能说成"暂无知识库",那会把人指向错的地方 */
+const kbsDeniedByGroup = ref(false)
 
 const kbScopeLabel = computed(() => {
+  if (kbsDeniedByGroup.value) return '知识库范围:未分配档位,读不到库列表'
   if (kbs.value.length === 0) return '知识库范围:暂无知识库'
   // 零勾选 ≠ "不检索":请求体 kb_ids 为空时服务端按档位的允许范围兜全,所以文案说"按档位"
   if (selectedKbIds.value.length === 0) return '知识库范围:按档位允许的全部库'
@@ -382,9 +385,11 @@ async function loadKbs() {
   try {
     kbs.value = await apiListKbs(spaceId.value)
     selectedKbIds.value = kbs.value.map((k) => k.id)
-  } catch {
+    kbsDeniedByGroup.value = false
+  } catch (e) {
     kbs.value = []
     selectedKbIds.value = []
+    kbsDeniedByGroup.value = e instanceof ApiError && e.code === 'PERMISSION_GROUP_REQUIRED'
   }
 }
 
@@ -448,10 +453,12 @@ function abortStream() {
  * 用 401 会被 http.ts 的刷新链踢成重新登录,后端刻意给了 403,前端要按"找管理员配档"话术说,
  * 不能套用"角色不足"或"请重新登录" —— 档位不足和角色不足是两回事。
  */
-function permissionDeniedText(code: string): string | null {
-  if (code === 'PERMISSION_GROUP_REQUIRED') return '本空间还没有为你分配权限档位,请联系管理员在「权限档位」页分配并设为当前档'
-  if (code === 'API_KEY_CAPABILITY_DENIED') return '你当前的权限档位未授予「对话检索」能力,请联系管理员调整档位'
-  if (code === 'API_KEY_SCOPE_DENIED') return '你当前的权限档位没有可检索的知识库,请联系管理员放开档位范围或改选知识库'
+function permissionDeniedText(code: string, serverMessage = ''): string | null {
+  // 后端的 message 已经点名了是哪一档、缺什么,优先直显;兜底文案只在拿不到 message 时用
+  const fromServer = serverMessage.trim() === '请求失败' ? '' : serverMessage.trim()
+  if (code === 'PERMISSION_GROUP_REQUIRED') return fromServer || '本空间还没有为你分配权限档位,请联系管理员在「权限档位」页分配并设为当前档'
+  if (code === 'API_KEY_CAPABILITY_DENIED') return fromServer || '你当前的权限档位未授予「对话检索」能力,请联系管理员调整档位'
+  if (code === 'API_KEY_SCOPE_DENIED') return fromServer || '你当前的权限档位没有可检索的知识库,请联系管理员放开档位范围或改选知识库'
   return null
 }
 
@@ -460,7 +467,7 @@ function streamErrorMessage(message: string, code?: string): string {
   if (code === 'MODEL_NOT_CONFIGURED') return '回答模型未配置,请联系管理员检查服务端模型密钥'
   if (code === 'MODEL_CALL_FAILED') return '模型调用失败,请稍后重试'
   if (code) {
-    const denied = permissionDeniedText(code)
+    const denied = permissionDeniedText(code, message)
     if (denied) return denied
   }
   return message
@@ -569,7 +576,7 @@ async function onSend() {
       streamError = '模型调用失败,请稍后重试'
     } else if (e instanceof ApiError) {
       // OPT-41 的档位/能力/范围拒绝换成"找管理员配档"的话术,其余码直显服务端 message
-      streamError = permissionDeniedText(e.code) ?? errMessage(e)
+      streamError = permissionDeniedText(e.code, errMessage(e)) ?? errMessage(e)
     } else {
       streamError = errMessage(e)
     }
@@ -849,6 +856,7 @@ onUnmounted(abortStream)
               <template v-if="kbs.length">
                 已接入当前空间 {{ kbs.length }} 个知识库,回答自带引用溯源
               </template>
+              <template v-else-if="kbsDeniedByGroup">还没有为你分配权限档位,读不到知识库列表 —— 请联系管理员在「权限档位」页配档</template>
               <template v-else>当前空间还没有知识库,先到「知识库」页上传文档</template>
             </div>
             <div class="chips">
@@ -1059,7 +1067,8 @@ onUnmounted(abortStream)
                     <span class="truncate">{{ kb.name }}</span>
                   </el-checkbox>
                 </el-checkbox-group>
-                <div v-if="!kbs.length" class="scope-empty">当前空间还没有知识库</div>
+                <div v-if="kbsDeniedByGroup" class="scope-empty">未分配档位时读不到库列表,请联系管理员配档</div>
+                <div v-else-if="!kbs.length" class="scope-empty">当前空间还没有知识库</div>
               </div>
             </el-popover>
 

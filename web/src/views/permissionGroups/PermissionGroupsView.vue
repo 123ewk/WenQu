@@ -35,6 +35,8 @@ const auth = useAuthStore()
 
 const groups = ref<PermissionGroupOut[]>([])
 const kbs = ref<{ id: string; name: string }[]>([])
+/** 灰度开关开启后,自己没挂档位时读库列表会 403 —— 这时不是"空间没有库",不能说成没有库 */
+const kbsDeniedByGroup = ref(false)
 const members = ref<MemberOut[]>([])
 const loading = ref(false)
 const loadError = ref<string | null>(null)
@@ -108,13 +110,16 @@ async function loadKbs() {
   const spaceId = auth.currentSpaceId
   if (!spaceId) {
     kbs.value = []
+    kbsDeniedByGroup.value = false
     return
   }
   // 仅用于把 kb_ids 显示成库名;失败不影响档位列表本身
   try {
     kbs.value = await apiListKbs(spaceId)
-  } catch {
+    kbsDeniedByGroup.value = false
+  } catch (e) {
     kbs.value = []
+    kbsDeniedByGroup.value = e instanceof ApiError && e.code === 'PERMISSION_GROUP_REQUIRED'
   }
 }
 
@@ -484,8 +489,12 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
                 <el-checkbox :value="kb.id" />
                 <span class="truncate">{{ kb.name }}</span>
               </label>
-              <div v-if="!kbs.length" class="cell-dim">当前空间还没有知识库</div>
+              <div v-if="!kbs.length && !kbsDeniedByGroup" class="cell-dim">当前空间还没有知识库</div>
             </el-checkbox-group>
+            <div v-if="kbsDeniedByGroup" class="pg-warn-line">
+              读不到知识库列表:<b>你自己还没有生效档位</b>(灰度开关开启后库列表也按档位收口)。
+              可先用上面的开关建一档「放开全部知识库」,保存后到「成员」里把自己<b>设为当前档</b>,再回本页就能逐个勾选。
+            </div>
             <div v-if="emptyScope" class="pg-warn-line">
               没勾任何知识库:这一档<b>一个库都检索不到</b>(空列表是默认拒绝)。要放开全部库请打开上面的开关。
             </div>
@@ -558,7 +567,8 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
               <el-button
                 link
                 type="primary"
-                :disabled="m.is_current"
+                :disabled="m.is_current || m.role === null"
+                :title="m.role === null ? '人已移出空间,不能设为当前(重新加入后再配档)' : ''"
                 :loading="settingCurrentId === m.user_id"
                 @click="onSetCurrent(drawerGroup!, m)"
               >
