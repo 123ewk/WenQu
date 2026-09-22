@@ -54,8 +54,25 @@ const TYPE_LABELS: Record<ModelKind, string> = {
 const kindLabel = computed(() => TYPE_LABELS[props.kind])
 const titlePrefix = computed(() => (props.hideKindLabel ? '' : kindLabel.value))
 
-/** §1.6 快捷预置值(前端写死即可,后端不拦);允许直接输入其他值 */
-const CONTEXT_PRESETS = [4096, 32768, 65536, 128000]
+/**
+ * 上下文窗口(OPT-39):预设只是快捷档,任意值靠输入框直接填。
+ * CONTEXT_MAX 是前端护栏 —— 后端契约里 `context_tokens` 只有 `gt=0`(无上限),
+ * 若后端按 OPT-38/39 需求单 N5 落了 le,就把这里改成与契约同值。
+ */
+const CONTEXT_MAX = 20_000_000
+const CONTEXT_PRESETS: number[] = [4096, 8192, 32768, 64000, 65536, 128000, 131072, 200000, 262144, 512000, 1048576]
+/** 量级别名(比裸数字好认);没有整齐别名的档位留空 */
+const CONTEXT_ALIAS: Record<number, string> = {
+  4096: '4K',
+  8192: '8K',
+  32768: '32K',
+  65536: '64K',
+  128000: '≈128K',
+  131072: '128K',
+  262144: '256K',
+  512000: '≈500K',
+  1048576: '1M',
+}
 
 /** 供应商按后端下发的 `kinds`(该供应商允许挂载的类别)分块,前端不再猜协议(OPT-35);
  *  `kinds: []` = 未知协议,两个区块都不列它 */
@@ -230,7 +247,8 @@ const modelDialog = reactive({
   providerId: '',
   modelId: '',
   modelName: '',
-  contextTokens: '' as string,
+  /** 上下文窗口:undefined = 未填(el-input-number 清空时给的就是 undefined) */
+  contextNumber: undefined as number | undefined,
   enabled: true,
   isDefault: false,
 })
@@ -253,18 +271,37 @@ const modelNameOptions = computed(() => {
   return names
 })
 
-/** 上下文窗口:chat 新建必填(缺了 422),rerank 不需要;allow-create 允许直接输入 */
-const contextSelectValue = computed({
-  get: () => modelDialog.contextTokens,
-  set: (v: string | number) => (modelDialog.contextTokens = String(v ?? '')),
+/**
+ * 上下文窗口校验(OPT-39)。chat 新建必填(缺了后端 422),rerank 不用这一字段。
+ * 老写法是 el-select + allow-create:非数字串能进值,`Number()` 出 NaN 后只把【创建】静默禁用,
+ * 用户看到的是"点不动"而不是"哪里不对"(照抄表格里的 `64,000` 带逗号就会踩)。
+ * 现在换成 el-input-number(天然挡掉非数字)+ 显式提示。
+ */
+const contextTouched = ref(false)
+const contextError = computed(() => {
+  if (props.kind !== 'chat') return ''
+  // 未触碰不飘红(新建态一打开就满屏红是噪音);触碰后必须显式说明,不再只把【创建】静默禁用
+  if (!contextTouched.value) return ''
+  const n = modelDialog.contextNumber
+  if (n === undefined || n === null) return '上下文窗口必填:点下方预设,或直接在输入框里填'
+  if (!Number.isInteger(n) || n < 1) return '上下文窗口需为不小于 1 的整数 tokens'
+  if (n > CONTEXT_MAX) return `上下文窗口最大 ${CONTEXT_MAX.toLocaleString()} tokens`
+  return ''
 })
+const contextValid = computed(() => props.kind !== 'chat' || contextError.value === '')
+
+function pickContextPreset(n: number) {
+  modelDialog.contextNumber = n
+  contextTouched.value = true
+}
 
 function openCreateModel() {
   modelDialog.editingId = null
   modelDialog.providerId = providers.value[0]?.id ?? ''
   modelDialog.modelId = ''
   modelDialog.modelName = ''
-  modelDialog.contextTokens = ''
+  modelDialog.contextNumber = undefined
+  contextTouched.value = false
   modelDialog.enabled = true
   modelDialog.isDefault = models.value.length === 0
   modelError.value = ''
@@ -276,22 +313,19 @@ function openEditModel(m: SpaceModelOut) {
   modelDialog.providerId = m.provider_id
   modelDialog.modelId = m.model_id
   modelDialog.modelName = m.model_name
-  modelDialog.contextTokens = m.context_tokens != null ? String(m.context_tokens) : ''
+  modelDialog.contextNumber = m.context_tokens ?? undefined
+  contextTouched.value = false
   modelDialog.enabled = m.enabled
   modelDialog.isDefault = m.is_default
   modelError.value = ''
   modelDialog.open = true
 }
 
-const parsedContext = computed(() => {
-  const n = Number(modelDialog.contextTokens)
-  return Number.isInteger(n) && n > 0 ? n : null
-})
 const canSubmitModel = computed(
   () =>
     !!modelDialog.providerId &&
     modelDialog.modelName.trim().length > 0 &&
-    (props.kind === 'rerank' || parsedContext.value !== null) &&
+    contextValid.value &&
     !savingModel.value,
 )
 
@@ -300,7 +334,7 @@ async function onSubmitModel() {
   if (!spaceId || !canSubmitModel.value) return
   savingModel.value = true
   modelError.value = ''
-  const ctx = props.kind === 'rerank' ? undefined : (parsedContext.value ?? undefined)
+  const ctx = props.kind === 'rerank' ? undefined : modelDialog.contextNumber
   try {
     if (modelDialog.editingId) {
       // PATCH 只开放 model_name/context_tokens/enabled/is_default(provider_id/kind/model_id 锁死)
@@ -594,24 +628,41 @@ async function onTestModel(m: SpaceModelOut) {
           </el-select>
           <el-input v-else v-model="modelDialog.modelName" placeholder="实际调上游的名字,如 deepseek-chat(允许自定义)" />
           <div class="pm-hint">
-            清单只是常见提示,后端不校验,不在清单里的名字也能保存;填错时【测试模型】会报上游 model_name 类错误
+            清单只是常见提示,后端不校验,不在清单里的名字也能保存(自定义名输入后按回车确认);填错时【测试模型】会报上游
+            model_name 类错误
           </div>
           <div v-if="selectedModelType?.key === 'dashscope_rerank'" class="pm-hint">
             百炼重排只能填 gte-rerank-v2 / qwen3-rerank;gte-rerank(无 -v2)已于 2026-05-30 下线,填它上游必报错
           </div>
         </el-form-item>
         <el-form-item v-if="kind === 'chat'" label="上下文窗口(tokens)" required>
-          <el-select
-            v-model="contextSelectValue"
-            filterable
-            allow-create
-            default-first-option
-            placeholder="选常用值或直接输入"
-            class="pm-full"
-          >
-            <el-option v-for="n in CONTEXT_PRESETS" :key="n" :label="n.toLocaleString()" :value="String(n)" />
-          </el-select>
-          <div class="pm-hint">OPT-29 上下文进度条的分母,必填;常用值 4096 / 32768 / 65536 / 128000</div>
+          <!-- OPT-39:预设只是快捷档,任意值直接键入(旧版 el-select+allow-create 要按回车才生效,且非法值只静默禁用提交) -->
+          <el-input-number
+            v-model="modelDialog.contextNumber"
+            class="pm-full pm-ctx-input"
+            :min="1"
+            :max="CONTEXT_MAX"
+            :step="1024"
+            controls-position="right"
+            placeholder="直接输入,如 262144"
+            @blur="contextTouched = true"
+          />
+          <div class="pm-preset-row">
+            <button
+              v-for="n in CONTEXT_PRESETS"
+              :key="n"
+              type="button"
+              class="pm-preset"
+              :class="{ 'pm-preset-on': modelDialog.contextNumber === n }"
+              @click="pickContextPreset(n)"
+            >
+              {{ n.toLocaleString() }}<span v-if="CONTEXT_ALIAS[n]" class="pm-preset-alias">{{ CONTEXT_ALIAS[n] }}</span>
+            </button>
+          </div>
+          <div class="pm-hint">
+            OPT-29 上下文进度条的分母(只算占比,服务端不据此裁剪上下文);填上游模型的真实窗口,不确定时填小不填大
+          </div>
+          <div v-if="contextError" class="pm-err pm-err-inline">{{ contextError }}</div>
         </el-form-item>
         <el-form-item>
           <el-checkbox v-model="modelDialog.enabled">启用</el-checkbox>
@@ -759,6 +810,46 @@ async function onTestModel(m: SpaceModelOut) {
 }
 .pm-full {
   width: 100%;
+}
+/* el-input-number 默认把数字居中显示,与同弹窗其它左对齐输入框不一致,且长数字看着像占位符 */
+.pm-ctx-input :deep(.el-input__inner) {
+  text-align: left;
+}
+/* 上下文窗口预设:与输入框并存(OPT-39),点一下填值,不替代手输 */
+.pm-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.pm-preset {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+}
+.pm-preset:hover {
+  border-color: #4f6ef2;
+  color: #4f6ef2;
+}
+.pm-preset-on {
+  border-color: #4f6ef2;
+  background: #eef1fe;
+  color: #4f6ef2;
+}
+.pm-preset-alias {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.pm-preset-on .pm-preset-alias {
+  color: #4f6ef2;
 }
 .pm-err {
   font-size: 13px;
