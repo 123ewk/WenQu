@@ -36,7 +36,7 @@ const memberMap = computed(() => {
   return map
 })
 
-/** 动作码 → 中文标签;与契约 AuditAction(23 值)保持同步,未知码原样展示 */
+/** 动作码 → 中文标签;与契约 AuditAction 枚举保持同步,未知码原样展示(别隐藏) */
 const ACTION_LABELS: Record<string, string> = {
   'auth.register': '注册',
   'auth.login_success': '登录',
@@ -60,6 +60,15 @@ const ACTION_LABELS: Record<string, string> = {
   'document.reparsed': '重新解析',
   'api_key.created': '创建 API Key',
   'api_key.revoked': '吊销 API Key',
+  // OPT-31 的历史标记:OPT-41 起后端不再写这个动作,但老审计行还得能渲染
+  'api_key.activated': '设为正在使用(已停用)',
+  /* ───── OPT-41:权限档位(改权限的唯一入口,detail 带改前/改后范围) ───── */
+  'permission_group.created': '新建权限档位',
+  'permission_group.updated': '修改档位权限',
+  'permission_group.deleted': '删除权限档位',
+  'permission_group.member_assigned': '分配档位成员',
+  'permission_group.member_unassigned': '解除档位分配',
+  'permission_group.current_set': '切换当前档位',
   'access.denied': '越权访问被拒',
 }
 
@@ -72,6 +81,7 @@ const ACTION_GROUPS = computed(() => {
     ['kb.', '知识库'],
     ['document.', '文档'],
     ['api_key.', 'API Key'],
+    ['permission_group.', '权限档位'],
   ]
   const groups = GROUP_NAMES
     .map(([prefix, label]) => ({

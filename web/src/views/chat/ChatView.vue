@@ -5,7 +5,8 @@ import { apiCreateConversation, apiDeleteConversation, apiListConversations, api
 import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
-import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem } from '@/api/types'
+import { apiListPermissionGroups } from '@/api/permissionGroups'
+import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -156,7 +157,8 @@ const selectedKbIds = ref<string[]>([])
 
 const kbScopeLabel = computed(() => {
   if (kbs.value.length === 0) return '知识库范围:暂无知识库'
-  if (selectedKbIds.value.length === 0) return '知识库范围:全部'
+  // 零勾选 ≠ "不检索":请求体 kb_ids 为空时服务端按档位的允许范围兜全,所以文案说"按档位"
+  if (selectedKbIds.value.length === 0) return '知识库范围:按档位允许的全部库'
   if (selectedKbIds.value.length === kbs.value.length) return `知识库范围:全部(${kbs.value.length})`
   return `知识库范围:已选 ${selectedKbIds.value.length} 个`
 })
@@ -167,6 +169,44 @@ const allKbSelected = computed({
     selectedKbIds.value = v ? kbs.value.map((k) => k.id) : []
   },
 })
+
+/* ───── 生效权限档位(OPT-41:能问什么、能检索到哪些库的上限在档位上,不在角色上) ───── */
+
+/**
+ * 我当前生效的那一档(members 里 is_current 且 user_id 是我的那一行)。
+ * 档位列表 Viewer+ 可读,所以人人能拉;拿不到(未分配/接口失败)统一成 null,
+ * 不阻断问答入口 —— 灰度开关 APP_REQUIRE_PERMISSION_GROUP_FOR_CORE 关着时,
+ * 没有档位照样能问,这时只提示"未分配",不能说"不能问"。
+ */
+const myGroup = ref<PermissionGroupOut | null>(null)
+const groupLoaded = ref(false)
+
+const myGroupLabel = computed(() => {
+  if (!groupLoaded.value) return '档位:加载中…'
+  if (!myGroup.value) return '档位:未分配'
+  return `档位:${myGroup.value.name}`
+})
+
+/** 档位自己的范围口径(与档位页同一套文案,别在两个页面解释成两种意思) */
+const myGroupScope = computed(() => {
+  const g = myGroup.value
+  if (!g) return ''
+  if (g.all_kbs) return '全部知识库(含今后新建)'
+  if (!g.kb_ids.length) return '不含任何知识库(问了也检索不到东西)'
+  return `${g.kb_ids.length} 个知识库`
+})
+
+async function loadMyGroup() {
+  try {
+    const list = await apiListPermissionGroups(spaceId.value)
+    const me = auth.user?.id
+    myGroup.value = list.find((g) => g.members.some((m) => m.is_current && m.user_id === me)) ?? null
+  } catch {
+    myGroup.value = null
+  } finally {
+    groupLoaded.value = true
+  }
+}
 
 /* ───── 回答模型(OPT-38:清单 = 本空间模型配置里的对话模型,必须选一把,model_id 必传) ───── */
 
@@ -295,7 +335,7 @@ watch(
       // 清单内容随活动空间变(形状不变):只在真正切换后重拉,首帧由 onMounted 负责
       loadModelCatalog()
     }
-    await Promise.all([loadConversations(), loadKbs()])
+    await Promise.all([loadConversations(), loadKbs(), loadMyGroup()])
   },
   { immediate: true },
 )
@@ -403,10 +443,26 @@ function abortStream() {
   streaming.value = false
 }
 
+/**
+ * OPT-41 的三类权限拒绝(403,都不是"没登录"):
+ * 用 401 会被 http.ts 的刷新链踢成重新登录,后端刻意给了 403,前端要按"找管理员配档"话术说,
+ * 不能套用"角色不足"或"请重新登录" —— 档位不足和角色不足是两回事。
+ */
+function permissionDeniedText(code: string): string | null {
+  if (code === 'PERMISSION_GROUP_REQUIRED') return '本空间还没有为你分配权限档位,请联系管理员在「权限档位」页分配并设为当前档'
+  if (code === 'API_KEY_CAPABILITY_DENIED') return '你当前的权限档位未授予「对话检索」能力,请联系管理员调整档位'
+  if (code === 'API_KEY_SCOPE_DENIED') return '你当前的权限档位没有可检索的知识库,请联系管理员放开档位范围或改选知识库'
+  return null
+}
+
 /** 流内 error 事件的 `code` 可选:仅有 code 的分支给面向用户的话术,其余用服务端 message */
 function streamErrorMessage(message: string, code?: string): string {
   if (code === 'MODEL_NOT_CONFIGURED') return '回答模型未配置,请联系管理员检查服务端模型密钥'
   if (code === 'MODEL_CALL_FAILED') return '模型调用失败,请稍后重试'
+  if (code) {
+    const denied = permissionDeniedText(code)
+    if (denied) return denied
+  }
   return message
 }
 
@@ -511,6 +567,9 @@ async function onSend() {
       }
     } else if (e instanceof ApiError && e.code === 'MODEL_CALL_FAILED') {
       streamError = '模型调用失败,请稍后重试'
+    } else if (e instanceof ApiError) {
+      // OPT-41 的档位/能力/范围拒绝换成"找管理员配档"的话术,其余码直显服务端 message
+      streamError = permissionDeniedText(e.code) ?? errMessage(e)
     } else {
       streamError = errMessage(e)
     }
@@ -987,6 +1046,12 @@ onUnmounted(abortStream)
               <div class="scope-head">
                 <span class="scope-title">检索范围</span>
                 <el-checkbox v-model="allKbSelected" size="small">全选</el-checkbox>
+              </div>
+              <!-- OPT-41:这里列出的库只是"空间里有哪些",真正能检索到哪些由当前生效档位封顶 -->
+              <div class="scope-group" :class="{ 'scope-group-warn': groupLoaded && !myGroup }">
+                <span class="scope-group-name">{{ myGroupLabel }}</span>
+                <span v-if="myGroup" class="scope-group-scope">{{ myGroupScope }}</span>
+                <span v-else-if="groupLoaded" class="scope-group-scope">未分配档位时无法检索(需管理员在「权限档位」页分配并设为当前)</span>
               </div>
               <div class="scope-body">
                 <el-checkbox-group v-model="selectedKbIds" class="scope-list">
@@ -1641,6 +1706,30 @@ onUnmounted(abortStream)
   font-size: 13px;
   font-weight: 500;
   color: #111827;
+}
+/* OPT-41:告诉用户"这一列只是空间里有哪些库",能检索到哪些由当前档位封顶 */
+.scope-group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 2px;
+  border-bottom: 1px dashed #e5e7eb;
+}
+.scope-group-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: #4f6ef2;
+  flex-shrink: 0;
+}
+.scope-group-scope {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9ca3af;
+  text-align: right;
+}
+.scope-group-warn .scope-group-name {
+  color: #d97706;
 }
 .scope-body {
   max-height: 240px;
