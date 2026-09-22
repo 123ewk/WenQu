@@ -110,6 +110,7 @@ interface CreateApiKeyRequest {
 | code | HTTP | 何时出现 | 建议话术 |
 | --- | --- | --- | --- |
 | `PERMISSION_GROUP_REQUIRED` | 403 | 灰度开启后，登录成员没有生效档位（或档位已被删） | 直显 `message`（后端已给"本空间还没有为你分配权限档位，请联系管理员"）。**刻意不用 401** —— 401 会被 `http.ts` 的刷新链踢成重新登录 |
+| `API_KEY_SPACE_MISMATCH` | 403 | 第三方拿 A 空间的 Key 打 B 空间的接口(`details.reason = "space_mismatch"`) | **人链路不会出现**(它是 Key 专用的越权闸,`api_key_auth.py:234-241`);前端只需按统一壳直显 message,别归类成"你没权限" |
 | `API_KEY_CAPABILITY_DENIED` | 403 | 档位没这个能力；或 Key 打了未登记路由 | 按 `details.actor` 分文案：`member` → "你的档位「{group_name}」未授予{能力}"；`api_key` → 第三方语义，不改 |
 | `API_KEY_SCOPE_DENIED` | 403 | 档位没勾任何库（`empty_scope`）或请求指向范围外库（`out_of_scope`） | 直显 `message`，并给"去档位页看我的范围"入口 |
 | `VALIDATION_ERROR` | 400/422 | 删档时挂着 Key/成员；换档前人未分配；`all_kbs=true` 还传了 `kb_ids` | **服务端 message 已是中文成品**（例："该档位下还有 3 把 API Key,请先吊销或改指到别的档位"），直显，不要前端再造一套判定。`details` 带 `key_count` / `member_count` 可用于二次确认弹窗 |
