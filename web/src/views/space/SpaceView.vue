@@ -125,19 +125,35 @@ async function loadMembers() {
   members.value = await apiListMembers(auth.currentSpaceId!)
 }
 
-async function onRemoveMember(m: MemberOut) {
-  const confirmed = await ElMessageBox.confirm(
-    `移除成员「${m.nickname}」?移除后其将立即失去对本空间所有知识库与对话的访问权限,其上传的文档将保留。`,
-    '移除成员',
-    { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
-  ).catch(() => false)
-  if (!confirmed) return
+/**
+ * 移除成员(OPT-41):必须显式决定这个人的**权限档位挂载行**(记录"TA 可以用哪一档")怎么处理。
+ * 默认一并清除 —— 留着挂载行会在 TA 重新入空间时悄悄带回上次的权限,那是最容易被忽略的提权路径。
+ * 两种选择都会写进审计(detail 键 keep_permission_mounts),所以这里不给"记住我的选择"。
+ */
+const removeOpen = ref(false)
+const removing = ref(false)
+const removeTarget = ref<MemberOut | null>(null)
+const removeClearMounts = ref(true)
+
+function openRemoveMember(m: MemberOut) {
+  removeTarget.value = m
+  removeClearMounts.value = true
+  removeOpen.value = true
+}
+
+async function onConfirmRemove() {
+  const m = removeTarget.value
+  if (!m) return
+  removing.value = true
   try {
-    await apiRemoveMember(auth.currentSpaceId!, m.user_id)
-    ElMessage.success('成员已移除')
+    await apiRemoveMember(auth.currentSpaceId!, m.user_id, !removeClearMounts.value)
+    ElMessage.success(removeClearMounts.value ? '成员已移除,其权限档位分配已一并清除' : '成员已移除,已保留其档位分配')
+    removeOpen.value = false
     await loadMembers()
   } catch (e) {
     actionError(e)
+  } finally {
+    removing.value = false
   }
 }
 
@@ -409,7 +425,7 @@ async function onDeleteSpace() {
                       v-if="canRemoveMember(row as MemberOut)"
                       type="danger"
                       :underline="false"
-                      @click="onRemoveMember(row as MemberOut)"
+                      @click="openRemoveMember(row as MemberOut)"
                     >
                       移除
                     </el-link>
@@ -541,6 +557,50 @@ async function onDeleteSpace() {
         <template #footer>
           <el-button @click="inviteOpen = false">取消</el-button>
           <el-button type="primary" :loading="inviting" @click="onInvite">添加成员</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 移除成员:档位挂载行"清除 / 保留"必须显式选一个(OPT-41) -->
+      <el-dialog v-model="removeOpen" title="移除成员" width="460px">
+        <div class="rm-who">
+          移除成员「{{ removeTarget?.nickname }}({{ removeTarget?.username }})」?
+          移除后 TA 立即失去本空间全部知识库与对话的访问权限,其上传的文档保留。
+        </div>
+        <div class="rm-block">
+          <div class="rm-block-title">TA 已获得的权限档位怎么处理?</div>
+          <el-radio-group v-model="removeClearMounts" class="rm-radio">
+            <label class="rm-opt">
+              <el-radio :value="true" />
+              <span>
+                <span class="rm-opt-title">一并清除(推荐)</span>
+                <span class="rm-opt-sub">
+                  删除 TA 与档位之间的分配记录。重新拉回来时需要管理员重新配档,不会自动带回旧权限。
+                </span>
+              </span>
+            </label>
+            <label class="rm-opt">
+              <el-radio :value="false" />
+              <span>
+                <span class="rm-opt-title">保留分配记录</span>
+                <span class="rm-opt-sub">
+                  重新加入本空间后,TA 上次的档位会<b>直接恢复可用</b> —— 包括当时被赋予的库范围。
+                  仅在"临时移出、马上拉回"的场景使用。
+                </span>
+              </span>
+            </label>
+          </el-radio-group>
+          <div class="rm-note">两种选择都会完整记入审计日志。</div>
+        </div>
+        <template #footer>
+          <el-button @click="removeOpen = false">取消</el-button>
+          <el-button
+            type="danger"
+            :loading="removing"
+            :disabled="!removeTarget"
+            @click="onConfirmRemove"
+          >
+            确认移除
+          </el-button>
         </template>
       </el-dialog>
     </template>
@@ -821,5 +881,59 @@ async function onDeleteSpace() {
   color: #9ca3af;
   margin-top: 6px;
   line-height: 1.6;
+}
+
+/* 移除成员弹窗(OPT-41 档位挂载二选一) */
+.rm-who {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #374151;
+}
+.rm-block {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+.rm-block-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+  margin-bottom: 10px;
+}
+/* 组里放了自定义文案:重置 Element Plus 给选项组设的 font-size:0,否则行盒塌陷文字重叠 */
+.rm-radio {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.rm-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.rm-opt :deep(.el-radio) {
+  height: 22px;
+}
+.rm-opt-title {
+  display: block;
+  font-size: 13px;
+  color: #111827;
+}
+.rm-opt-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #9ca3af;
+}
+.rm-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #9ca3af;
 }
 </style>
