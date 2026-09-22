@@ -9,9 +9,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && { pwd -W 2>/dev/null || pwd; }
 BACKUP_DIR="${BACKUP_DIR:-$ROOT/backups}"
 TS="$(date +%Y%m%dT%H%M%S)"
 DEST="$BACKUP_DIR/$TS"
-COMPOSE="docker compose -f $ROOT/docker-compose.yml --env-file $ROOT/.env"
+# CD 从 runner 工作区调用时显式传 compose 文件与 .env 路径;默认值保持人工在 ~/wenqu 直接跑不变。
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+ENV_FILE="${COMPOSE_ENV_FILE:-$ROOT/.env}"
+COMPOSE="docker compose -f $ROOT/$COMPOSE_FILE --env-file $ENV_FILE"
 
-get_env() { grep -E "^$1=" "$ROOT/.env" | head -1 | cut -d= -f2-; }
+get_env() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
 PG_USER="$(get_env POSTGRES_USER)"
 PG_DB="$(get_env POSTGRES_DB)"; PG_DB="${PG_DB:-wenqu}"
 MINIO_USER="$(get_env MINIO_ROOT_USER)"
