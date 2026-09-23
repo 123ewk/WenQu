@@ -88,6 +88,18 @@ class _AskContext:
     agent: bool = False  # OPT-10:true = ReAct 工具循环(检索成为模型可调用的工具)
 
 
+def _last_context_usage(history: Sequence[Message]) -> tuple[int, int] | None:
+    """取最近一条带齐 OPT-29 双快照(used+window)的 assistant 消息,作占用估算依据。"""
+    for message in reversed(history):
+        if (
+            message.role == "assistant"
+            and message.context_used_tokens is not None
+            and message.context_window_tokens is not None
+        ):
+            return message.context_used_tokens, message.context_window_tokens
+    return None
+
+
 class BackgroundDb:
     """泵线程的独立数据库入口。
 
@@ -334,6 +346,11 @@ class QAService:
         # 事务里此刻只有本次写入,提前提交无副作用。
         if self._db is not None:
             self._db.commit()
+        # 生成前自动兜底(OPT-45 P3):上一轮上下文占用逼近窗口上限时,先同步压缩再作答,
+        # 这一问略慢但绝不超限。改的是内存里的 ctx.conversation.meta,泵直接读得到。
+        self._maybe_auto_compact(ctx)
+        if self._db is not None:
+            self._db.commit()
         handle = self._supervisor.start(conversation.id)
         threading.Thread(
             target=self._generate, args=(handle, ctx), daemon=True, name="qa-generate"
@@ -550,6 +567,30 @@ class QAService:
             enabled=settings.compact_enabled,
             keep_recent=settings.compact_keep_recent,
         )
+
+    def _maybe_auto_compact(self, ctx: _AskContext) -> None:
+        """生成前同步兜底压缩(OPT-45 P3):占用比 ≥ 阈值才压,仅这一次额外模型调用。
+
+        占用估算复用 OPT-29 落库的上一轮快照(最后一条带齐双值的 assistant 消息),
+        不引第三方分词器;窗口未知(window 为 NULL)则跳过 —— 宁可不压也不误判超限。
+        压缩失败绝不阻断问答:吞异常,交由后续 compose 用(可能仍偏长但可运行的)上下文。
+        """
+        settings = get_settings()
+        if not settings.compact_enabled:
+            return
+        estimate = _last_context_usage(ctx.history)
+        if estimate is None:
+            return
+        used, window = estimate
+        if window <= 0 or used / window < settings.compact_trigger_ratio:
+            return
+        try:
+            service = CompactionService(
+                self._conversations, self._messages, self._chat.chat_stream, settings
+            )
+            service.compress(ctx.conversation, ctx.model_id)
+        except Exception:  # noqa: BLE001 — 兜底压缩是增益,失败只回退不压缩的旧装配
+            logger.exception("auto-compaction failed before generate, continue uncompacted")
 
     def _persist_assistant(
         self,
