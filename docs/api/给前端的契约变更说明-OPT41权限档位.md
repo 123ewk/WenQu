@@ -23,7 +23,8 @@
 
 ## 2. 新增端点：`/api/v1/spaces/{space_id}/permission-groups`
 
-契约源：`server/src/app/api/routes/permission_groups.py`。**这组端点只认 JWT**，刻意没登记进 Key 的路由授权表 → 程序凭据打它会拿到 `403 API_KEY_CAPABILITY_DENIED`（`details.reason = "route_not_grantable"`），这是设计而非 bug（改权限不能由凭据自己发起）。
+契约源：`server/src/app/api/routes/permission_groups.py`。**这组端点只认 JWT**(依赖是 `get_current_user`),刻意没登记进 Key 的路由授权表 → 程序凭据打它会拿到 **`401 AUTH_REQUIRED`**(2026-09-23 dev 实测订正:原先写 `403 route_not_grantable` 是错的 —— 纯 JWT 路由上 Key 连授权表都进不到)。**结论不变**:改权限不能由凭据自己发起。
+`403 API_KEY_CAPABILITY_DENIED + details.reason="route_not_grantable"` 是**给未来留的 fail-closed 护栏**（`api_key_auth.py:243-250`）：只有"接受 Key 的双认证路由（`get_current_actor`）没登记进能力表"时才命中。**当前代码里一条这样的路由都没有** —— 12 条接受 Key 的双认证路由(`/ask`、`/retrieval/search`、`/conversations/{id}/stream`、知识库与文档的读写)与能力表的 12 个条目一一对应,所以前端不会真的看到它;真出现了按"后端漏登记"处理,不是权限配错。测试钉住了这个口径（`tests/test_api_key_integration.py:165-178`）。
 
 | 方法 + 路径 | 门槛 | 请求体 | 响应 | 备注 |
 | --- | --- | --- | --- | --- |
@@ -111,9 +112,10 @@ interface CreateApiKeyRequest {
 | --- | --- | --- | --- |
 | `PERMISSION_GROUP_REQUIRED` | 403 | 灰度开启后，登录成员没有生效档位（或档位已被删） | 直显 `message`（后端已给"本空间还没有为你分配权限档位，请联系管理员"）。**刻意不用 401** —— 401 会被 `http.ts` 的刷新链踢成重新登录 |
 | `API_KEY_SPACE_MISMATCH` | 403 | 第三方拿 A 空间的 Key 打 B 空间的接口(`details.reason = "space_mismatch"`) | **人链路不会出现**(它是 Key 专用的越权闸,`api_key_auth.py:234-241`);前端只需按统一壳直显 message,别归类成"你没权限" |
-| `API_KEY_CAPABILITY_DENIED` | 403 | 档位没这个能力；或 Key 打了未登记路由 | 按 `details.actor` 分文案：`member` → "你的档位「{group_name}」未授予{能力}"；`api_key` → 第三方语义，不改 |
+| `API_KEY_CAPABILITY_DENIED` | 403 | 档位没这个能力（Key 打了未登记的双认证路由也会是这个码，但当前无此路径，见 §2） | 按 `details.actor` 分文案：`member` → "你的档位「{group_name}」未授予{能力}"；`api_key` → 第三方语义，不改 |
 | `API_KEY_SCOPE_DENIED` | 403 | 档位没勾任何库（`empty_scope`）或请求指向范围外库（`out_of_scope`） | 直显 `message`，并给"去档位页看我的范围"入口 |
-| `VALIDATION_ERROR` | 400/422 | 删档时挂着 Key/成员；换档前人未分配；`all_kbs=true` 还传了 `kb_ids` | **服务端 message 已是中文成品**（例："该档位下还有 3 把 API Key,请先吊销或改指到别的档位"），直显，不要前端再造一套判定。`details` 带 `key_count` / `member_count` 可用于二次确认弹窗 |
+| `VALIDATION_ERROR` | 400/422 | 删档时挂着 Key/成员；换档前人未分配；`all_kbs=true` 还传了 `kb_ids` | **服务端 message 已是中文成品**（例："该档位下还有 3 把 API Key,请先吊销或改指到别的档位"），直显，不要前端再造一套判定。`details` 带 `key_count` / `member_count` 可用于二次确认弹窗。**一个坑（2026-09-23 dev 实测）**：`key_count` **含已吊销**的 Key，而"吊销"是 Key 唯一的下线手段 ⇒ 签发过 Key 的档位实际上删不掉，文案里的"请先吊销"是无效动作。前端**不要**在这条 400 上放"去吊销"按钮，直显 message 即可；语义待拍板（台账 OPT-44） |
+| `AUTH_REQUIRED` | 401 | 没带 JWT 或 JWT 失效；**以及第三方拿 `X-API-Key` 去打"只认 JWT"的路由**（`/permission-groups`、`/api-keys`、`/users/*`、`/admin/*`、会话列表等） | 前端只会以第一种形态出现（刷新链跳登录）。第二种是第三方接入方的误用，与前端无关，见 §2 |
 | `FORBIDDEN` | 403 | 角色不足（写操作要 ADMIN+） | "仅管理员可操作" |
 | `NOT_FOUND` / `MEMBER_NOT_FOUND` | 404 | 档位不在本空间 / 目标不是本空间成员 | "档位不存在或无权访问" |
 

@@ -123,7 +123,8 @@ Content-Type: application/json
 | 场景 | 返回 |
 |---|---|
 | Key 缺失/无效/已吊销/归因成员已离开空间或注销 | `401 API_KEY_INVALID`(按凭据问题处理,重试无用) |
-| 用 Key 访问未开放接口(如用户资料、成员管理、**档位管理 `/permission-groups`**、`/api/v1/admin/*`) | `403 API_KEY_CAPABILITY_DENIED`(`details.reason = "route_not_grantable"`;改权限只能由人来,外泄的 Key 不能给自己加能力) |
+| 用 Key 访问**只认 JWT** 的接口(如用户资料 `/users/me`、**Key 管理 `/api-keys`**、**档位管理 `/permission-groups`**、会话列表、`/api/v1/admin/*`) | `401 AUTH_REQUIRED`(和"没带凭据"同构 —— 这些路由压根不看 `X-API-Key`,改权限/管凭据只能由人来) |
+| 用 Key 访问"接受 Key 但没登记进能力表"的路由 | `403 API_KEY_CAPABILITY_DENIED`(`details.reason = "route_not_grantable"`)。**当前无此路径**:12 条接受 Key 的双认证路由与能力表的 12 个条目一一对应,这是给未来新增路由留的 fail-closed 护栏(`api_key_auth.py:243-250`,测试 `test_api_key_integration.py:165-178` 钉住) |
 | Key 所在空间与路径 `{space_id}` 不一致 | `403 API_KEY_SPACE_MISMATCH`(`details.reason = "space_mismatch"`,跨空间越权闸,OPT-41 N2) |
 | 档位未授对应能力(如只有 chat 却调文档接口) | `403 API_KEY_CAPABILITY_DENIED` |
 | 档位 `all_kbs=false` 且 `kb_ids=[]`(一个库都不给) | `403 API_KEY_SCOPE_DENIED`(`details.reason = "empty_scope"`) |
@@ -136,8 +137,8 @@ Content-Type: application/json
 - **Key 以归因成员身份行事 + 以档位为权限口径**:成员被移出/注销 → Key 立即失效(401);
   成员被降级 → 高权限路由即时 403;档位的能力与范围限制在成员权限**之上**再收窄。
   签发者(创建人)离开空间**不影响** Key 可用性。
-- **`/permission-groups` 只认 JWT**,刻意没登记进 Key 的路由授权表 —— 第三方接到这个 403
-  是设计而非 bug,别当接口坏了排查。
+- **`/permission-groups` 与 `/api-keys` 只认 JWT**,刻意没登记进 Key 的路由授权表 —— 第三方拿到 401
+  是设计而非 bug,别当接口坏了排查(2026-09-23 dev 实测:`X-API-Key` 打档位端点 = `401 AUTH_REQUIRED`)。
 
 ## 4. 前端页面(07)检查单
 
