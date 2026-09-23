@@ -14,8 +14,8 @@
 - **可以立刻开工**:后端 P1–P4 代码、契约、单测/集成测试全部完成并测绿,`docs/api/openapi.json`
   已导出这 7 个端点 + 1 个新 SSE 事件。前端照 §1–§5 的类型和分支写、mock 自测,都不受阻。
 - **暂不能真联调**,因为本功能还在功能分支 `feat/opt45-memory-compaction`,**尚未并 main、未部署 dev/prod**:
-  - dev 库当前 `alembic current` = **0018**(OPT-41 占的);本功能的两张新表迁移 `0019 memories` +
-    `0020 memory_proposals` 会在**并 main 时**重挂到 0018 之后。**部署并升库前,直接打这些端点会 404(路由没起)或 500(表没建)**。
+  - dev 库当前 `alembic current` = **0018**(OPT-41 占的);本功能的新表/新列迁移 `0019 memories` +
+    `0020 memory_proposals` + `0021 messages 缓存快照两列` 会在**并 main 时**重挂到 0018 之后。**部署并升库前,直接打这些端点会 404(路由没起)或 500(表/列没建)**。
   - 所以:**mock 阶段照本文契约做;真机验收(§9)要等后端把"已部署 + 已 `alembic upgrade head` + 自检通过"的
     联调解锁单发出来再跑**。别把 dev 上打不通当成契约 bug。
 
@@ -185,7 +185,9 @@ E2(忽略)请求体——**只回传正文和 kind,不要传 `content_hash`**,�
   "in_scope_memory_count": 1,        // 本用户本空间已存记忆条数
   "compressible_messages": 6,        // 压缩点之后、还能折叠进摘要的旧消息条数(不含最近保留的 N 条)
   "can_compress": true,              // 现在点压缩会不会真有效果
-  "has_summary": false               // 该会话此前是否已有摘要
+  "has_summary": false,              // 该会话此前是否已有摘要
+  "cache_supported": true,           // 上游模型是否回报了缓存命中(见下)
+  "cache_hit_rate": 0.769            // cached/prompt,3 位小数;不支持时为 null
 }
 ```
 
@@ -195,8 +197,11 @@ E2(忽略)请求体——**只回传正文和 kind,不要传 `content_hash`**,�
 - `used_tokens`/`window_tokens` **可能同时为 null**(首问、本轮没打模型、或 0015 前的老会话)→ 走 OPT-29 的"整行隐藏"分支。
 - `can_compress=false` 时把压缩按钮**置灰或隐藏**;`compressible_messages` 就是告诉用户"点了大概能折几条",
   可作按钮角标。`in_scope_memory_count` 可在悬浮窗显示"本空间已存 N 条记忆",点击跳 §3 列表页。
-- **缓存命中率本期不展示**:E7 **没有** `cache_hit_rate`/`cache_supported` 字段——这是刻意的,数据源还没接。
-  别提前预留渲染,等后续 P-cache 片的契约变更说明单独发。
+- **缓存命中率(OPT-45 P-cache)**:命中率 = 末次 chat 调用 `cached_tokens / prompt_tokens`,由后端在
+  每次回答落库时存成当轮快照,前端**只在刷新后读 E7**(不进 SSE `done` 帧,流式过程中不实时爬升)。
+  渲染两分支:
+  - `cache_supported=true` → 显示"缓存命中 XX%"(`cache_hit_rate` 已是 0~1 的小数,乘 100);支持但一次没命中会是 `0.0`,**这是正常值不是 bug**;
+  - `cache_supported=false`(`cache_hit_rate=null`)→ 显示"当前模型暂不支持缓存命中统计"。**别把 null 当 0%**,也别自己估。
 
 ---
 
@@ -239,16 +244,18 @@ E2(忽略)请求体——**只回传正文和 kind,不要传 `content_hash`**,�
 2. **Agent 回答渲染层**:解析 `memory_proposal` → 弹卡片,三按钮接 E1/E1/E2(§2)。
 3. **记忆列表页**:E3/E4/E5 三件套(§3)。
 4. **压缩按钮**:接 E6,按 `compressed`/`reason` 给反馈(§4);点了之后顺手刷一次 E7。
-5. **悬浮窗**:接 E7,进度条逻辑复用 OPT-29,补 `in_scope_memory_count`/`compressible_messages`/`can_compress` 三个读数与按钮态(§5)。
+5. **悬浮窗**:接 E7,进度条逻辑复用 OPT-29,补 `in_scope_memory_count`/`compressible_messages`/`can_compress`
+   三个读数与按钮态,以及缓存命中率两态显示(`cache_supported`? 显 `cache_hit_rate`% : 显"不支持")。
 
 ---
 
 ## 10. 验收步骤(顺序即依赖;每条标在验什么)
 
-> 前提:后端已发出"已部署 + `alembic upgrade head`(到 0020)+ 自检通过"的解锁单。**没解锁就只跑 mock,不跑真机。**
+> 前提:后端已发出"已部署 + `alembic upgrade head`(到 0021)+ 自检通过"的解锁单。**没解锁就只跑 mock,不跑真机。**
 
-1. `GET /openapi.json` 里含 §1 的 7 条路径与 `ContextOut`/`CompressOut`/`MemoryOut` schema → 验连的是新进程;
-2. dev 库 `alembic current` 到本功能 head(含 `memories`/`memory_proposals` 两表)→ 没升的话 §3/§4 会 500;
+1. `GET /openapi.json` 里含 §1 的 7 条路径与 `ContextOut`/`CompressOut`/`MemoryOut` schema,且 `ContextOut` 有
+   `cache_supported`/`cache_hit_rate` 两字段 → 验连的是新进程;
+2. dev 库 `alembic current` 到本功能 head(含 `memories`/`memory_proposals` 两表 + messages 缓存两列)→ 没升的话 §3/§4 会 500;
 3. 开 Agent 模式问一轮,让 AI 出一条结论 → 收到 `memory_proposal` → 点确认 → E1 返回 201,列表页 E3 能看到这条;
 4. 换一个新会话问相关问题 → AI 回复体现"记得"该结论(召回注入,§6);
 5. 同一结论再让 AI 提议 → 直接点忽略 → E2 返回 204;同一会话再问 → **不再弹这张卡**(TTL 去重生效);
@@ -257,6 +264,9 @@ E2(忽略)请求体——**只回传正文和 kind,不要传 `content_hash`**,�
 8. 长对话点压缩 → `compressed=true`、`summary_through_seq` 前进 → 再查 E7 `has_summary=true`、`can_compress` 变 `false`;
 9. 短对话(<8 条)点压缩 → `compressed=false, reason="too_short"`,HTTP 仍 200;
 10. 悬浮窗:配了窗口值的模型问一轮 → E7 的 `used/window` 与 OPT-29 `done` 帧同源一致;首问老会话 → 双 null 走隐藏分支。
+11. 缓存命中率(**真机以厂商是否回 `cached_tokens` 为准,当前无法本地验证**):用一个会回缓存的模型问一轮 →
+    刷新后 E7 `cache_supported=true` 且 `cache_hit_rate` 在 0~1;用不回该字段的模型 → `cache_supported=false`、
+    `cache_hit_rate=null` → 悬浮窗显"当前模型暂不支持缓存命中统计"。**mock 阶段两态都构造一遍即可,真机数值等解锁后核。**
 
 ---
 
@@ -269,10 +279,11 @@ E2(忽略)请求体——**只回传正文和 kind,不要传 `content_hash`**,�
 
 ---
 
-## 12. 本期明确不做 / 相邻未做(不用等、别自己加)
+## 12. 已含的限制 / 本期明确不做(不用等、别自己加)
 
-- **缓存命中统计(P-cache)**:E7 无 `cache_hit_rate` 字段,是 §9-Q2 定的"放到最后的不确定需求"。
-  上游真机若不回 `cached_tokens`,届时悬浮窗会显示"当前模型暂不支持缓存命中统计"。**本工单一律不碰这块**。
+- **缓存命中率(P-cache)已含,但有两条边界**:① 只在**刷新后**读 E7,不进 SSE `done` 帧,流式中不实时爬升;
+  ② 命中率依赖上游回 `cached_tokens`,回不了的模型一律 `cache_supported=false`(前端显"不支持",别当 0%)。
+  字段名后端已做多写法容错(OpenAI/百炼/Anthropic),但**真机是否真回、回的确不确定,需解锁后实测**。
 - **工具结果缓存**:另开片,本期无。
 - **跨空间/团队共享记忆**:记忆只 `(space, user)` 双维度隔离,不做空间级共享。
 - **API Key 调用产生记忆**:解析不到具体 user 的 Key 调用 → 不召回、不提议、不落库,本工单端点也不面向 Key(仅 JWT)。
