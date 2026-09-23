@@ -55,6 +55,8 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members",
     "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members/{user_id}",
     "/api/v1/spaces/{space_id}/permission-groups/{group_id}/current",
+    # OPT-44:删档死锁的出路 —— 清空档位下已吊销凭据的台账行
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/revoked-keys",
     "/api/v1/admin/model-protocols",
     "/api/v1/admin/model-providers",
     "/api/v1/admin/model-providers/{provider_id}",

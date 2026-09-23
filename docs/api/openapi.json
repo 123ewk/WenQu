@@ -2950,6 +2950,65 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/revoked-keys": {
+      "delete": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Purge Revoked Keys",
+        "description": "清空该档位**已吊销**凭据的台账行(OPT-44)。\n\n为什么单独一个端点而不是删档时顺带做:删凭据行是不可逆的,而且只该碰到已吊销的\nKey —— 让\"删档位\"顺手抹掉在用的凭据,等于给一次误点开了更大的口子。",
+        "operationId": "purge_revoked_keys_api_v1_spaces__space_id__permission_groups__group_id__revoked_keys_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeRevokedKeysOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members": {
       "post": {
         "tags": [
@@ -4846,6 +4905,7 @@
           "api_key.created",
           "api_key.revoked",
           "api_key.activated",
+          "api_key.purged",
           "permission_group.created",
           "permission_group.updated",
           "permission_group.deleted",
@@ -6684,6 +6744,20 @@
         },
         "type": "object",
         "title": "ProviderUpdateIn"
+      },
+      "PurgeRevokedKeysOut": {
+        "properties": {
+          "deleted_count": {
+            "type": "integer",
+            "title": "Deleted Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted_count"
+        ],
+        "title": "PurgeRevokedKeysOut",
+        "description": "清空历史凭据的结果;0 = 该档位下没有已吊销的 Key(不是错误,前端据计数提示即可)。"
       },
       "RefreshRequest": {
         "properties": {

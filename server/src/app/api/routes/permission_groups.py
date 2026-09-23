@@ -58,6 +58,12 @@ class GroupMemberRequest(BaseModel):
     user_id: uuid.UUID
 
 
+class PurgeRevokedKeysOut(BaseModel):
+    """清空历史凭据的结果;0 = 该档位下没有已吊销的 Key(不是错误,前端据计数提示即可)。"""
+
+    deleted_count: int
+
+
 class GroupMemberOut(BaseModel):
     user_id: str
     username: str | None
@@ -173,6 +179,23 @@ def delete_permission_group(
     ip: str = Depends(get_client_ip),
 ) -> None:
     service.delete(space_id, user, group_id, ip)
+
+
+@router.delete("/{group_id}/revoked-keys", response_model=PurgeRevokedKeysOut)
+def purge_revoked_keys(
+    space_id: uuid.UUID,
+    group_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: PermissionGroupService = Depends(get_permission_group_service),
+    ip: str = Depends(get_client_ip),
+) -> PurgeRevokedKeysOut:
+    """清空该档位**已吊销**凭据的台账行(OPT-44)。
+
+    为什么单独一个端点而不是删档时顺带做:删凭据行是不可逆的,而且只该碰到已吊销的
+    Key —— 让"删档位"顺手抹掉在用的凭据,等于给一次误点开了更大的口子。
+    """
+    deleted = service.purge_revoked_keys(space_id, user, group_id, ip)
+    return PurgeRevokedKeysOut(deleted_count=deleted)
 
 
 @router.post("/{group_id}/members", response_model=PermissionGroupOut)

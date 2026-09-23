@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +48,8 @@ class FakeApiKeyRepository:
     def create(self, api_key):
         if api_key.id is None:  # 模拟 DB flush 时主键 default 生效
             api_key.id = uuid.uuid4()
+        if api_key.created_at is None:  # 模拟 server_default=now()
+            api_key.created_at = datetime.now(UTC)
         self.keys[api_key.id] = api_key
         return api_key
 
@@ -56,6 +59,12 @@ class FakeApiKeyRepository:
 
     def list_for_space(self, space_id: uuid.UUID):
         return [k for k in self.keys.values() if k.space_id == space_id]
+
+    def list_for_group(self, group_id: uuid.UUID):
+        return [k for k in self.keys.values() if k.group_id == group_id]
+
+    def delete(self, api_key) -> None:
+        self.keys.pop(api_key.id, None)
 
 
 def make_api_env() -> SimpleNamespace:

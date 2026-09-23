@@ -251,6 +251,94 @@ def test_write_actions_require_admin_over_http(client) -> None:
     )
 
 
+# ---------------------------- 清空历史凭据与删档闭环(OPT-44) ----------------------------
+
+
+def _revoke(client, auth: dict, space_id: str, key_id: str) -> None:
+    assert (
+        client.delete(f"/api/v1/spaces/{space_id}/api-keys/{key_id}", headers=auth).status_code
+        == 204
+    )
+
+
+def test_purge_revoked_keys_unblocks_group_delete(client) -> None:
+    """真链路闭环:吊销 → 删档被拦(计数指到"清空") → 清空 → 删档 204。
+
+    集成测要的是 FK RESTRICT 真的在场:服务层若漏算已吊销的 Key,这里会以 500 收场。
+    """
+    _owner, auth, space_id = _space(client)
+    group = create_group(client, auth, space_id, name="CI 档")
+    key = create_key(client, auth, space_id, group["id"], name="旧流水")
+    _revoke(client, auth, space_id, key["id"])
+
+    refused = client.delete(f"{_base(space_id)}/{group['id']}", headers=auth)
+    assert refused.status_code == 400, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"]["active_key_count"] == 0
+    assert error["details"]["revoked_key_count"] == 1
+
+    purged = client.delete(f"{_base(space_id)}/{group['id']}/revoked-keys", headers=auth)
+    assert purged.status_code == 200, purged.text
+    assert purged.json() == {"deleted_count": 1}
+    logs = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["items"]
+    purge_log = next(x for x in logs if x["action"] == "api_key.purged")
+    assert purge_log["detail"]["key_id"] == key["id"]
+    assert purge_log["detail"]["group_name"] == "CI 档"
+
+    assert client.delete(f"{_base(space_id)}/{group['id']}", headers=auth).status_code == 204
+
+
+def test_purge_never_touches_a_live_key(client) -> None:
+    """在用与已吊销同档时,清空只带走已吊销的那把,删档继续被在用的挡住。"""
+    _owner, auth, space_id = _space(client)
+    group = create_group(client, auth, space_id)
+    live = create_key(client, auth, space_id, group["id"], name="在跑")
+    dead = create_key(client, auth, space_id, group["id"], name="废弃")
+    _revoke(client, auth, space_id, dead["id"])
+
+    purged = client.delete(f"{_base(space_id)}/{group['id']}/revoked-keys", headers=auth)
+    assert purged.json() == {"deleted_count": 1}
+    remaining = client.get(f"/api/v1/spaces/{space_id}/api-keys", headers=auth).json()
+    assert [k["id"] for k in remaining] == [live["id"]]
+    refused = client.delete(f"{_base(space_id)}/{group['id']}", headers=auth)
+    assert refused.status_code == 400
+    assert refused.json()["error"]["details"]["revoked_key_count"] == 0
+
+
+def test_purge_on_group_without_keys_returns_zero(client) -> None:
+    _owner, auth, space_id = _space(client)
+    group = create_group(client, auth, space_id)
+    resp = client.delete(f"{_base(space_id)}/{group['id']}/revoked-keys", headers=auth)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted_count": 0}
+
+
+def test_purge_requires_admin_and_jwt(client) -> None:
+    """删台账行不可逆:门槛 Admin+;这组路由只认人,带 Key 一律 401。"""
+    _owner, auth, space_id = _space(client)
+    editor = _add_member(client, auth, space_id, "grpeditor5", 20)
+    editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
+    group = create_group(client, auth, space_id)
+    resp = client.delete(f"{_base(space_id)}/{group['id']}/revoked-keys", headers=editor_auth)
+    assert resp.status_code == 403
+    key = create_key(client, auth, space_id, group["id"])
+    resp = client.delete(
+        f"{_base(space_id)}/{group['id']}/revoked-keys",
+        headers={"X-API-Key": key["plaintext"]},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "AUTH_REQUIRED"
+
+
+def test_purge_other_space_group_is_404(client) -> None:
+    _owner, auth, space_id = _space(client)
+    _foreign, foreign_auth, foreign_space = _space(client)
+    foreign = create_group(client, foreign_auth, foreign_space)
+    resp = client.delete(f"{_base(space_id)}/{foreign['id']}/revoked-keys", headers=auth)
+    assert resp.status_code == 404
+
+
 # ---------------------------- 跨空间与凭据边界 ----------------------------
 
 

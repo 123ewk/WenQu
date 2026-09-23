@@ -16,6 +16,8 @@
   (旧 kb_ids 为空)` 回填,所以"全部库"必须显式勾选,不会因为漏填而静默放开全空间;
 - **删除有门槛**:档位下还挂着凭据或成员时拒绝删除,不做"顺手级联"。级联会一次
   性抹掉一批人/一批程序的权限,而且明文 Key 不可回显,事后无法向使用方交代。
+  凭据那一栏里**已吊销**的行可以走 `purge_revoked_keys` 彻底清掉(OPT-44)——
+  外键是 RESTRICT,不给这条出路,签发过 Key 的档位就永远删不掉了。
 
 校验一律复用 API Key 那一份(`normalize_capabilities` / `assert_kbs_in_space`),
 两条链路对同一个拼错的能力名、同一个跨租户知识库 id 必须给出同一个错误。
@@ -175,15 +177,26 @@ class PermissionGroupService:
         """只允许删"空档":还挂着凭据或成员的档位一律拒绝(见模块 docstring 的删除门槛)。"""
         self._require_role(space_id, user.id, Role.ADMIN)
         group = self._get_in_space(space_id, group_id)
-        attached = [
-            k for k in self._api_keys.list_for_space(space_id) if k.group_id == group.id
-        ]
+        attached = self._api_keys.list_for_group(group.id)
         if attached:
+            # 已吊销的凭据照样占着 RESTRICT 外键,所以它们也得有一条出路,否则文案在劝人做无效动作
+            revoked_count = sum(1 for k in attached if k.revoked_at is not None)
+            active_count = len(attached) - revoked_count
+            steps = []
+            if active_count:
+                steps.append(f"{active_count} 把在用的先吊销")
+            if revoked_count:
+                steps.append(f"{revoked_count} 把已吊销的先清空历史凭据")
             raise AppError(
                 ErrorCode.VALIDATION,
-                f"该档位下还有 {len(attached)} 把 API Key,请先吊销或改指到别的档位",
+                f"该档位下还有 {len(attached)} 把 API Key({'、'.join(steps)}),处理完才能删档",
                 http_status=400,
-                details={"group_id": str(group.id), "key_count": len(attached)},
+                details={
+                    "group_id": str(group.id),
+                    "key_count": len(attached),
+                    "active_key_count": active_count,
+                    "revoked_key_count": revoked_count,
+                },
             )
         member_count = len(self._groups.list_members(group.id))
         if member_count:
@@ -202,6 +215,48 @@ class PermissionGroupService:
             detail={"group_id": str(group.id)},
             ip=ip,
         )
+
+    def purge_revoked_keys(
+        self, space_id: uuid.UUID, user: User, group_id: uuid.UUID, ip: str = ""
+    ) -> int:
+        """彻底删掉本档位**已吊销**凭据的台账行(OPT-44:删档死锁的出路)。
+
+        为什么只碰已吊销的:吊销才是"作废"这个动作的正式记录,在用的 Key 必须先经
+        `DELETE /api-keys/{id}` 吊销,管理员不可能绕过吊销直接抹掉一把还能用的凭据。
+        为什么必须逐把留审计:行一删,Key 的归因(谁签的、以谁的身份跑过、最后用过没)
+        就只剩审计这一份证据,所以快照要在删除前写。
+        """
+        self._require_role(space_id, user.id, Role.ADMIN)
+        group = self._get_in_space(space_id, group_id)
+        purged = 0
+        for api_key in self._api_keys.list_for_group(group.id):
+            if api_key.revoked_at is None:
+                continue
+            self._log(
+                actor_id=user.id,
+                space_id=space_id,
+                action=AuditAction.API_KEY_PURGED,
+                target=api_key.name,
+                detail={
+                    "key_id": str(api_key.id),
+                    "key_hint": api_key.key_hint,
+                    "group_id": str(group.id),
+                    "group_name": group.name,
+                    "owner_user_id": str(api_key.owner_user_id or api_key.created_by or ""),
+                    "created_by": str(api_key.created_by or ""),
+                    "created_at": api_key.created_at.isoformat(),
+                    "revoked_at": (
+                        api_key.revoked_at.isoformat() if api_key.revoked_at else ""
+                    ),
+                    "last_used_at": (
+                        api_key.last_used_at.isoformat() if api_key.last_used_at else ""
+                    ),
+                },
+                ip=ip,
+            )
+            self._api_keys.delete(api_key)
+            purged += 1
+        return purged
 
     def get(self, space_id: uuid.UUID, user: User, group_id: uuid.UUID) -> PermissionGroupView:
         self._require_role(space_id, user.id, Role.VIEWER)

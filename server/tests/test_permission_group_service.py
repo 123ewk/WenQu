@@ -235,6 +235,106 @@ def test_delete_refused_while_keys_attached() -> None:
         scene.group_svc.delete(scene.space_id, scene.owner, group.id)
     assert exc.value.code_str == _VALIDATION
     assert exc.value.details["key_count"] == 1
+    assert exc.value.details["active_key_count"] == 1
+    assert exc.value.details["revoked_key_count"] == 0
+
+
+def test_delete_error_counts_revoked_keys_separately() -> None:
+    """OPT-44:已吊销的 Key 照样占着外键,所以文案必须把它单独指出来,否则在劝人做无效动作。
+
+    旧文案只说"请先吊销/改指",而吊销已经是它的最终状态 —— 管理员照做也删不掉档。
+    """
+    scene = make_group_env()
+    group = _create(scene)
+    created = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="ci"
+    )
+    scene.svc.revoke(scene.space_id, scene.owner, created.api_key.id)
+    with pytest.raises(AppError) as exc:
+        scene.group_svc.delete(scene.space_id, scene.owner, group.id)
+    details = exc.value.details
+    assert details["key_count"] == 1
+    assert details["active_key_count"] == 0
+    assert details["revoked_key_count"] == 1
+    assert "清空" in exc.value.message
+    assert "先吊销" not in exc.value.message  # 已吊销的那把不该再被要求"先吊销"
+
+
+def test_purge_revoked_keys_only_touches_revoked() -> None:
+    """清空历史凭据不能顺手废掉在跑的 Key —— 那是吊销的职责,且有独立审计。"""
+    scene = make_group_env()
+    group = _create(scene)
+    kept = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="在用"
+    )
+    gone = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="已废"
+    )
+    scene.svc.revoke(scene.space_id, scene.owner, gone.api_key.id)
+    assert scene.group_svc.purge_revoked_keys(scene.space_id, scene.owner, group.id) == 1
+    left = scene.api_keys.list_for_group(group.id)
+    assert [k.name for k in left] == ["在用"]
+    assert scene.api_keys.get(kept.api_key.id) is not None
+    assert scene.api_keys.get(gone.api_key.id) is None
+
+
+def test_purge_writes_one_audit_snapshot_per_key() -> None:
+    """行删了归因就只剩审计:每把 Key 必须各有一条含归属与时间点的快照。"""
+    scene = make_group_env()
+    group = _create(scene, name="CI 档")
+    created = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.editor.id, group_id=group.id, name="ci"
+    )
+    key_id = created.api_key.id
+    scene.svc.revoke(scene.space_id, scene.owner, key_id)
+    scene.group_svc.purge_revoked_keys(scene.space_id, scene.owner, group.id)
+    (log,) = _logs(scene, AuditAction.API_KEY_PURGED)
+    assert log.target == "ci"
+    assert log.detail["key_id"] == str(key_id)
+    assert log.detail["group_id"] == str(group.id)
+    assert log.detail["group_name"] == "CI 档"
+    assert log.detail["owner_user_id"] == str(scene.editor.id)
+    assert log.detail["key_hint"] == created.api_key.key_hint
+    assert log.detail["revoked_at"] and log.detail["created_at"]
+
+
+def test_purge_then_delete_group_succeeds() -> None:
+    """死锁的出路必须是闭环:清空历史凭据之后,空档能删掉。"""
+    scene = make_group_env()
+    group = _create(scene)
+    created = scene.svc.create(
+        scene.space_id, scene.owner, owner_user_id=scene.owner.id, group_id=group.id, name="ci"
+    )
+    scene.svc.revoke(scene.space_id, scene.owner, created.api_key.id)
+    assert scene.group_svc.purge_revoked_keys(scene.space_id, scene.owner, group.id) == 1
+    scene.group_svc.delete(scene.space_id, scene.owner, group.id)
+    assert scene.groups.get(group.id) is None
+
+
+def test_purge_on_empty_group_returns_zero() -> None:
+    """没有历史凭据不是错误:返回 0,前端据计数提示即可。"""
+    scene = make_group_env()
+    group = _create(scene)
+    assert scene.group_svc.purge_revoked_keys(scene.space_id, scene.owner, group.id) == 0
+    assert _logs(scene, AuditAction.API_KEY_PURGED) == []
+
+
+def test_purge_requires_admin() -> None:
+    """彻底删除是不可逆动作,门槛与吊销/签发同闸(Admin+)。"""
+    scene = make_group_env()
+    group = _create(scene)
+    with pytest.raises(AppError) as exc:
+        scene.group_svc.purge_revoked_keys(scene.space_id, scene.editor, group.id)
+    assert exc.value.code_str == _FORBIDDEN
+
+
+def test_purge_other_space_group_404() -> None:
+    scene = make_group_env()
+    group = _create(scene)
+    other, _ = scene.env.space_svc.create(scene.admin, "别的空间", "")
+    with pytest.raises(AppError) as exc:
+        scene.group_svc.purge_revoked_keys(other.id, scene.admin, group.id)
+    assert exc.value.code_str == _NOT_FOUND
 
 
 def test_delete_refused_while_members_attached() -> None:
