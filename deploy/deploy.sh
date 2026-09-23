@@ -82,8 +82,9 @@ BACKUP_DEST=""
 if [ "${SKIP_BACKUP:-0}" = "1" ]; then
   log "SKIP_BACKUP=1:跳过备份(仅限演练,生产禁用)"
 else
+  # 失败时把已捕获的 stdout 打出来:backup.sh 的诊断信息一半在 stdout,吞掉就只能靠猜。
   BACKUP_OUT="$(BACKUP_DIR="$BACKUP_DIR" COMPOSE_FILE="$COMPOSE_FILE" COMPOSE_ENV_FILE="$ENV_FILE" \
-    "$ROOT/deploy/backup.sh")" || die "备份未成功,拒绝进入迁移"
+    "$ROOT/deploy/backup.sh")" || { printf '%s\n' "$BACKUP_OUT"; die "备份未成功,拒绝进入迁移"; }
   printf '%s\n' "$BACKUP_OUT"
   BACKUP_DEST="$(printf '%s\n' "$BACKUP_OUT" | sed -n 's/^\[backup\] 完成 //p' | tail -1)"
   [ -n "$BACKUP_DEST" ] && [ -d "$BACKUP_DEST" ] || die "备份产物缺失: '$BACKUP_DEST'"
