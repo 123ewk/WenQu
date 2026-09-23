@@ -66,16 +66,9 @@ PREV=""
 [ -f "$STATE_FILE" ] && PREV="$(cat "$STATE_FILE" 2>/dev/null || true)"
 log "目标版本 $VERSION(上一版本 ${PREV:-无})"
 
-# ---- 构建 + 归档推 ACR --------------------------------------------------------
+# ---- 构建(归档推送放到发布成功之后,见文末)---------------- ------------------
 TAG="$VERSION"
 compose build
-if [ "$PUSH_ACR" = "1" ] && [ "$IMAGE_PREFIX" != "wenqu" ]; then
-  for svc in "${APP_IMAGES[@]}"; do
-    # 推送失败只告警不阻断:日常部署靠本机构建好的镜像,ACR 是归档位
-    docker push "$IMAGE_PREFIX/wenqu-$svc:$VERSION" \
-      || log "警告:wenqu-$svc:$VERSION 未归档到 ACR"
-  done
-fi
 
 # ---- 门 2:迁移前强制备份 ------------------------------------------------------
 BACKUP_DEST=""
@@ -131,3 +124,25 @@ fi
 
 printf '%s' "$VERSION" > "$STATE_FILE"
 log "完成:生产已运行 $VERSION"
+
+# ---- 归档推送(线上已经好了才传)------------------------------------------------
+# 跨云公网上传是分钟级甚至十几分钟级,把它放在起服之前等于让档案馆拖住发布。
+# 失败/慢都不影响线上:回滚用的是本机镜像,ACR 只是归档与跨机恢复位。
+if [ "$PUSH_ACR" = "1" ] && [ "$IMAGE_PREFIX" != "wenqu" ]; then
+  ARCHIVE_LOG="${STATE_FILE}.archives"
+  for svc in "${APP_IMAGES[@]}"; do
+    img="$IMAGE_PREFIX/wenqu-$svc:$VERSION"
+    # 每推一次记一行流水:回收清单靠它判断"本机删掉后还能不能从 ACR 拉回"。
+    if docker push "$img"; then
+      printf 'ok   %s\n' "$img" >> "$ARCHIVE_LOG"
+    else
+      printf 'fail %s\n' "$img" >> "$ARCHIVE_LOG"
+      log "警告:$img 未归档到 ACR(本机镜像仍可用,但删前要知道 ACR 上没这份)"
+    fi
+  done
+  log "归档流水: $ARCHIVE_LOG"
+fi
+
+# ---- 回收清单(严格只读:算出该删什么并打印成可复制命令,删除动作一律人工)----
+WENQU_STATE_FILE="$STATE_FILE" BACKUP_DIR="$BACKUP_DIR" \
+  "$ROOT/deploy/cleanup-report.sh" all || log "警告:回收清单未生成(不影响发布结果)"
