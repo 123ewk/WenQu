@@ -54,3 +54,17 @@ $COMPOSE cp minio:/tmp/mirror/. "$DEST/minio/"
 } | tee "$DEST/manifest.txt"
 du -sh "$DEST"
 echo "[backup] 完成 $DEST"
+
+# 保留策略:只报告"超出最近 BACKUP_KEEP 份"的旧备份,绝不自动删 ——
+# 删备份和回库同属不可逆操作,一律留给人执行(口径与 deploy.sh 的 RESTORE_HINT 一致)。
+KEEP="${BACKUP_KEEP:-7}"
+ALL="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*T[0-9]*' 2>/dev/null | sort -r)" || true
+TOTAL="$(printf '%s\n' "$ALL" | grep -c . || true)"
+EXPIRED="$(printf '%s\n' "$ALL" | tail -n +$((KEEP + 1)))"
+if [ -n "$EXPIRED" ]; then
+  echo "[backup] 共 $TOTAL 份,已超出保留份数 $KEEP,以下旧备份仍在盘上(未删除):"
+  printf '%s\n' "$EXPIRED" | while read -r d; do du -sh "$d"; done
+  echo "[backup] 确认要回收磁盘时,人工执行(不可逆): rm -rf $(printf '%s\n' "$EXPIRED" | tr '\n' ' ')"
+else
+  echo "[backup] 共 $TOTAL 份,未超出保留份数 $KEEP"
+fi
