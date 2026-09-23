@@ -66,6 +66,15 @@ class MemoryRepositoryImpl:
             .limit(1)
         )
 
+    def count_for_actor(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """本人在本空间的记忆条数(召回前的判空闸门):命中 ix_memories_space_user,零行即 0。"""
+        total = self._db.scalar(
+            select(func.count())
+            .select_from(Memory)
+            .where(Memory.space_id == space_id, Memory.user_id == user_id)
+        )
+        return int(total or 0)
+
     def search_by_embedding(
         self,
         space_id: uuid.UUID,

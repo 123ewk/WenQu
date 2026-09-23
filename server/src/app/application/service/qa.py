@@ -33,8 +33,10 @@ from app.application.repository.knowledge import (
     DocumentRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.service.memory import MemoryService
 from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
     GenerationState,
@@ -44,6 +46,7 @@ from app.application.service.qa_pipeline import (
 )
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
 from app.application.streaming import GenerationHandle, StreamSupervisor
+from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.event_log import EventLog, MemoryEventLog
 from app.core.model_usage import ChatTurnUsage
@@ -135,6 +138,23 @@ class BackgroundDb:
                 kb_ids=ctx.kb_ids,
             )
 
+    def recall_memories(self, ctx: _AskContext) -> list[str]:
+        """记忆召回(OPT-45 P2):泵线程自开会话,按 (space,user) 向量召回本人本空间记忆。
+
+        MemoryService.recall 内部已受 APP_MEMORY_ENABLED 与相似度阈值控制,关闭或空命中
+        直接返回 [] —— 与"无记忆"逐事件等价,绝不阻断问答。
+        """
+        with self._session_factory() as db:
+            service = MemoryService(
+                MemoryRepositoryImpl(db),
+                SpaceRepositoryImpl(db),
+                self._embedder,
+                get_settings(),
+            )
+            return [
+                m.content for m in service.recall(ctx.space_id, ctx.user_id, ctx.question)
+            ]
+
     def save_message(self, message: Message) -> Message:
         with self._session_factory() as db:
             messages = MessageRepositoryImpl(db)
@@ -160,6 +180,7 @@ class QAService:
         pipeline: Sequence[str] | None = None,
         agent_max_rounds: int = 20,
         turn_usage: ChatTurnUsage | None = None,
+        recall: Callable[[_AskContext], list[str]] | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -172,6 +193,8 @@ class QAService:
         self._event_log = event_log if event_log is not None else MemoryEventLog()
         self._supervisor = supervisor if supervisor is not None else StreamSupervisor()
         self._background_db = background_db
+        # 记忆召回协作者(非泵线程路径/单测注入);泵线程优先走 BackgroundDb.recall_memories
+        self._recall = recall
         # 流水线插件链(OPT-5):默认序 = M2 硬编码直调的行为;可按名重组
         self._pipeline = Pipeline(
             build_stages(
@@ -179,6 +202,7 @@ class QAService:
                 search=self._search,
                 persist=self._persist_assistant,
                 chat=chat,
+                recall=self._recall_memories,
             )
         )
         self._agent_max_rounds = agent_max_rounds  # Agent 工具循环轮数上限(OPT-10)
@@ -348,6 +372,7 @@ class QAService:
         def emit(event_type: str, payload: dict) -> None:
             self._event_log.append(sid, event_type, payload)
 
+        memories = self._recall_memories(ctx)
         outcome = AgentRunner(
             chat=self._chat,
             search=self._agent_search(ctx),
@@ -360,6 +385,7 @@ class QAService:
             ToolContext(user_id=ctx.user_id, space_id=ctx.space_id, kb_ids=ctx.kb_ids),
             ctx.question,
             ctx.history,
+            memories=memories,
         )
         if outcome.error is not None:
             self._event_log.append(sid, "error", {"message": outcome.error})
@@ -439,6 +465,21 @@ class QAService:
             kb_ids=ctx.kb_ids,
             model_id=ctx.model_id,
         )
+
+    def _recall_memories(self, ctx: _AskContext) -> list[str]:
+        """记忆召回(两条路径共用):泵线程用 BackgroundDb 自开会话,否则用注入协作者。
+
+        未注入(单测/无记忆底座)返回 [] —— 与"无记忆"逐事件等价。召回失败绝不冒泡:
+        它是增益不是必需路径,吞异常回退空记忆(直检路径另有 RecallMemoryStage 兜底)。
+        """
+        try:
+            if self._background_db is not None:
+                return self._background_db.recall_memories(ctx)
+            if self._recall is not None:
+                return self._recall(ctx)
+        except Exception:  # noqa: BLE001 — 记忆召回失败只降级,不中断问答
+            logger.exception("memory recall failed, degrade to no-memory")
+        return []
 
     def _persist_assistant(
         self,

@@ -54,6 +54,11 @@ class FakeMemoryRepo:
         ]
         return [(m, 0.9) for m in rows[:limit]]
 
+    def count_for_actor(self, space_id, user_id) -> int:
+        return sum(
+            1 for m in self.items.values() if m.space_id == space_id and m.user_id == user_id
+        )
+
     def delete(self, memory: Memory) -> None:
         self.items.pop(memory.id, None)
 
@@ -128,6 +133,13 @@ def test_recall_returns_memories() -> None:
     env.svc.save_confirmed(env.space.id, env.user.id, "内容")
     hits = env.svc.recall(env.space.id, env.user.id, "问题")
     assert len(hits) == 1
+
+
+def test_recall_skips_embedding_when_no_memories() -> None:
+    """零记忆先判空:不打 embedding —— 无记忆用户的问答链路与现状逐调用等价。"""
+    env = _build()
+    assert env.svc.recall(env.space.id, env.user.id, "问题") == []
+    assert env.embedder.calls == []
 
 
 def test_update_reembeds_only_on_content_change() -> None:

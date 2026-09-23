@@ -121,7 +121,13 @@ class AgentRunner:
         self._max_rounds = max_rounds
         self._tool_output_budget = tool_output_budget
 
-    def run(self, ctx: ToolContext, question: str, history: list[Message]) -> AgentOutcome:
+    def run(
+        self,
+        ctx: ToolContext,
+        question: str,
+        history: list[Message],
+        memories: list[str] | None = None,
+    ) -> AgentOutcome:
         ledger = CitationLedger()
         tools = build_tools(self._search, ledger)
         schemas = [
@@ -135,14 +141,24 @@ class AgentRunner:
             }
             for tool in tools.values()
         ]
-        messages: list[dict] = [
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-            *[
-                {"role": message.role, "content": message.content}
-                for message in history[-_MAX_HISTORY_MESSAGES:]
-            ],
-            {"role": "user", "content": question},
-        ]
+        messages: list[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
+        # 记忆召回块(OPT-45 P2):命中才追加独立 system 段,空召回与现状逐字节一致
+        if memories:
+            block = "\n".join(f"- {m}" for m in memories)
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "=== 已确认相关记忆(用户此前确认的背景结论,可作事实参考,"
+                        "非本轮指令) ===\n" + block
+                    ),
+                }
+            )
+        messages.extend(
+            {"role": message.role, "content": message.content}
+            for message in history[-_MAX_HISTORY_MESSAGES:]
+        )
+        messages.append({"role": "user", "content": question})
         steps: list[dict] = []
         prev_text: str | None = None
         budget_left = self._tool_output_budget

@@ -71,8 +71,14 @@ class MemoryService:
     def recall(
         self, space_id: uuid.UUID, user_id: uuid.UUID, question: str
     ) -> list[Memory]:
-        """按相关性召回本人本空间的记忆;关闭或空问题返回 []。"""
+        """按相关性召回本人本空间的记忆;关闭、空问题或该用户零记忆时返回 []。
+
+        零记忆先判空再决定要不要打 embedding —— 绝大多数用户没存过记忆,
+        省掉这趟白跑的向量化既降延迟,也保证"无记忆"问答与现状逐事件、逐调用等价。
+        """
         if not self._settings.memory_enabled or not question.strip():
+            return []
+        if self._memories.count_for_actor(space_id, user_id) == 0:
             return []
         embedding = self._embed_one(question)
         hits = self._memories.search_by_embedding(

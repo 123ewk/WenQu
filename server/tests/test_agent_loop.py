@@ -89,7 +89,14 @@ class Collector:
         return [t for t, _p in self.events]
 
 
-def _run(chat, search, stop: threading.Event | None = None, max_rounds: int = 20, **kwargs):
+def _run(
+    chat,
+    search,
+    stop: threading.Event | None = None,
+    max_rounds: int = 20,
+    memories: list[str] | None = None,
+    **kwargs,
+):
     events = Collector()
     runner = AgentRunner(
         chat=chat,
@@ -99,7 +106,7 @@ def _run(chat, search, stop: threading.Event | None = None, max_rounds: int = 20
         max_rounds=max_rounds,
         **kwargs,
     )
-    return runner.run(_ctx(), "报销上限是多少?", []), events
+    return runner.run(_ctx(), "报销上限是多少?", [], memories=memories), events
 
 
 def test_happy_path_tool_round_then_streamed_answer() -> None:
@@ -278,3 +285,27 @@ def test_total_budget_skips_execution_and_guides_answer() -> None:
     assert len(search_calls) == 1  # 只有第一次真正执行
     exhausted = [p for t, p in events.events if t == "tool_result" and "预算已用尽" in p["output"]]
     assert len(exhausted) == 2  # c1/c2 被预算拦截
+
+
+# ---------------------------- OPT-45 P2:记忆召回注入 Agent 系统段 ----------------------------
+
+
+def test_memories_injected_as_extra_system_block() -> None:
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]), memories=["用户确认:A 方案已上线"])
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert any(
+        "已确认相关记忆" in m["content"] and "A 方案已上线" in m["content"]
+        for m in system_msgs
+    )
+
+
+def test_no_memories_keeps_single_system_message() -> None:
+    """空召回(None)与不传一致:仍只有一条基础 system,不注入记忆块。"""
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]))
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert len(system_msgs) == 1
+    assert "已确认相关记忆" not in system_msgs[0]["content"]
