@@ -28,10 +28,12 @@ from app.api.deps import (
     get_api_key_service,
     get_current_actor,
     get_current_user,
+    get_memory_service,
     get_qa_service,
 )
 from app.api.routing import CommitBeforeSendRoute
 from app.application.service.api_keys import ApiKeyService
+from app.application.service.memory import MemoryService
 from app.application.service.qa import QAService
 from app.domain.models import Conversation, Message, User
 
@@ -180,6 +182,38 @@ def compress_conversation(
         summary=result.summary,
         summary_through_seq=result.summary_through_seq,
         reason=result.reason,
+    )
+
+
+class ContextOut(BaseModel):
+    used_tokens: int | None = None
+    window_tokens: int | None = None
+    in_scope_memory_count: int
+    compressible_messages: int
+    can_compress: bool
+    has_summary: bool
+
+
+@router.get("/conversations/{conversation_id}/context", response_model=ContextOut)
+def get_conversation_context(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: QAService = Depends(get_qa_service),
+    memory_service: MemoryService = Depends(get_memory_service),
+) -> ContextOut:
+    """上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩。
+
+    缓存命中本期不展示(无稳定数据源,见 OPT-45 §9-Q2),前端进度条只读 used/window。
+    """
+    snapshot = service.get_context_snapshot(user.id, space_id, conversation_id)
+    return ContextOut(
+        used_tokens=snapshot.used_tokens,
+        window_tokens=snapshot.window_tokens,
+        in_scope_memory_count=memory_service.count(space_id, user.id),
+        compressible_messages=snapshot.compressible_messages,
+        can_compress=snapshot.can_compress,
+        has_summary=snapshot.has_summary,
     )
 
 

@@ -47,6 +47,7 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}",
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/messages",
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/compress",
+    "/api/v1/spaces/{space_id}/conversations/{conversation_id}/context",
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
     "/api/v1/spaces/{space_id}/api-keys",
     "/api/v1/spaces/{space_id}/api-keys/{key_id}",

@@ -41,6 +41,7 @@ from app.application.service.compaction import (
     CompactionService,
     CompactResult,
     assemble_history,
+    read_summary,
 )
 from app.application.service.memory import MemoryService
 from app.application.service.qa_pipeline import (
@@ -98,6 +99,17 @@ def _last_context_usage(history: Sequence[Message]) -> tuple[int, int] | None:
         ):
             return message.context_used_tokens, message.context_window_tokens
     return None
+
+
+@dataclass
+class ContextSnapshot:
+    """上下文悬浮窗读数(OPT-45 P4):进度条 + 压缩可行性;不含缓存命中(P-cache 另议)。"""
+
+    used_tokens: int | None
+    window_tokens: int | None
+    compressible_messages: int
+    can_compress: bool
+    has_summary: bool
 
 
 class BackgroundDb:
@@ -272,6 +284,34 @@ class QAService:
             self._conversations, self._messages, self._chat.chat_stream, get_settings()
         )
         return service.compress(conversation, model_id)
+
+    def get_context_snapshot(
+        self, user_id: uuid.UUID, space_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> ContextSnapshot:
+        """悬浮窗读数:占用快照(复用 OPT-29)+ 还能折几条 + 能否压缩。
+
+        used/window 取上一条带齐快照的 assistant;都没有则 null(首问/未打模型)。
+        can_compress 与手动端点同门槛:开启压缩 ∧ 压缩点后候选 ≥ min_messages ∧ 有可折叠项。
+        """
+        conversation = self._get_conversation(user_id, space_id, conversation_id)
+        history = self._messages.list_for_conversation(conversation.id)
+        estimate = _last_context_usage(history)
+        settings = get_settings()
+        _, through = read_summary(conversation.meta)
+        candidates = [m for m in history if m.seq > through]
+        foldable = max(0, len(candidates) - settings.compact_keep_recent)
+        can_compress = (
+            settings.compact_enabled
+            and len(candidates) >= settings.compact_min_messages
+            and foldable > 0
+        )
+        return ContextSnapshot(
+            used_tokens=None if estimate is None else estimate[0],
+            window_tokens=None if estimate is None else estimate[1],
+            compressible_messages=foldable,
+            can_compress=can_compress,
+            has_summary=through > 0,
+        )
 
     def rename_conversation(
         self,

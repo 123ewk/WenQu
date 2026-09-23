@@ -11,7 +11,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.api.deps import get_chat_gateway
+from app.api.deps import get_chat_gateway, get_embedding_gateway
 from app.core.db import get_session_factory
 from app.domain.models import Conversation, Message
 from tests.conftest import register as _register
@@ -31,29 +31,49 @@ class StubChat:
         return []
 
 
+class StubEmbedder:
+    def embed(self, texts, model_id=None):
+        out = []
+        for t in texts:
+            v = [0.0] * 1024
+            v[abs(hash(t)) % 1000] = 1.0
+            out.append(v)
+        return out
+
+
 @pytest.fixture(autouse=True)
 def _stub_chat(client):
     client.app.dependency_overrides[get_chat_gateway] = StubChat
+    client.app.dependency_overrides[get_embedding_gateway] = StubEmbedder
     yield
     client.app.dependency_overrides.pop(get_chat_gateway, None)
+    client.app.dependency_overrides.pop(get_embedding_gateway, None)
 
 
 def _auth(session: dict) -> dict:
     return {"Authorization": f"Bearer {session['access_token']}"}
 
 
-def _seed_messages(conversation_id: str, space_id: str, count: int) -> None:
+def _seed_messages(
+    conversation_id: str,
+    space_id: str,
+    count: int,
+    *,
+    last_usage: tuple[int, int] | None = None,
+) -> None:
     with get_session_factory()() as db:
+        last_assistant = count if count % 2 == 0 else count - 1  # 最大偶数 seq = 最后一条 assistant
         for i in range(1, count + 1):
-            db.add(
-                Message(
-                    conversation_id=uuid.UUID(conversation_id),
-                    space_id=uuid.UUID(space_id),
-                    role="user" if i % 2 else "assistant",
-                    content=f"历史消息 {i}",
-                    seq=i,
-                )
+            message = Message(
+                conversation_id=uuid.UUID(conversation_id),
+                space_id=uuid.UUID(space_id),
+                role="user" if i % 2 else "assistant",
+                content=f"历史消息 {i}",
+                seq=i,
             )
+            if last_usage is not None and i == last_assistant:
+                message.context_used_tokens, message.context_window_tokens = last_usage
+            db.add(message)
         db.commit()
 
 
@@ -127,6 +147,80 @@ def test_compress_foreign_conversation_is_404(client) -> None:
     resp = client.post(
         f"/api/v1/spaces/{intruder_space}/conversations/{conversation_id}/compress",
         json={},
+        headers=intruder_auth,
+    )
+    assert resp.status_code == 404
+
+
+def test_context_reports_usage_counts_and_compressibility(client) -> None:
+    session = _register(client, "ctxowner")
+    auth = _auth(session)
+    space_id = client.post("/api/v1/spaces", json={"name": "ctx-sp"}, headers=auth).json()["id"]
+    conversation_id = client.post(
+        f"/api/v1/spaces/{space_id}/conversations", json={"title": "长"}, headers=auth
+    ).json()["id"]
+    _seed_messages(conversation_id, space_id, 12, last_usage=(5200, 64000))
+    client.post(
+        f"/api/v1/spaces/{space_id}/memories", json={"content": "结论A"}, headers=auth
+    )
+
+    body = client.get(
+        f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/context", headers=auth
+    ).json()
+    assert body["used_tokens"] == 5200
+    assert body["window_tokens"] == 64000
+    assert body["in_scope_memory_count"] == 1
+    # 12 条候选、keep_recent=6 → 还能折 6 条,未压缩 → can_compress True、has_summary False
+    assert body["compressible_messages"] == 6
+    assert body["can_compress"] is True
+    assert body["has_summary"] is False
+
+    # 压缩后:候选缩到最近 6 条内,无可折叠 → can_compress False,has_summary True
+    client.post(
+        f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/compress",
+        json={},
+        headers=auth,
+    )
+    after = client.get(
+        f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/context", headers=auth
+    ).json()
+    assert after["has_summary"] is True
+    assert after["can_compress"] is False
+    assert after["compressible_messages"] == 0
+
+
+def test_context_without_snapshot_returns_null_usage(client) -> None:
+    session = _register(client, "ctxnull")
+    auth = _auth(session)
+    space_id = client.post("/api/v1/spaces", json={"name": "ctx2"}, headers=auth).json()["id"]
+    conversation_id = client.post(
+        f"/api/v1/spaces/{space_id}/conversations", json={"title": "空"}, headers=auth
+    ).json()["id"]
+    body = client.get(
+        f"/api/v1/spaces/{space_id}/conversations/{conversation_id}/context", headers=auth
+    ).json()
+    assert body["used_tokens"] is None and body["window_tokens"] is None
+    assert body["in_scope_memory_count"] == 0
+    assert body["can_compress"] is False
+
+
+def test_context_cross_user_is_404(client) -> None:
+    owner = _register(client, "ctxo")
+    owner_auth = _auth(owner)
+    space_id = client.post(
+        "/api/v1/spaces", json={"name": "ctxo-sp"}, headers=owner_auth
+    ).json()["id"]
+    conversation_id = client.post(
+        f"/api/v1/spaces/{space_id}/conversations", json={"title": "t"}, headers=owner_auth
+    ).json()["id"]
+
+    intruder = _register(client, "ctxi")
+    intruder_auth = _auth(intruder)
+    intruder_space = client.post(
+        "/api/v1/spaces", json={"name": "ctxi-sp"}, headers=intruder_auth
+    ).json()["id"]
+    resp = client.get(
+        f"/api/v1/spaces/{intruder_space}/conversations/{conversation_id}/context",
         headers=intruder_auth,
     )
     assert resp.status_code == 404

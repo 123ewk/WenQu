@@ -2298,6 +2298,65 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/conversations/{conversation_id}/context": {
+      "get": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Get Conversation Context",
+        "description": "上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩。\n\n缓存命中本期不展示(无稳定数据源,见 OPT-45 §9-Q2),前端进度条只读 used/window。",
+        "operationId": "get_conversation_context_api_v1_spaces__space_id__conversations__conversation_id__context_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream": {
       "get": {
         "tags": [
@@ -5249,6 +5308,56 @@
         },
         "type": "object",
         "title": "CompressRequest"
+      },
+      "ContextOut": {
+        "properties": {
+          "used_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used Tokens"
+          },
+          "window_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Tokens"
+          },
+          "in_scope_memory_count": {
+            "type": "integer",
+            "title": "In Scope Memory Count"
+          },
+          "compressible_messages": {
+            "type": "integer",
+            "title": "Compressible Messages"
+          },
+          "can_compress": {
+            "type": "boolean",
+            "title": "Can Compress"
+          },
+          "has_summary": {
+            "type": "boolean",
+            "title": "Has Summary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "in_scope_memory_count",
+          "compressible_messages",
+          "can_compress",
+          "has_summary"
+        ],
+        "title": "ContextOut"
       },
       "ConversationOut": {
         "properties": {

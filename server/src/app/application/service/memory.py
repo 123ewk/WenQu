@@ -188,6 +188,11 @@ class MemoryService:
             self._proposals.active_hashes(space_id, user_id, datetime.now(UTC))
         )
 
+    def count(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """本人本空间已存记忆条数(上下文悬浮窗用);非成员按 404 防枚举。"""
+        self._require_member(space_id, user_id)
+        return self._memories.count_for_actor(space_id, user_id)
+
     def _embed_one(self, text: str) -> list[float]:
         return self._embedder.embed([text])[0]
 
