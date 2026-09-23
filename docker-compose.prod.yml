@@ -23,6 +23,7 @@ x-app-env: &app-env
 
 services:
   web:
+    image: "${APP_IMAGE_PREFIX:-wenqu}/wenqu-web:${APP_IMAGE_TAG:-latest}" # CD 按发布 tag 打版本;默认名保持人工 up 可用
     build: ./web # 多阶段:node 构建 → nginx-unprivileged 托管,SPA fallback + /api 反代 + SSE buffering off
     ports:
       - "${WEB_HTTP_PORT:-80}:8080" # 唯一对外入口;容器内监听 8080,不是 80
@@ -32,11 +33,12 @@ services:
     logging: *default-logging
 
   migrate:
+    image: "${APP_IMAGE_PREFIX:-wenqu}/wenqu-server:${APP_IMAGE_TAG:-latest}" # 与 server 同一镜像,一次性任务
     build:
       context: . # server 依赖同仓 wenqu-parser 路径包,上下文为仓库根
       dockerfile: server/Dockerfile
     command: ["uv", "run", "--no-sync", "alembic", "upgrade", "head"]
-    env_file: .env
+    env_file: "${APP_ENV_FILE:-.env}" # 绝对路径由 CD 传入;默认取 compose 同目录
     environment: *app-env
     depends_on:
       postgres:
@@ -45,10 +47,11 @@ services:
     logging: *default-logging
 
   server:
+    image: "${APP_IMAGE_PREFIX:-wenqu}/wenqu-server:${APP_IMAGE_TAG:-latest}"
     build:
       context: .
       dockerfile: server/Dockerfile
-    env_file: .env
+    env_file: "${APP_ENV_FILE:-.env}" # 绝对路径由 CD 传入;默认取 compose 同目录
     environment: *app-env
     expose:
       - "8000" # 不映射宿主端口,仅 web 反代可达
@@ -71,11 +74,12 @@ services:
     logging: *default-logging
 
   worker:
+    image: "${APP_IMAGE_PREFIX:-wenqu}/wenqu-server:${APP_IMAGE_TAG:-latest}" # 与 server 同镜像
     build:
       context: . # 与 server 同一镜像(同 build 规格,compose 会复用同一构建缓存)
       dockerfile: server/Dockerfile
     command: ["uv", "run", "--no-sync", "python", "-m", "app.worker"]
-    env_file: .env
+    env_file: "${APP_ENV_FILE:-.env}" # 绝对路径由 CD 传入;默认取 compose 同目录
     environment: *app-env
     depends_on:
       migrate:
@@ -90,6 +94,7 @@ services:
     logging: *default-logging
 
   parser:
+    image: "${APP_IMAGE_PREFIX:-wenqu}/wenqu-parser:${APP_IMAGE_TAG:-latest}"
     build: ./parser
     environment:
       PARSER_LISTEN_ADDR: "0.0.0.0:50051" # gRPC 不接受裸 ":50051"(host must not be empty)

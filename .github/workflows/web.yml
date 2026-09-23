@@ -6,6 +6,7 @@ on:
     paths: ["web/**", ".github/workflows/web.yml"]
   pull_request:
     paths: ["web/**", ".github/workflows/web.yml"]
+  workflow_call: # 供 deploy-prod.yml 复用同一套门禁,避免发布链与 CI 口径漂移
 
 jobs:
   build:

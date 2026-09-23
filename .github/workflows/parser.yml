@@ -6,6 +6,7 @@ on:
     paths: ["parser/**", ".github/workflows/parser.yml"]
   pull_request:
     paths: ["parser/**", ".github/workflows/parser.yml"]
+  workflow_call: # 供 deploy-prod.yml 复用同一套门禁,避免发布链与 CI 口径漂移
 
 jobs:
   test:

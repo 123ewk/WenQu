@@ -8,10 +8,13 @@ SRC="${1:?用法: restore.sh <备份目录>}"
 # pwd -W:Git Bash 下给出 G:/… 形式的宿主路径(docker.exe 认这个);Linux 下无 -W,回落 pwd。
 # 配合 Windows 演练需 MSYS_NO_PATHCONV=1(见下 pg_restore 注释),两平台各取所需。
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && { pwd -W 2>/dev/null || pwd; })"
-COMPOSE="docker compose -f $ROOT/docker-compose.yml --env-file $ROOT/.env"
+# 与 backup.sh 同一组入参口径:CD 传绝对路径,人工跑走默认。
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+ENV_FILE="${COMPOSE_ENV_FILE:-$ROOT/.env}"
+COMPOSE="docker compose -f $ROOT/$COMPOSE_FILE --env-file $ENV_FILE"
 START=$(date +%s)
 
-get_env() { grep -E "^$1=" "$ROOT/.env" | head -1 | cut -d= -f2-; }
+get_env() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
 PG_USER="$(get_env POSTGRES_USER)"
 PG_DB="$(get_env POSTGRES_DB)"; PG_DB="${PG_DB:-wenqu}"
 MINIO_USER="$(get_env MINIO_ROOT_USER)"
