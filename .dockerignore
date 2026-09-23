@@ -11,6 +11,11 @@
 **/dist
 backups
 docs
+# server 的上下文 = 仓库根(要 ../parser 路径依赖),而 Dockerfile 里 COPY . 排在 uv sync 之前:
+# 不排除 CI/CD 目录时,改一次流水线脚本就会打穿依赖层,uv sync 整层重跑(实测 73s/次)。
+# 已核对:镜像内无任何代码读 .github/ 或 deploy/(只有 crypto.py 一行注释提到 deploy/.env.example)。
+.github
+deploy
 web
 parser/tests
 server/tests

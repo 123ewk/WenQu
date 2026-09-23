@@ -25,6 +25,11 @@ IMAGE_PREFIX="${WENQU_IMAGE_PREFIX:-wenqu}"   # 走 ACR 时为 <ACR 实例域名
 PUSH_ACR="${PUSH_ACR:-1}"                      # 0 = 只本机构建(离线演练)
 APP_IMAGES=(server parser web)                 # worker 与 migrate 复用 server 镜像
 
+# ACR 个人版拒收 buildx 默认的 provenance attestation:它把镜像导出成 manifest 索引,索引里那个
+# application/vnd.oci.empty.v1+json 描述符报 `unknown manifest class` —— 层全部 Pushed、最后提交
+# manifest 才失败(实测 v0.0.5 白传 8m46s 且 ACR 上一份都没有)。关掉后回到单一 manifest,推送即通。
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 log() { printf '[deploy] %s\n' "$*"; }
 die() { printf '[deploy][失败] %s\n' "$*" >&2; exit 1; }
 
