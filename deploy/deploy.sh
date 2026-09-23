@@ -4,11 +4,13 @@
 # 用法:  deploy/deploy.sh <镜像 tag,如 v1.2.0>
 # 前置:  在仓库 checkout 内执行;密钥由 WENQU_ENV_FILE 指向的 .env 提供(脚本不读其内容,只交给 compose)。
 #
-# 三道硬门(顺序即安全边界):
+# 四道硬门(顺序即安全边界):
+#   0) 磁盘水位       —— 备份要写到同一块盘上;写到一半盘满 = 迁移前保险是残缺的,故动手前先查;
 #   1) 数据卷归属确认 —— compose 项目名决定 pgdata/minio 卷前缀,猜错等于对空库发布,故先探测再放行;
 #   2) 迁移前备份     —— backup.sh 不成功就不进入 compose up(migrate 会改 schema,不可回退);
 #   3) 健康校验       —— /system/info 通且 migration_dirty=false,否则把应用镜像回滚到上一版本。
 # 回滚只回应用镜像:库结构一旦前移,脚本不会自动 DROP/RESTORE(破坏性操作留给人决策,只打印命令)。
+# 唯一会被脚本自动删除的东西是构建缓存(可再生);镜像与备份永不代删。
 set -euo pipefail
 
 VERSION="${1:?用法: deploy/deploy.sh <镜像 tag,如 v1.2.0>}"
@@ -30,6 +32,44 @@ die() { printf '[deploy][失败] %s\n' "$*" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || die "找不到生产 .env: $ENV_FILE(用 WENQU_ENV_FILE 指定)"
 # 缺 curl 会让门 3 空转 HEALTH_TRIES 次才失败,提前拒;此时可退化为 docker compose exec 探活
 command -v curl >/dev/null || die "本机缺 curl,无法做健康校验(门 3 会空转到超时,先装 curl)"
+
+# ---- 门 0:磁盘水位 -------------------------------------------------------------
+# 为什么是门而不是告警:门 2 要把整库 + 全量对象文件写到同一块盘上。写到一半盘满,
+# 手里那份"迁移前保险"就是残缺的,而 migrate 已经推前了 schema —— 最坏组合正好没人挡。
+# 阈值不拍脑袋:取 max(WENQU_MIN_FREE_GB, 上一次备份大小 ×2),留够"这次备份 + 构建"两份余量。
+free_gb_of() {  # df 对不存在的路径会报错,故逐级上溯到存在的祖先目录再查
+  local d="$1"
+  while [ ! -d "$d" ] && [ "$d" != "/" ]; do d="$(dirname "$d")"; done
+  df -Pk "$d" | awk 'NR==2 {printf "%d", $4 / 1024 / 1024}'
+}
+need_gb() {
+  local last_kb min_gb floor
+  min_gb="${WENQU_MIN_FREE_GB:-4}"
+  last_kb="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*T[0-9]*' 2>/dev/null \
+    | sort -r | head -1 | xargs -r du -sk 2>/dev/null | cut -f1)"
+  floor=$(( (${last_kb:-0} * 2 + 1048575) / 1048576 )) # 向上取整,宁可多要一档也别按 0 抹掉
+  if [ "$floor" -gt "$min_gb" ]; then echo "$floor"; else echo "$min_gb"; fi
+}
+NEED="$(need_gb)"
+FREE="$(free_gb_of "$BACKUP_DIR")"
+log "磁盘水位: 可用 ${FREE}G,本次需要 ≥${NEED}G(= max(WENQU_MIN_FREE_GB, 上次备份×2))"
+if [ "$FREE" -lt "$NEED" ]; then
+  # 自救只碰"可再生"的东西,并按可再生程度从轻到重:构建缓存删了最多下次构建慢,不丢任何数据。
+  log "水位不足 → 先回收 7 天未用的构建缓存"
+  docker builder prune -f --filter "until=168h" >/dev/null 2>&1 || true
+  FREE="$(free_gb_of "$BACKUP_DIR")"
+  if [ "$FREE" -lt "$NEED" ]; then
+    log "仍不足 → 清空全部构建缓存"
+    docker builder prune -f >/dev/null 2>&1 || true
+    FREE="$(free_gb_of "$BACKUP_DIR")"
+  fi
+  if [ "$FREE" -lt "$NEED" ]; then
+    # 到这一步只剩"旧镜像 / 旧备份"可回收,两者都带不可逆成分 → 只出清单,拒发,不代跑。
+    "$ROOT/deploy/cleanup-report.sh" all || true
+    die "磁盘水位不足(可用 ${FREE}G < 需要 ${NEED}G):构建缓存已清空仍不够。按上面清单人工回收后重试(旧镜像与旧备份脚本一律不代删)"
+  fi
+  log "回收缓存后可用 ${FREE}G,放行"
+fi
 
 # 存量卷前缀探测:卷名形如 <project>_wenqu_pgdata,每行一个拥有数据卷的候选项目。
 detect_project() {

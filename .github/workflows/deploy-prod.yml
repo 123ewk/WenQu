@@ -77,6 +77,7 @@ jobs:
       WENQU_COMPOSE_PROJECT: wenqu # 钉死:卷前缀由它决定,留空则靠探测,而演练项目残留卷会让发布被门 1 拦下
       WENQU_STATE_FILE: /home/ubuntu/wenqu/.deploy-state
       BACKUP_DIR: /home/ubuntu/wenqu/backups
+      WENQU_MIN_FREE_GB: "4" # 门 0 水位下限(实际阈值 = max(此值, 上次备份大小×2));盘满会让备份写成残缺件
       WENQU_WEB_URL: http://127.0.0.1 # runner 与栈同机,门 3 走本机回环查 nginx 入口(变量名须与 deploy.sh 的 WENQU_ 前缀一致,否则覆盖不生效)
     steps:
       - uses: actions/checkout@v4
