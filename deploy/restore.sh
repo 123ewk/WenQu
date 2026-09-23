@@ -21,6 +21,10 @@ MINIO_USER="$(get_env MINIO_ROOT_USER)"
 MINIO_PASS="$(get_env MINIO_ROOT_PASSWORD)"
 BUCKET="$(get_env MINIO_BUCKET)"; BUCKET="${BUCKET:-wenqu-docs}"
 [ -f "$SRC/manifest.txt" ] && [ -f "$SRC/pg/${PG_DB}.dump" ] || { echo "备份目录不完整: $SRC"; exit 1; }
+# 与 backup.sh 同一约束:MC_HOST 是 URL 形式,凭据含 URL 保留字符会解析错位。
+case "$MINIO_USER$MINIO_PASS$BUCKET" in
+  *[!A-Za-z0-9._-]*) echo "MinIO 凭据/桶名含 URL 保留字符(如 @ : / 空格),restore.sh 无法安全传参"; exit 1 ;;
+esac
 
 echo "[restore] 从 $SRC 开始 $(date -Iseconds)"
 # 0) 停写入方,避免恢复到半空库时前台报错
@@ -38,17 +42,21 @@ $COMPOSE cp "$SRC/pg/${PG_DB}.dump" postgres:/tmp/restore.dump
 $COMPOSE exec -T postgres pg_restore -U "$PG_USER" -d "$PG_DB" --no-owner /tmp/restore.dump
 
 # 2) MinIO:备份目录灌回桶(先清桶内孤儿对象由 mc mirror --remove 完成;临时源目录先清空)
-$COMPOSE exec -T minio sh -c "rm -rf /tmp/restore"
+# 凭据走 MC_HOST_<alias> 环境变量 + 位置参数,理由同 backup.sh(- 开头的口令会被 mc 当成选项)。
+$COMPOSE exec -T minio sh -c 'rm -rf /tmp/restore'
 $COMPOSE cp "$SRC/minio/." minio:/tmp/restore/
-$COMPOSE exec -T minio sh -c \
-  "mc alias set bkw http://127.0.0.1:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null \
-   && mc mirror --overwrite --remove /tmp/restore bkw/$BUCKET"
+$COMPOSE exec -T minio sh -c '
+  export MC_HOST_bkw="http://$1:$2@127.0.0.1:9000"
+  mc mirror --overwrite --remove /tmp/restore "bkw/$3"
+' restore "$MINIO_USER" "$MINIO_PASS" "$BUCKET"
 
 # 3) 核对:alembic 版本 + 表数 + 对象数对齐 manifest
 $COMPOSE exec -T postgres psql -U "$PG_USER" -d "$PG_DB" -Atc \
   "SELECT version_num FROM alembic_version" | sed 's/^/[restore] alembic=/'
-$COMPOSE exec -T minio sh -c \
-  "mc alias set bkw http://127.0.0.1:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null && mc ls --recursive bkw/$BUCKET | wc -l" \
+$COMPOSE exec -T minio sh -c '
+  export MC_HOST_bkw="http://$1:$2@127.0.0.1:9000"
+  mc ls --recursive "bkw/$3" | wc -l
+' restore "$MINIO_USER" "$MINIO_PASS" "$BUCKET" \
   | sed 's/^/[restore] minio_objects=/'
 grep minio_objects "$SRC/manifest.txt" | sed 's/^/[backup]  manifest_/'
 

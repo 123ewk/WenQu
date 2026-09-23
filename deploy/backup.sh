@@ -21,6 +21,10 @@ MINIO_USER="$(get_env MINIO_ROOT_USER)"
 MINIO_PASS="$(get_env MINIO_ROOT_PASSWORD)"
 BUCKET="$(get_env MINIO_BUCKET)"; BUCKET="${BUCKET:-wenqu-docs}"
 [ -n "$PG_USER" ] && [ -n "$MINIO_USER" ] || { echo "缺少 POSTGRES_USER/MINIO_ROOT_USER(.env)"; exit 1; }
+# MC_HOST 是 URL 形式,凭据含 @ : / 或空白会解析错位;备份是发布硬门,宁可这里说清楚而非让 mc 报玄学错。
+case "$MINIO_USER$MINIO_PASS$BUCKET" in
+  *[!A-Za-z0-9._-]*) echo "MinIO 凭据/桶名含 URL 保留字符(如 @ : / 空格),backup.sh 无法安全传参"; exit 1 ;;
+esac
 
 mkdir -p "$DEST/pg" "$DEST/minio"
 echo "[backup] $DEST 开始 $(date -Iseconds)"
@@ -29,10 +33,12 @@ echo "[backup] $DEST 开始 $(date -Iseconds)"
 $COMPOSE exec -T postgres pg_dump -U "$PG_USER" -d "$PG_DB" -Fc > "$DEST/pg/${PG_DB}.dump"
 
 # 2) MinIO:整桶镜像到容器临时目录,再 cp 出(mc 在 minio 镜像内自带)
-# 注意:必须用显式 alias 的桶路径 —— minio 镜像内的 "local" alias 不保证已用当前 root 凭据配好
-$COMPOSE exec -T minio sh -c \
-  "mc alias set bkw http://127.0.0.1:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null \
-   && rm -rf /tmp/mirror && mc mirror --overwrite bkw/$BUCKET /tmp/mirror"
+# 凭据必须走 MC_HOST_<alias> 环境变量并以位置参数传入:mc 是 Go 程序,以 - 开头的口令会被
+# 当成命令行选项直接报错;拼进 sh -c 字符串又会被口令里的引号截断。
+$COMPOSE exec -T minio sh -c '
+  export MC_HOST_bkw="http://$1:$2@127.0.0.1:9000"
+  rm -rf /tmp/mirror && mc mirror --overwrite "bkw/$3" /tmp/mirror
+' backup "$MINIO_USER" "$MINIO_PASS" "$BUCKET"
 $COMPOSE cp minio:/tmp/mirror/. "$DEST/minio/"
 
 # 3) 清单:alembic 版本 + 表数 + MinIO 对象清单(恢复后核对用)
