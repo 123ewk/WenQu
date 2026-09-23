@@ -1,10 +1,20 @@
 name: deploy-prod
 
-# 发布链:打 v* tag → 复用三条 CI 门禁(全绿)→ production 环境人工审批 → 生产机 runner 本机构建并部署。
-# merge 到 main 不触发任何东西;dev 栈不在本工作流职责内。
+# 发布链:Actions 页点 Run workflow → 填 version + 复述 confirm → 校验 → 三条 CI 门禁 → 生产机 runner 本机构建并部署。
+# 人墙为什么是"手动点 + 复述版本号":GitHub Free 的私有仓库不支持 Environment 审批门
+# (required reviewers 返回 422 billing plan 不支持),而公开仓库才有该能力 —— 两害相权取手动触发。
+# 推 tag 与 merge 到 main 都不触发任何东西;tag 只当版本标记用。
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的 tag,如 v1.2.0(必须已在 main 上)"
+        required: true
+        type: string
+      confirm:
+        description: "原样再打一遍 deploy <version> 以确认"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,22 +24,50 @@ concurrency:
   cancel-in-progress: false # 部署中途不取消:半发布状态比排队更危险
 
 jobs:
+  # 先花 5 秒把关输入,避免打错版本号还白跑五分钟 CI
+  preflight:
+    name: 发布前校验(不碰生产)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验复述文本与 tag 指向
+        env:
+          VERSION: ${{ inputs.version }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRM" = "deploy $VERSION" ] \
+            || { echo "confirm 必须原样填「deploy $VERSION」,实际是「$CONFIRM」"; exit 1; }
+          # fetch 拉不存在的 refspec 时退出码仍为 0,故先精确查远端有没有这个 tag
+          git ls-remote --tags origin | cut -f2 | grep -qxF "refs/tags/$VERSION" \
+            || { echo "origin 上没有 tag $VERSION。先: git tag -a $VERSION -m 'release' && git push origin $VERSION"; exit 1; }
+          git fetch --no-tags origin "refs/tags/$VERSION:refs/tags/$VERSION"
+          TAG_SHA="$(git rev-parse "refs/tags/$VERSION^{commit}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          # 门禁跑的是 main HEAD,部署的就必须是同一份代码,否则"绿了"与"发出去了"不是一回事
+          [ "$TAG_SHA" = "$HEAD_SHA" ] \
+            || { echo "tag $VERSION 指向 $TAG_SHA,不是 main HEAD $HEAD_SHA,拒绝发布"; exit 1; }
+
   gate-server:
     name: 门禁 server
+    needs: preflight
     uses: ./.github/workflows/server.yml
   gate-parser:
     name: 门禁 parser
+    needs: preflight
     uses: ./.github/workflows/parser.yml
   gate-web:
     name: 门禁 web
+    needs: preflight
     uses: ./.github/workflows/web.yml
 
   deploy:
     name: 发布生产
-    needs: [gate-server, gate-parser, gate-web]
+    needs: [preflight, gate-server, gate-parser, gate-web]
     runs-on: [self-hosted, prod, wenqu-deploy]
     environment:
-      name: production # 该 Environment 配了 required reviewers:不点批准就不会落到生产
+      name: production # 付费墙挡的是审批规则,不是 secrets —— 环境仍负责把 ACR_* 三项只投喂给本 job
     env:
       ACR_HOST: registry.cn-hangzhou.aliyuncs.com
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
@@ -47,8 +85,8 @@ jobs:
         continue-on-error: true
         run: printf '%s' "$ACR_PASSWORD" | docker login "$ACR_HOST" -u "$ACR_USERNAME" --password-stdin
 
-      - name: 构建并部署 ${{ github.ref_name }}
-        run: bash deploy/deploy.sh "${GITHUB_REF_NAME}"
+      - name: 构建并部署 ${{ inputs.version }}
+        run: bash deploy/deploy.sh "${{ inputs.version }}"
 
       - name: 部署后快照(排障用)
         if: always()
