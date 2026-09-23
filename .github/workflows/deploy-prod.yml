@@ -69,10 +69,10 @@ jobs:
     environment:
       name: production # 付费墙挡的是审批规则,不是 secrets —— 环境仍负责把 ACR_* 三项只投喂给本 job
     env:
-      ACR_HOST: registry.cn-hangzhou.aliyuncs.com
+      ACR_HOST: crpi-vkebrdyzahi82qi0.cn-hangzhou.personal.cr.aliyuncs.com # 个人版实例专属域名;用老的 registry.<地域>.aliyuncs.com 会 401
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-      WENQU_IMAGE_PREFIX: registry.cn-hangzhou.aliyuncs.com/${{ secrets.ACR_NAMESPACE }}
+      ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
       WENQU_ENV_FILE: /home/ubuntu/wenqu/.env # 业务密钥只在服务器上,CD 链路不接触
       WENQU_COMPOSE_PROJECT: wenqu # 钉死:卷前缀由它决定,留空则靠探测,而演练项目残留卷会让发布被门 1 拦下
       WENQU_STATE_FILE: /home/ubuntu/wenqu/.deploy-state
@@ -86,7 +86,7 @@ jobs:
         run: printf '%s' "$ACR_PASSWORD" | docker login "$ACR_HOST" -u "$ACR_USERNAME" --password-stdin
 
       - name: 构建并部署 ${{ inputs.version }}
-        run: bash deploy/deploy.sh "${{ inputs.version }}"
+        run: WENQU_IMAGE_PREFIX="$ACR_HOST/$ACR_NAMESPACE" bash deploy/deploy.sh "${{ inputs.version }}"
 
       - name: 部署后快照(排障用)
         if: always()

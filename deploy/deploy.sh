@@ -19,7 +19,7 @@ STATE_FILE="${WENQU_STATE_FILE:-$HOME/wenqu/.deploy-state}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/wenqu/backups}"
 WEB_URL="${WENQU_WEB_URL:-http://127.0.0.1}"
 COMPOSE_FILE="${WENQU_COMPOSE_FILE:-docker-compose.prod.yml}"
-IMAGE_PREFIX="${WENQU_IMAGE_PREFIX:-wenqu}"   # 走 ACR 时为 registry.cn-hangzhou.aliyuncs.com/<命名空间>
+IMAGE_PREFIX="${WENQU_IMAGE_PREFIX:-wenqu}"   # 走 ACR 时为 <ACR 实例域名>/<命名空间>(个人版是 crpi-xxx.<地域>.personal.cr.aliyuncs.com)
 PUSH_ACR="${PUSH_ACR:-1}"                      # 0 = 只本机构建(离线演练)
 APP_IMAGES=(server parser web)                 # worker 与 migrate 复用 server 镜像
 
