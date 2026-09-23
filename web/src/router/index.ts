@@ -65,6 +65,14 @@ const router = createRouter({
           meta: { title: 'API Key', desc: '空间内程序化接入凭证管理' },
         },
         {
+          // OPT-41:权限档位。刻意不加 adminOnly —— 读是 Viewer+、写是 Admin+,页内控显隐即可;
+          // 且守卫文案写死了"审计日志",复用会把提示语弄错。
+          path: 'permission-groups',
+          name: 'permission-groups',
+          component: () => import('@/views/permissionGroups/PermissionGroupsView.vue'),
+          meta: { title: '权限档位', desc: '一档 = 一种能做什么 + 能看哪些库 · 写操作需 Admin 及以上' },
+        },
+        {
           // OPT-27:文档建议 /space/:sid/settings/models,本前端空间上下文统一走侧栏切换器,故用扁平路由
           path: 'settings/models',
           name: 'settings-models',

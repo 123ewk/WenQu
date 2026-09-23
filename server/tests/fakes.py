@@ -13,6 +13,8 @@ from app.domain.models import (
     Document,
     KnowledgeBase,
     Membership,
+    PermissionGroup,
+    PermissionGroupMember,
     RefreshToken,
     Space,
     Task,
@@ -136,6 +138,103 @@ class FakeSpaceRepository:
 
     def remove_member(self, membership: Membership) -> None:
         self.memberships.pop(membership.id, None)
+
+
+class FakePermissionGroupRepository:
+    """内存版权限档位仓储(OPT-41):与接口协议同形,含 current 指针互斥。"""
+
+    def __init__(self) -> None:
+        self.groups: dict[uuid.UUID, PermissionGroup] = {}
+        self.members: dict[uuid.UUID, PermissionGroupMember] = {}
+
+    def get(self, group_id: uuid.UUID) -> PermissionGroup | None:
+        return self.groups.get(group_id)
+
+    def create(self, group: PermissionGroup) -> PermissionGroup:
+        if group.id is None:  # 模拟 DB flush 时主键 default 生效
+            group.id = uuid.uuid4()
+        if group.created_at is None:
+            group.created_at = datetime.now(UTC)
+        if group.updated_at is None:
+            group.updated_at = group.created_at
+        self.groups[group.id] = group
+        return group
+
+    def save(self, group: PermissionGroup) -> PermissionGroup:
+        self.groups[group.id] = group
+        return group
+
+    def delete(self, group_id: uuid.UUID) -> None:
+        self.groups.pop(group_id, None)
+
+    def list_for_space(self, space_id: uuid.UUID) -> list[PermissionGroup]:
+        return [g for g in self.groups.values() if g.space_id == space_id]
+
+    def list_by_ids(self, group_ids: list[uuid.UUID]) -> list[PermissionGroup]:
+        return [g for gid in group_ids if (g := self.groups.get(gid)) is not None]
+
+    def add_member(self, member: PermissionGroupMember) -> PermissionGroupMember:
+        if member.id is None:  # 模拟 DB flush 时 default / server_default 生效
+            member.id = uuid.uuid4()
+        if member.created_at is None:
+            member.created_at = datetime.now(UTC)
+        if member.is_current is None:
+            member.is_current = False
+        self.members[member.id] = member
+        return member
+
+    def list_members(self, group_id: uuid.UUID) -> list[PermissionGroupMember]:
+        return [m for m in self.members.values() if m.group_id == group_id]
+
+    def list_members_for_space(self, space_id: uuid.UUID) -> list[PermissionGroupMember]:
+        return [m for m in self.members.values() if m.space_id == space_id]
+
+    def get_current(
+        self, space_id: uuid.UUID, user_id: uuid.UUID
+    ) -> PermissionGroupMember | None:
+        return next(
+            (
+                m
+                for m in self.members.values()
+                if m.space_id == space_id and m.user_id == user_id and m.is_current
+            ),
+            None,
+        )
+
+    def clear_current(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        rows = [
+            m
+            for m in self.members.values()
+            if m.space_id == space_id and m.user_id == user_id and m.is_current
+        ]
+        for m in rows:
+            m.is_current = False
+        return len(rows)
+
+    def get_member(
+        self, group_id: uuid.UUID, user_id: uuid.UUID
+    ) -> PermissionGroupMember | None:
+        return next(
+            (
+                m
+                for m in self.members.values()
+                if m.group_id == group_id and m.user_id == user_id
+            ),
+            None,
+        )
+
+    def delete_member(self, member_id: uuid.UUID) -> None:
+        self.members.pop(member_id, None)
+
+    def delete_for_user(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        ids = [
+            m.id
+            for m in self.members.values()
+            if m.space_id == space_id and m.user_id == user_id
+        ]
+        for mid in ids:
+            self.members.pop(mid, None)
+        return len(ids)
 
 
 class FakeAuditRepository:

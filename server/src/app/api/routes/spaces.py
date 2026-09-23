@@ -248,11 +248,15 @@ def change_role(
 def remove_member(
     space_id: uuid.UUID,
     member_user_id: uuid.UUID,
+    keep_mounts: bool = Query(
+        default=False,
+        description="OPT-41:true=保留此人的权限档位挂载行(再拉回来即恢复),false=一并删除(默认)",
+    ),
     user: User = Depends(get_current_user),
     service: SpaceService = Depends(get_space_service),
     ip: str = Depends(get_client_ip),
 ) -> None:
-    service.remove_member(space_id, user, member_user_id, ip=ip)
+    service.remove_member(space_id, user, member_user_id, ip=ip, keep_mounts=keep_mounts)
 
 
 @router.post("/{space_id}/leave", status_code=status.HTTP_204_NO_CONTENT)

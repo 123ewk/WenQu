@@ -15,10 +15,10 @@ def _clear_caches() -> None:
     get_session_factory.cache_clear()
 
 
-def test_script_head_is_0016() -> None:
+def test_script_head_is_0018() -> None:
     from alembic.script import ScriptDirectory
 
-    assert ScriptDirectory(SCRIPT_LOCATION).get_heads() == ["0016"]
+    assert ScriptDirectory(SCRIPT_LOCATION).get_heads() == ["0018"]
 
 
 def test_dirty_semantics() -> None:
@@ -35,15 +35,19 @@ def test_db_unreachable_reports_dirty_with_head(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("app.core.migrations.get_session_factory", _boom)
     status = migration_status()
     assert status.current is None
-    assert status.head == "0016"
+    assert status.head == "0018"
     assert status.dirty is True
 
 
 def _lifespan(monkeypatch: pytest.MonkeyPatch, status: MigrationStatus):
-    # prod fail-closed 校验要求显式密钥:测试给最小 dummy 值,不依赖本地 .env(CI 无 .env)
+    # prod fail-closed 校验要求四项显式配置(含数据库串):测试给最小 dummy 值,
+    # 不依赖本地 .env —— CI 与干净 worktree 里没有 .env,漏一项就是整条门禁假红。
     monkeypatch.setenv("APP_JWT_SECRET", "x" * 32)
     monkeypatch.setenv("APP_MASTER_KEY", "x" * 32)
     monkeypatch.setenv("PARSER_GRPC_TOKEN", "x" * 32)
+    monkeypatch.setenv(
+        "APP_DATABASE_URL", "postgresql+psycopg://wenqu:wenqu_test@localhost:5432/wenqu_test"
+    )
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(env="prod"))
     monkeypatch.setattr(main_module, "migration_status", lambda: status)
     return main_module.stream_lifespan(main_module.app)

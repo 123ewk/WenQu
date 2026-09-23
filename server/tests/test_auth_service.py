@@ -17,6 +17,7 @@ from app.domain.enums import AuditAction
 from app.domain.models import RefreshToken
 from tests.fakes import (
     FakeAuditRepository,
+    FakePermissionGroupRepository,
     FakeRefreshTokenRepository,
     FakeSpaceRepository,
     FakeUserRepository,
@@ -31,9 +32,11 @@ def make_services() -> SimpleNamespace:
     tokens = FakeRefreshTokenRepository()
     spaces = FakeSpaceRepository(users_ref=users.users)
     audit = FakeAuditRepository()
+    groups = FakePermissionGroupRepository()
     return SimpleNamespace(
         auth=AuthService(users, tokens, spaces, audit, SETTINGS),
-        space_svc=SpaceService(spaces, users, audit),
+        space_svc=SpaceService(spaces, users, audit, mounts=groups),
+        groups=groups,
         users=users,
         tokens=tokens,
         spaces=spaces,
