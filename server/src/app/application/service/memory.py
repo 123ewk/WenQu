@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import Role
-from app.domain.interfaces import EmbeddingGateway, MemoryRepository, SpaceRepository
-from app.domain.models import Memory
+from app.domain.interfaces import (
+    EmbeddingGateway,
+    MemoryProposalRepository,
+    MemoryRepository,
+    SpaceRepository,
+)
+from app.domain.models import Memory, MemoryProposal
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -40,11 +46,13 @@ class MemoryService:
         spaces: SpaceRepository,
         embedder: EmbeddingGateway,
         settings: Settings,
+        proposals: MemoryProposalRepository | None = None,
     ) -> None:
         self._memories = memories
         self._spaces = spaces
         self._embedder = embedder
         self._settings = settings
+        self._proposals = proposals
 
     def save_confirmed(
         self,
@@ -135,6 +143,50 @@ class MemoryService:
         if memory is None:
             raise AppError(ErrorCode.MEMORY_NOT_FOUND, "记忆不存在", http_status=404)
         self._memories.delete(memory)
+
+    def dismiss_proposal(
+        self,
+        space_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        kind: str = "fact",
+        conversation_id: uuid.UUID | None = None,
+    ) -> None:
+        """忽略某条记忆提议:写一行 dismissed 留痕(带 TTL),供后续不再弹同一结论。
+
+        以归一化正文的哈希为去重键(与工具提议时同算法),重复忽略幂等只留一条。
+        """
+        self._require_member(space_id, user_id)
+        if self._proposals is None:
+            return  # 未接底座(单测/裁剪部署):静默无操作,不影响忽略交互
+        text = content.strip()
+        if not text:
+            raise AppError(ErrorCode.VALIDATION, "忽略内容不能为空", http_status=400)
+        now = datetime.now(UTC)
+        content_hash = memory_content_hash(text)
+        if self._proposals.exists(space_id, user_id, content_hash, now):
+            return
+        ttl_days = self._settings.memory_proposal_dismiss_ttl_days
+        if kind not in _KINDS:
+            kind = "fact"
+        self._proposals.add(
+            MemoryProposal(
+                space_id=space_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                content_hash=content_hash,
+                kind=kind,
+                expires_at=now + timedelta(days=ttl_days),
+            )
+        )
+
+    def dismissed_hashes(self, space_id: uuid.UUID, user_id: uuid.UUID) -> frozenset[str]:
+        """本人在本空间未过期的被忽略内容哈希,供 Agent 弹卡前跳过。"""
+        if self._proposals is None or not self._settings.memory_enabled:
+            return frozenset()
+        return frozenset(
+            self._proposals.active_hashes(space_id, user_id, datetime.now(UTC))
+        )
 
     def _embed_one(self, text: str) -> list[float]:
         return self._embedder.embed([text])[0]

@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     memory_proposal_max_per_turn: int = Field(
         3, validation_alias="APP_MEMORY_PROPOSAL_MAX_PER_TURN"
     )
+    # "忽略"留痕的去重窗口(天):命中未过期 dismissed 内容则不再弹同一提议
+    memory_proposal_dismiss_ttl_days: int = Field(
+        7, validation_alias="APP_MEMORY_PROPOSAL_DISMISS_TTL_DAYS"
+    )
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

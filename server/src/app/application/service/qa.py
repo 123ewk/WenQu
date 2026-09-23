@@ -34,6 +34,7 @@ from app.application.repository.knowledge import (
     KnowledgeBaseRepositoryImpl,
 )
 from app.application.repository.memories import MemoryRepositoryImpl
+from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.service.memory import MemoryService
@@ -138,6 +139,15 @@ class BackgroundDb:
                 kb_ids=ctx.kb_ids,
             )
 
+    def _memory_service(self, db: Session) -> MemoryService:
+        return MemoryService(
+            MemoryRepositoryImpl(db),
+            SpaceRepositoryImpl(db),
+            self._embedder,
+            get_settings(),
+            MemoryProposalRepositoryImpl(db),
+        )
+
     def recall_memories(self, ctx: _AskContext) -> list[str]:
         """记忆召回(OPT-45 P2):泵线程自开会话,按 (space,user) 向量召回本人本空间记忆。
 
@@ -145,15 +155,15 @@ class BackgroundDb:
         直接返回 [] —— 与"无记忆"逐事件等价,绝不阻断问答。
         """
         with self._session_factory() as db:
-            service = MemoryService(
-                MemoryRepositoryImpl(db),
-                SpaceRepositoryImpl(db),
-                self._embedder,
-                get_settings(),
-            )
+            service = self._memory_service(db)
             return [
                 m.content for m in service.recall(ctx.space_id, ctx.user_id, ctx.question)
             ]
+
+    def dismissed_hashes(self, ctx: _AskContext) -> frozenset[str]:
+        """本人本空间未过期的"忽略过"提议哈希(P2c):Agent 弹卡前据此跳过。"""
+        with self._session_factory() as db:
+            return self._memory_service(db).dismissed_hashes(ctx.space_id, ctx.user_id)
 
     def save_message(self, message: Message) -> Message:
         with self._session_factory() as db:
@@ -385,6 +395,7 @@ class QAService:
             top_k_default=ctx.top_k,
             max_rounds=self._agent_max_rounds,
             max_proposals=max_proposals,
+            dismissed_hashes=self._dismissed_hashes(ctx),
         ).run(
             ToolContext(
                 user_id=ctx.user_id,
@@ -490,6 +501,15 @@ class QAService:
         except Exception:  # noqa: BLE001 — 记忆召回失败只降级,不中断问答
             logger.exception("memory recall failed, degrade to no-memory")
         return []
+
+    def _dismissed_hashes(self, ctx: _AskContext) -> frozenset[str]:
+        """未过期的被忽略提议哈希(Agent 弹卡去重):仅泵线程路径查库,失败即回退空集。"""
+        try:
+            if self._background_db is not None:
+                return self._background_db.dismissed_hashes(ctx)
+        except Exception:  # noqa: BLE001 — 去重是增益,查不到就不跳过
+            logger.exception("dismissed lookup failed, degrade to none")
+        return frozenset()
 
     def _persist_assistant(
         self,

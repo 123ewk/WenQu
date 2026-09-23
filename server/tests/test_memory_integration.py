@@ -9,11 +9,11 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 
 from app.api.deps import get_embedding_gateway
 from app.core.db import get_session_factory
-from app.domain.models import Memory
+from app.domain.models import Memory, MemoryProposal
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
@@ -33,6 +33,7 @@ class StubEmbedder:
 def _reset(client):
     def _clean() -> None:
         with get_session_factory()() as db:
+            db.execute(delete(MemoryProposal))
             db.execute(delete(Memory))
             db.commit()
 
@@ -118,6 +119,47 @@ def test_cross_user_and_foreign_space_are_404(client) -> None:
     assert r2.status_code == 404
     # 原记忆仍在
     assert client.get(f"/api/v1/spaces/{space_a}/memories", headers=auth_a).json()[0]["id"] == mid
+
+
+def test_dismiss_proposal_records_and_is_isolated(client) -> None:
+    space_id, auth = _owner(client, "memdismiss")
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/memories/proposals/dismiss",
+        json={"content": "  上线窗口定在周五晚  ", "kind": "decision"},
+        headers=auth,
+    )
+    assert resp.status_code == 204, resp.text
+
+    with get_session_factory()() as db:
+        n = db.scalar(
+            select(func.count()).select_from(MemoryProposal).where(
+                MemoryProposal.space_id == space_id
+            )
+        )
+    assert n == 1
+
+    # 幂等:同一归一化内容再忽略不新增行
+    client.post(
+        f"/api/v1/spaces/{space_id}/memories/proposals/dismiss",
+        json={"content": "上线窗口定在周五晚", "kind": "decision"},
+        headers=auth,
+    )
+    with get_session_factory()() as db:
+        n2 = db.scalar(
+            select(func.count()).select_from(MemoryProposal).where(
+                MemoryProposal.space_id == space_id
+            )
+        )
+    assert n2 == 1
+
+    # 陌生人非成员 → 空间层 404,且不留痕
+    stranger = _auth(_register(client, "memdismiss2"))
+    r = client.post(
+        f"/api/v1/spaces/{space_id}/memories/proposals/dismiss",
+        json={"content": "别人的空间"},
+        headers=stranger,
+    )
+    assert r.status_code == 404
 
 
 def test_anonymous_is_401(client) -> None:

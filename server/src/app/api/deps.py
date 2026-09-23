@@ -25,6 +25,7 @@ from app.application.repository.knowledge import (
     KnowledgeBaseRepositoryImpl,
 )
 from app.application.repository.memories import MemoryRepositoryImpl
+from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
 from app.application.repository.tasks import TaskRepositoryImpl
@@ -62,6 +63,7 @@ from app.domain.interfaces import (
     EmbeddingGateway,
     KbStatsRepository,
     KnowledgeBaseRepository,
+    MemoryProposalRepository,
     MemoryRepository,
     MessageRepository,
     RefreshTokenRepository,
@@ -288,12 +290,19 @@ def get_memory_repository(db: Session = Depends(get_db)) -> MemoryRepository:
     return MemoryRepositoryImpl(db)
 
 
+def get_memory_proposal_repository(
+    db: Session = Depends(get_db),
+) -> MemoryProposalRepository:
+    return MemoryProposalRepositoryImpl(db)
+
+
 def get_memory_service(
     memories: MemoryRepository = Depends(get_memory_repository),
     spaces: SpaceRepository = Depends(get_space_repository),
     embedder: EmbeddingGateway = Depends(get_embedding_gateway),
+    proposals: MemoryProposalRepository = Depends(get_memory_proposal_repository),
 ) -> MemoryService:
-    return MemoryService(memories, spaces, embedder, get_settings())
+    return MemoryService(memories, spaces, embedder, get_settings(), proposals)
 
 
 def _reranker_for(

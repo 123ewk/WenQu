@@ -2602,6 +2602,58 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/memories/proposals/dismiss": {
+      "post": {
+        "tags": [
+          "memories"
+        ],
+        "summary": "Dismiss Proposal",
+        "description": "忽略某条记忆提议:写 dismissed 留痕(带 TTL),后续不再就同一结论弹卡片。",
+        "operationId": "dismiss_proposal_api_v1_spaces__space_id__memories_proposals_dismiss_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DismissProposalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/memories/{memory_id}": {
       "patch": {
         "tags": [
@@ -5228,6 +5280,39 @@
           "name"
         ],
         "title": "CreateSpaceRequest"
+      },
+      "DismissProposalRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 16,
+            "title": "Kind",
+            "default": "fact"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "DismissProposalRequest"
       },
       "DocumentOut": {
         "properties": {

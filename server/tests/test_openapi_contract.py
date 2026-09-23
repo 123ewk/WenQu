@@ -73,6 +73,7 @@ REQUIRED_PATHS = {
     # OPT-45 外部事实记忆(仅 JWT 本人;非本人/他空间按 404)
     "/api/v1/spaces/{space_id}/memories",
     "/api/v1/spaces/{space_id}/memories/{memory_id}",
+    "/api/v1/spaces/{space_id}/memories/proposals/dismiss",
     "/health",
     "/system/info",
 }

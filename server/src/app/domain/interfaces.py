@@ -20,6 +20,7 @@ from app.domain.models import (
     KnowledgeBase,
     Membership,
     Memory,
+    MemoryProposal,
     Message,
     RefreshToken,
     Space,
@@ -185,6 +186,18 @@ class MemoryRepository(Protocol):
         limit: int,
         min_similarity: float = 0.0,
     ) -> list[tuple[Memory, float]]: ...
+
+
+class MemoryProposalRepository(Protocol):
+    """记忆提议忽略留痕(OPT-45 P2):写 dismissed 行、查未过期哈希,同样按 (space,user) 隔离。"""
+
+    def add(self, proposal: MemoryProposal) -> MemoryProposal: ...
+    def exists(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, content_hash: str, now: datetime
+    ) -> bool: ...
+    def active_hashes(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> set[str]: ...
 
 
 class ApiKeyRepository(Protocol):

@@ -3,16 +3,44 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from app.application.service.memory import MemoryService
+from app.application.service.memory import MemoryService, memory_content_hash
 from app.core.config import Settings
 from app.core.errors import AppError
 from app.domain.enums import Role
-from app.domain.models import Membership, Memory, Space
+from app.domain.models import Membership, Memory, MemoryProposal, Space
 from tests.fakes import FakeSpaceRepository, FakeUserRepository, make_user
+
+
+class FakeProposalRepo:
+    def __init__(self) -> None:
+        self.items: list[MemoryProposal] = []
+
+    def add(self, proposal: MemoryProposal) -> MemoryProposal:
+        if proposal.id is None:
+            proposal.id = uuid.uuid4()
+        self.items.append(proposal)
+        return proposal
+
+    def exists(self, space_id, user_id, content_hash, now) -> bool:
+        return any(
+            p.space_id == space_id
+            and p.user_id == user_id
+            and p.content_hash == content_hash
+            and p.expires_at > now
+            for p in self.items
+        )
+
+    def active_hashes(self, space_id, user_id, now) -> set[str]:
+        return {
+            p.content_hash
+            for p in self.items
+            if p.space_id == space_id and p.user_id == user_id and p.expires_at > now
+        }
 
 
 class FakeMemoryRepo:
@@ -82,12 +110,19 @@ def _build(role=Role.VIEWER, memory_enabled=True):
     spaces.add_member(Membership(space_id=space.id, user_id=other.id, role=Role.VIEWER))
     repo = FakeMemoryRepo()
     embedder = FakeEmbedder()
+    proposals = FakeProposalRepo()
     settings = Settings(
         memory_enabled=memory_enabled, memory_recall_top_k=5, memory_recall_min_sim=0.3
     )
-    svc = MemoryService(repo, spaces, embedder, settings)
+    svc = MemoryService(repo, spaces, embedder, settings, proposals)
     return SimpleNamespace(
-        svc=svc, repo=repo, embedder=embedder, user=user, other=other, space=space
+        svc=svc,
+        repo=repo,
+        embedder=embedder,
+        proposals=proposals,
+        user=user,
+        other=other,
+        space=space,
     )
 
 
@@ -164,3 +199,42 @@ def test_cross_user_update_and_delete_are_404() -> None:
         env.svc.delete(env.space.id, env.other.id, m.id)
     assert exc.value.code_str == "MEMORY_NOT_FOUND"
     assert m.id in env.repo.items  # 未被删除
+
+
+# ---------------------------- OPT-45 P2c:忽略提议留痕 ----------------------------
+
+
+def test_dismiss_records_hash_with_ttl() -> None:
+    env = _build()
+    env.svc.dismiss_proposal(env.space.id, env.user.id, "  别再提这条  ", kind="decision")
+    assert len(env.proposals.items) == 1
+    row = env.proposals.items[0]
+    assert row.content_hash == memory_content_hash("别再提这条")
+    assert row.kind == "decision"
+    assert row.expires_at > datetime.now(UTC)
+
+
+def test_dismiss_is_idempotent() -> None:
+    env = _build()
+    env.svc.dismiss_proposal(env.space.id, env.user.id, "同一条")
+    env.svc.dismiss_proposal(env.space.id, env.user.id, "同一条")
+    assert len(env.proposals.items) == 1  # 未过期重复忽略只留一行
+
+
+def test_dismiss_requires_membership() -> None:
+    env = _build()
+    with pytest.raises(AppError) as exc:
+        env.svc.dismiss_proposal(uuid.uuid4(), env.user.id, "内容")  # 非成员空间
+    assert exc.value.code_str == "SPACE_NOT_FOUND"
+    assert env.proposals.items == []
+
+
+def test_dismissed_hashes_reflect_store_and_disable() -> None:
+    env = _build()
+    env.svc.dismiss_proposal(env.space.id, env.user.id, "结论X")
+    assert memory_content_hash("结论X") in env.svc.dismissed_hashes(
+        env.space.id, env.user.id
+    )
+    # 过期行不再计入
+    env.proposals.items[0].expires_at = datetime.now(UTC) - timedelta(days=1)
+    assert env.svc.dismissed_hashes(env.space.id, env.user.id) == frozenset()

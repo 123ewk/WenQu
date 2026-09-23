@@ -32,6 +32,12 @@ class UpdateMemoryRequest(BaseModel):
     topic: str | None = Field(default=None, max_length=255)
 
 
+class DismissProposalRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    kind: str = Field(default="fact", max_length=16)
+    conversation_id: uuid.UUID | None = None
+
+
 class MemoryOut(BaseModel):
     id: str
     space_id: str
@@ -73,6 +79,19 @@ def save_memory(
         source_message_id=body.source_message_id,
     )
     return _out(memory)
+
+
+@router.post("/memories/proposals/dismiss", status_code=204)
+def dismiss_proposal(
+    space_id: uuid.UUID,
+    body: DismissProposalRequest,
+    user: User = Depends(get_current_user),
+    service: MemoryService = Depends(get_memory_service),
+) -> None:
+    """忽略某条记忆提议:写 dismissed 留痕(带 TTL),后续不再就同一结论弹卡片。"""
+    service.dismiss_proposal(
+        space_id, user.id, body.content, kind=body.kind, conversation_id=body.conversation_id
+    )
 
 
 @router.get("/memories", response_model=list[MemoryOut])

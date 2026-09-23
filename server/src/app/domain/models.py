@@ -614,3 +614,34 @@ class Memory(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class MemoryProposal(Base):
+    """被用户"忽略"过的记忆提议留痕(OPT-45 P2):仅用于去重再提议,不落记忆本体。
+
+    表内每行 = 一条 dismissed 记录(不设 status 列)。命中未过期的 content_hash 时,
+    Agent 不再就同一结论弹卡片,避免反复骚扰;确认过的走 memories 内容去重。
+    归属同 memories:(space_id, user_id) 双维度隔离。
+    """
+
+    __tablename__ = "memory_proposals"
+    __table_args__ = (
+        Index("ix_mprops_lookup", "space_id", "user_id", "content_hash", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16), default="fact", server_default="fact")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
