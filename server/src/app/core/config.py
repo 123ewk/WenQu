@@ -79,6 +79,15 @@ class Settings(BaseSettings):
         7, validation_alias="APP_MEMORY_PROPOSAL_DISMISS_TTL_DAYS"
     )
 
+    # ---- 历史滚动压缩(OPT-45 P3) ----
+    compact_enabled: bool = Field(True, validation_alias="APP_COMPACT_ENABLED")
+    # 生成前自动兜底阈值:上一轮上下文占用 > 窗口×此比例时,先同步压缩再作答
+    compact_trigger_ratio: float = Field(0.8, validation_alias="APP_COMPACT_TRIGGER_RATIO")
+    # 压缩后仍原样保留的最近消息条数(无摘要时回退"最近 10 条"旧行为)
+    compact_keep_recent: int = Field(6, validation_alias="APP_COMPACT_KEEP_RECENT")
+    # 低于此条数不压缩(太短没意义,且省一次摘要调用)
+    compact_min_messages: int = Field(8, validation_alias="APP_COMPACT_MIN_MESSAGES")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
     avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")

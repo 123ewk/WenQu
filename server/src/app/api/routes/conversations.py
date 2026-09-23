@@ -152,6 +152,37 @@ def list_messages(
     return [_message_out(m) for m in messages]
 
 
+class CompressRequest(BaseModel):
+    model_id: str | None = None
+
+
+class CompressOut(BaseModel):
+    compressed: bool
+    summary: str
+    summary_through_seq: int
+    reason: str = ""
+
+
+@router.post("/conversations/{conversation_id}/compress", response_model=CompressOut)
+def compress_conversation(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    body: CompressRequest,
+    user: User = Depends(get_current_user),
+    service: QAService = Depends(get_qa_service),
+) -> CompressOut:
+    """手动压缩会话历史:滚动摘要写回 meta,原文全保留;未达门槛时 compressed=false(非错误)。"""
+    result = service.compress_conversation(
+        user.id, space_id, conversation_id, model_id=body.model_id
+    )
+    return CompressOut(
+        compressed=result.compressed,
+        summary=result.summary,
+        summary_through_seq=result.summary_through_seq,
+        reason=result.reason,
+    )
+
+
 @router.get("/conversations/{conversation_id}/stream")
 def resume_stream(
     space_id: uuid.UUID,

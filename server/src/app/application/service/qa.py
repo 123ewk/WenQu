@@ -37,6 +37,7 @@ from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.service.compaction import CompactionService, CompactResult
 from app.application.service.memory import MemoryService
 from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
@@ -236,6 +237,24 @@ class QAService:
     ) -> list[Message]:
         conversation = self._get_conversation(user_id, space_id, conversation_id)
         return self._messages.list_for_conversation(conversation.id)
+
+    def compress_conversation(
+        self,
+        user_id: uuid.UUID,
+        space_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        model_id: str | None = None,
+    ) -> CompactResult:
+        """手动压缩会话历史(OPT-45 P3):滚动摘要写回 meta,原文不动。
+
+        复用 _get_conversation 的归属校验(他人/他空间一律 404 防枚举);同步执行,
+        走请求会话的仓储即可(不经泵线程)。
+        """
+        conversation = self._get_conversation(user_id, space_id, conversation_id)
+        service = CompactionService(
+            self._conversations, self._messages, self._chat.chat_stream, get_settings()
+        )
+        return service.compress(conversation, model_id)
 
     def rename_conversation(
         self,

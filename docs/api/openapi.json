@@ -2229,6 +2229,75 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/conversations/{conversation_id}/compress": {
+      "post": {
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Compress Conversation",
+        "description": "手动压缩会话历史:滚动摘要写回 meta,原文全保留;未达门槛时 compressed=false(非错误)。",
+        "operationId": "compress_conversation_api_v1_spaces__space_id__conversations__conversation_id__compress_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompressRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompressOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream": {
       "get": {
         "tags": [
@@ -5135,6 +5204,51 @@
           "score"
         ],
         "title": "CitationOut"
+      },
+      "CompressOut": {
+        "properties": {
+          "compressed": {
+            "type": "boolean",
+            "title": "Compressed"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "summary_through_seq": {
+            "type": "integer",
+            "title": "Summary Through Seq"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "compressed",
+          "summary",
+          "summary_through_seq"
+        ],
+        "title": "CompressOut"
+      },
+      "CompressRequest": {
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          }
+        },
+        "type": "object",
+        "title": "CompressRequest"
       },
       "ConversationOut": {
         "properties": {
