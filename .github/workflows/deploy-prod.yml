@@ -67,16 +67,19 @@ jobs:
     needs: [preflight, gate-server, gate-parser, gate-web]
     runs-on: [self-hosted, prod, wenqu-deploy]
     environment:
-      name: production # 付费墙挡的是审批规则,不是 secrets —— 环境仍负责把 ACR_* 三项只投喂给本 job
+      name: production # 付费墙挡的是审批规则,不是 secrets —— 环境仍负责把 ACR 凭据两项只投喂给本 job
     env:
       ACR_HOST: crpi-vkebrdyzahi82qi0.cn-hangzhou.personal.cr.aliyuncs.com # 个人版实例专属域名;用老的 registry.<地域>.aliyuncs.com 会 401
       ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-      ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+      # 命名空间是明文:Actions 会把日志里任何等于 secret 值的文本换成 ***,而回收清单要打印带命名空间的
+      # 完整镜像名供人复制,放进 Secrets 就等于送出一条跑不通的 docker rmi。它不是凭据,知道名字也推不动。
+      ACR_NAMESPACE: wen_qu
       WENQU_ENV_FILE: /home/ubuntu/wenqu/.env # 业务密钥只在服务器上,CD 链路不接触
       WENQU_COMPOSE_PROJECT: wenqu # 钉死:卷前缀由它决定,留空则靠探测,而演练项目残留卷会让发布被门 1 拦下
       WENQU_STATE_FILE: /home/ubuntu/wenqu/.deploy-state
       BACKUP_DIR: /home/ubuntu/wenqu/backups
+      WENQU_MIN_FREE_GB: "4" # 门 0 水位下限(实际阈值 = max(此值, 上次备份大小×2));盘满会让备份写成残缺件
       WENQU_WEB_URL: http://127.0.0.1 # runner 与栈同机,门 3 走本机回环查 nginx 入口(变量名须与 deploy.sh 的 WENQU_ 前缀一致,否则覆盖不生效)
     steps:
       - uses: actions/checkout@v4
