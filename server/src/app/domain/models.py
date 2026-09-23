@@ -331,6 +331,10 @@ class Message(Base):
     # OPT-29:当轮窗口使用快照(仅 assistant 行;老行与 user 行恒 NULL)
     context_used_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # OPT-45 P-cache:当轮缓存命中快照(cached/prompt),仅上游回报了 cached 才写,否则两列 NULL
+    # = "当前模型暂不支持缓存命中统计";与窗口快照同为"存当轮结果不现算"
+    context_cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

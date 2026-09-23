@@ -101,15 +101,33 @@ def _last_context_usage(history: Sequence[Message]) -> tuple[int, int] | None:
     return None
 
 
+def _last_cache_usage(history: Sequence[Message]) -> tuple[int, int] | None:
+    """取最近一条带缓存快照(cached+prompt 都非空)的 assistant 消息 → (cached, prompt)。
+
+    与窗口快照独立:模型可能回了 cached 却没配窗口,或配了窗口却没回 cached。都缺则 None,
+    前端据此显示"当前模型暂不支持缓存命中统计"。
+    """
+    for message in reversed(history):
+        if (
+            message.role == "assistant"
+            and message.context_cached_tokens is not None
+            and message.context_prompt_tokens is not None
+        ):
+            return message.context_cached_tokens, message.context_prompt_tokens
+    return None
+
+
 @dataclass
 class ContextSnapshot:
-    """上下文悬浮窗读数(OPT-45 P4):进度条 + 压缩可行性;不含缓存命中(P-cache 另议)。"""
+    """上下文悬浮窗读数(OPT-45 P4/P-cache):进度条 + 压缩可行性 + 缓存命中率。"""
 
     used_tokens: int | None
     window_tokens: int | None
     compressible_messages: int
     can_compress: bool
     has_summary: bool
+    cache_supported: bool
+    cache_hit_rate: float | None
 
 
 class BackgroundDb:
@@ -288,14 +306,17 @@ class QAService:
     def get_context_snapshot(
         self, user_id: uuid.UUID, space_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> ContextSnapshot:
-        """悬浮窗读数:占用快照(复用 OPT-29)+ 还能折几条 + 能否压缩。
+        """悬浮窗读数:占用快照(复用 OPT-29)+ 还能折几条 + 能否压缩 + 缓存命中率(P-cache)。
 
         used/window 取上一条带齐快照的 assistant;都没有则 null(首问/未打模型)。
         can_compress 与手动端点同门槛:开启压缩 ∧ 压缩点后候选 ≥ min_messages ∧ 有可折叠项。
+        cache_hit_rate = cached/prompt(上一条回报了 cached 的 assistant);模型不支持则
+        cache_supported=False、rate=None,前端显示"当前模型暂不支持缓存命中统计"。
         """
         conversation = self._get_conversation(user_id, space_id, conversation_id)
         history = self._messages.list_for_conversation(conversation.id)
         estimate = _last_context_usage(history)
+        cache = _last_cache_usage(history)
         settings = get_settings()
         _, through = read_summary(conversation.meta)
         candidates = [m for m in history if m.seq > through]
@@ -305,12 +326,18 @@ class QAService:
             and len(candidates) >= settings.compact_min_messages
             and foldable > 0
         )
+        cache_supported = cache is not None and cache[1] > 0
+        cache_hit_rate = (
+            round(cache[0] / cache[1], 3) if cache is not None and cache[1] > 0 else None
+        )
         return ContextSnapshot(
             used_tokens=None if estimate is None else estimate[0],
             window_tokens=None if estimate is None else estimate[1],
             compressible_messages=foldable,
             can_compress=can_compress,
             has_summary=through > 0,
+            cache_supported=cache_supported,
+            cache_hit_rate=cache_hit_rate,
         )
 
     def rename_conversation(
@@ -645,7 +672,10 @@ class QAService:
         """落库 assistant 消息(完整答案或宽限截止的部分答案;agent 模式附工具轨迹)。
 
         两列窗口值是**本轮快照**(OPT-29),由调用方从计量外壳取;没打模型则留 null。
+        缓存命中快照(OPT-45 P-cache)同样从外壳末次调用读,只在上游回报 cached 时写两列,
+        不进 SSE —— 悬浮窗刷新时经 GET /context 读回即可。
         """
+        cache = self._turn_usage.cache_snapshot() if self._turn_usage is not None else None
         message = Message(
             conversation_id=ctx.conversation.id,
             space_id=ctx.space_id,
@@ -656,6 +686,8 @@ class QAService:
             agent_steps=agent_steps,
             context_used_tokens=context_used_tokens,
             context_window_tokens=context_window_tokens,
+            context_cached_tokens=None if cache is None else cache[0],
+            context_prompt_tokens=None if cache is None else cache[1],
         )
         if self._background_db is not None:
             return self._background_db.save_message(message)

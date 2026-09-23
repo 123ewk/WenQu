@@ -2304,7 +2304,7 @@
           "conversations"
         ],
         "summary": "Get Conversation Context",
-        "description": "上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩。\n\n缓存命中本期不展示(无稳定数据源,见 OPT-45 §9-Q2),前端进度条只读 used/window。",
+        "description": "上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩、缓存命中率。\n\n缓存命中率(OPT-45 P-cache)= cached/prompt,来自上一条回报了 cached 的 assistant 快照;\n模型不支持时 cache_supported=False、cache_hit_rate=null,前端显示\"当前模型暂不支持缓存命中统计\"。",
         "operationId": "get_conversation_context_api_v1_spaces__space_id__conversations__conversation_id__context_get",
         "security": [
           {
@@ -5348,6 +5348,21 @@
           "has_summary": {
             "type": "boolean",
             "title": "Has Summary"
+          },
+          "cache_supported": {
+            "type": "boolean",
+            "title": "Cache Supported"
+          },
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Hit Rate"
           }
         },
         "type": "object",
@@ -5355,7 +5370,8 @@
           "in_scope_memory_count",
           "compressible_messages",
           "can_compress",
-          "has_summary"
+          "has_summary",
+          "cache_supported"
         ],
         "title": "ContextOut"
       },

@@ -56,6 +56,22 @@ def _as_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _extract_cached_tokens(raw: dict) -> int | None:
+    """从上游 usage 里取缓存命中 token 数,兼容多家字段名;取不到返回 None(不支持)。
+
+    优先级:OpenAI/百炼兼容 `prompt_tokens_details.cached_tokens` → Anthropic
+    `cache_read_input_tokens` → 裸 `cached_tokens`。**键存在且是整数**才算"上游报了这个字段"
+    (哪怕值为 0 = 命中 0 次),缺失则 None —— 用它区分"不支持缓存统计"与"支持但没命中"。
+    """
+    details = raw.get("prompt_tokens_details")
+    if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int):
+        return details["cached_tokens"]
+    for key in ("cache_read_input_tokens", "cached_tokens"):
+        if isinstance(raw.get(key), int):
+            return raw[key]
+    return None
+
+
 @dataclass
 class UsageSink:
     """一次上游调用的 token 计数收集器。
@@ -68,6 +84,9 @@ class UsageSink:
     completion_tokens: int = 0
     total_tokens: int = 0
     from_upstream: bool = False
+    # 缓存命中(P-cache):上游报了几次 cached_tokens(跨批次累加)与"是否报过该字段"
+    cached_tokens: int = 0
+    cache_reported: bool = False
     # 落到哪条模型/供应商:调用方只传"要不要默认模型",真实身份在解析后才确定
     model_id: str = ""
     provider: str = ""
@@ -87,6 +106,11 @@ class UsageSink:
         self.completion_tokens += completion
         self.total_tokens += total
         self.from_upstream = True
+        cached = _extract_cached_tokens(raw)
+        if cached is not None:
+            # 只在上游确实带了 cached 字段时才记;值 0 也算"带了",用于区分不支持与零命中
+            self.cached_tokens += cached
+            self.cache_reported = True
 
     def estimate_from(self, prompt_text: str, completion_text: str = "") -> None:
         """上游没回 usage 时按本地口径补齐;已认领上游数字则不动。"""
@@ -141,3 +165,16 @@ class ChatTurnUsage:
             used_tokens=last.prompt_tokens + last.completion_tokens,
             window_tokens=last.context_tokens,
         )
+
+    def cache_snapshot(self) -> tuple[int, int] | None:
+        """末次调用若上游回报了 cached_tokens,返回 (cached, prompt) 供算命中率;否则 None。
+
+        与 `window()` 同取最后一次调用(Agent 多轮重发同一上下文,累加无意义)。
+        prompt<=0 或未报该字段一律 None = "当前模型暂不支持缓存命中统计"。
+        """
+        if not self.sinks:
+            return None
+        last = self.sinks[-1]
+        if not last.from_upstream or not last.cache_reported or last.prompt_tokens <= 0:
+            return None
+        return (last.cached_tokens, last.prompt_tokens)

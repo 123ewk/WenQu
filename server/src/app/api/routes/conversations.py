@@ -192,6 +192,8 @@ class ContextOut(BaseModel):
     compressible_messages: int
     can_compress: bool
     has_summary: bool
+    cache_supported: bool
+    cache_hit_rate: float | None = None
 
 
 @router.get("/conversations/{conversation_id}/context", response_model=ContextOut)
@@ -202,9 +204,10 @@ def get_conversation_context(
     service: QAService = Depends(get_qa_service),
     memory_service: MemoryService = Depends(get_memory_service),
 ) -> ContextOut:
-    """上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩。
+    """上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩、缓存命中率。
 
-    缓存命中本期不展示(无稳定数据源,见 OPT-45 §9-Q2),前端进度条只读 used/window。
+    缓存命中率(OPT-45 P-cache)= cached/prompt,来自上一条回报了 cached 的 assistant 快照;
+    模型不支持时 cache_supported=False、cache_hit_rate=null,前端显示"当前模型暂不支持缓存命中统计"。
     """
     snapshot = service.get_context_snapshot(user.id, space_id, conversation_id)
     return ContextOut(
@@ -214,6 +217,8 @@ def get_conversation_context(
         compressible_messages=snapshot.compressible_messages,
         can_compress=snapshot.can_compress,
         has_summary=snapshot.has_summary,
+        cache_supported=snapshot.cache_supported,
+        cache_hit_rate=snapshot.cache_hit_rate,
     )
 
 
