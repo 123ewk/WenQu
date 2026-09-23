@@ -54,3 +54,8 @@ $COMPOSE cp minio:/tmp/mirror/. "$DEST/minio/"
 } | tee "$DEST/manifest.txt"
 du -sh "$DEST"
 echo "[backup] 完成 $DEST"
+
+# 保留策略报告统一走 deploy/cleanup-report.sh(只报告,绝不自动删 —— 删备份与回库同属不可逆)。
+# || true 是必需的:这一步再报错也不能把"备份已成功"的门 2 判成失败。
+BACKUP_DIR="$BACKUP_DIR" "$ROOT/deploy/cleanup-report.sh" backups \
+  || echo "[backup] 保留份数报告未生成(cleanup-report.sh 执行失败,不影响本次备份产物)"
