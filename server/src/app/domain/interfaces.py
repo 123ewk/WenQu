@@ -19,6 +19,7 @@ from app.domain.models import (
     Document,
     KnowledgeBase,
     Membership,
+    Memory,
     Message,
     RefreshToken,
     Space,
@@ -157,6 +158,31 @@ class MessageRepository(Protocol):
     def add(self, message: Message) -> Message: ...
     def list_for_conversation(self, conversation_id: uuid.UUID) -> list[Message]: ...
     def next_seq(self, conversation_id: uuid.UUID) -> int: ...
+
+
+class MemoryRepository(Protocol):
+    """外部事实记忆(OPT-45):一切读写以 (space_id, user_id) 为强制谓词,越权即查不到。"""
+
+    def add(self, memory: Memory) -> Memory: ...
+    def get(
+        self, memory_id: uuid.UUID, space_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Memory | None: ...
+    def list_for_actor(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Memory], int]: ...
+    def find_duplicate(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, content: str
+    ) -> Memory | None: ...
+    def save(self, memory: Memory) -> Memory: ...
+    def delete(self, memory: Memory) -> None: ...
+    def search_by_embedding(
+        self,
+        space_id: uuid.UUID,
+        user_id: uuid.UUID,
+        embedding: list[float],
+        limit: int,
+        min_similarity: float = 0.0,
+    ) -> list[tuple[Memory, float]]: ...
 
 
 class ApiKeyRepository(Protocol):

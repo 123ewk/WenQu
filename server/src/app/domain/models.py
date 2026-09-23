@@ -580,3 +580,37 @@ class TokenUsageEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Memory(Base):
+    """外部事实记忆(OPT-45):用户在某空间内跨会话沉淀的决策/事实性结论。
+
+    归属 = (space_id, user_id) 双维度:仓储一切读写强制带这对谓词,跨用户/跨空间一律不可见。
+    embedding 走空间层 key,与 chunks 同维度(1024),供向量相关性召回。
+    source_* 为溯源列:来源会话被删(SET NULL)不影响记忆本身。
+    """
+
+    __tablename__ = "memories"
+    __table_args__ = (Index("ix_memories_space_user", "space_id", "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="fact", server_default="fact")
+    content: Mapped[str] = mapped_column(Text)
+    topic: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

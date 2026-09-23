@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # Agent 工具循环轮数上限(OPT-10);复读/预算护栏另在循环内固定
     agent_max_rounds: int = Field(20, validation_alias="APP_AGENT_MAX_ITERATIONS")
 
+    # ---- 外部事实记忆与上下文压缩(OPT-45) ----
+    memory_enabled: bool = Field(True, validation_alias="APP_MEMORY_ENABLED")
+    memory_recall_top_k: int = Field(5, validation_alias="APP_MEMORY_RECALL_TOP_K")
+    # 召回相似度阈值:低于此值的记忆不注入,防噪声记忆污染上下文
+    memory_recall_min_sim: float = Field(0.30, validation_alias="APP_MEMORY_RECALL_MIN_SIM")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
     avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")

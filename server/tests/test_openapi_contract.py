@@ -70,6 +70,9 @@ REQUIRED_PATHS = {
     # OPT-28 token 用量(汇总=Admin+,我的=成员)
     "/api/v1/spaces/{space_id}/token-usage",
     "/api/v1/spaces/{space_id}/token-usage/me",
+    # OPT-45 外部事实记忆(仅 JWT 本人;非本人/他空间按 404)
+    "/api/v1/spaces/{space_id}/memories",
+    "/api/v1/spaces/{space_id}/memories/{memory_id}",
     "/health",
     "/system/info",
 }
@@ -105,6 +108,7 @@ REQUIRED_ERROR_CODES = {
     "API_KEY_INVALID",
     "API_KEY_CAPABILITY_DENIED",
     "API_KEY_SCOPE_DENIED",
+    "MEMORY_NOT_FOUND",
     "VALIDATION_ERROR",
     "INTERNAL_ERROR",
     "NOT_FOUND",
