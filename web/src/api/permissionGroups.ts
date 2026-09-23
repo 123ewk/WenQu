@@ -10,8 +10,14 @@
  * 3. **只认 JWT**:这组端点刻意不对 API Key 开放(程序凭据不能改自己的权限),
  *    写入门槛 Admin+,读入门槛 Viewer+。
  */
-import { http } from './http'
-import type { GroupMemberOut, PermissionGroupOut, UpsertPermissionGroupRequest } from './types'
+import { ApiError, http } from './http'
+import type {
+  GroupDeleteBlockedDetails,
+  GroupMemberOut,
+  PermissionGroupOut,
+  PurgeRevokedKeysOut,
+  UpsertPermissionGroupRequest,
+} from './types'
 
 export function apiListPermissionGroups(spaceId: string): Promise<PermissionGroupOut[]> {
   return http.get<PermissionGroupOut[]>(`/spaces/${spaceId}/permission-groups`).then((r) => r.data)
@@ -39,10 +45,36 @@ export function apiUpdatePermissionGroup(
 
 /**
  * 删除只允许删空档:还挂着凭据或成员 → 400 VALIDATION_ERROR,
- * details 带 `key_count` / `member_count`,文案由服务端给(前端直接展示即可)。
+ * details 带 `key_count` / `active_key_count` / `revoked_key_count` / `member_count`,
+ * 文案由服务端给(前端直接展示即可)。
+ *
+ * OPT-44 的坑:已吊销的 Key 行仍然占着档位的 RESTRICT 外键,吊销已经是它的最终状态,
+ * 所以"已吊销"这一份要走的出路是 `apiPurgeGroupRevokedKeys`,不是再次吊销。
  */
 export function apiDeletePermissionGroup(spaceId: string, groupId: string): Promise<void> {
   return http.delete<void>(`/spaces/${spaceId}/permission-groups/${groupId}`).then((r) => r.data)
+}
+
+/**
+ * 清空该档位**已吊销**凭据的台账行(不可逆,行没了归因只剩审计)。
+ * 返回 `deleted_count`;0 不是错误。在用的 Key 一律不碰。
+ */
+export function apiPurgeGroupRevokedKeys(
+  spaceId: string,
+  groupId: string,
+): Promise<PurgeRevokedKeysOut> {
+  return http
+    .delete<PurgeRevokedKeysOut>(`/spaces/${spaceId}/permission-groups/${groupId}/revoked-keys`)
+    .then((r) => r.data)
+}
+
+/**
+ * 删档被拒时取计数字段(决定"清空历史凭据"这条路要不要摆出来)。
+ * 非 400/非 ApiError 一律空对象:调用方据此回退到"直显服务端 message"。
+ */
+export function groupDeleteBlockedDetails(error: unknown): GroupDeleteBlockedDetails {
+  if (!(error instanceof ApiError) || !(error.details instanceof Object)) return {}
+  return error.details as GroupDeleteBlockedDetails
 }
 
 /** 分配 = 让他"可以用这一档",不自动生效(生效要显式 set-current);重复分配幂等 */
@@ -85,4 +117,10 @@ export function apiSetCurrentGroup(
     .then((r) => r.data)
 }
 
-export type { GroupMemberOut, PermissionGroupOut, UpsertPermissionGroupRequest }
+export type {
+  GroupDeleteBlockedDetails,
+  GroupMemberOut,
+  PermissionGroupOut,
+  PurgeRevokedKeysOut,
+  UpsertPermissionGroupRequest,
+}

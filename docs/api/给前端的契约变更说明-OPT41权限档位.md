@@ -32,7 +32,8 @@
 | `POST ""` | ADMIN+ | `UpsertPermissionGroupRequest` | `PermissionGroupOut`（201） | — |
 | `GET /{group_id}` | VIEWER+ | — | `PermissionGroupOut` | 跨空间一律 404（不泄露存在性） |
 | `PATCH /{group_id}` | ADMIN+ | `UpsertPermissionGroupRequest` | `PermissionGroupOut` | **整组替换**（PUT 语义走 PATCH 方法名），半字段更新不支持 |
-| `DELETE /{group_id}` | ADMIN+ | — | 204 | 挂着 Key 或成员时 **400 拒绝**，见 §5 |
+| `DELETE /{group_id}` | ADMIN+ | — | 204 | 挂着 Key 或成员时 **400 拒绝**，见 §5；被**已吊销**的 Key 挡住时先调下一条再重试 |
+| `DELETE /{group_id}/revoked-keys` | ADMIN+ | — | `{ deleted_count: number }`（200） | **OPT-44 新增**：彻底删掉本档位下**已吊销**凭据的台账行（在用的 Key 一律不碰）。不可逆，删除前逐把写 `api_key.purged` 审计快照。`deleted_count=0` 不是错误，表示本来就没有历史凭据 |
 | `POST /{group_id}/members` | ADMIN+ | `{ user_id }` | `PermissionGroupOut` | 幂等；**分配 ≠ 生效** |
 | `DELETE /{group_id}/members/{user_id}` | ADMIN+ | — | 204 | 未挂载 → 404；解除的正是他当前档 → current 一并消失（fail-closed，不是 bug） |
 | `PUT /{group_id}/current` | ADMIN+ | `{ user_id }` | `PermissionGroupOut` | 换档 = 权限开关，原 current 自动让位；此人未挂在档上 → 400 |
@@ -106,7 +107,7 @@ interface CreateApiKeyRequest {
 
 ## 5. 错误码与文案
 
-契约源：`server/src/app/core/errors.py`、`effective_permission.py:64-103/149-168`、`permission_groups.py:172-205/287-308`。响应统一壳 `{ error: { code, message, details } }`（`http.ts` 的 `ApiError` 已能解）。
+契约源：`server/src/app/core/errors.py`、`effective_permission.py:64-103/149-168`、`permission_groups.py:174-217/219-259`（删档守卫与"清空历史凭据"）。响应统一壳 `{ error: { code, message, details } }`（`http.ts` 的 `ApiError` 已能解）。
 
 | code | HTTP | 何时出现 | 建议话术 |
 | --- | --- | --- | --- |
@@ -114,7 +115,7 @@ interface CreateApiKeyRequest {
 | `API_KEY_SPACE_MISMATCH` | 403 | 第三方拿 A 空间的 Key 打 B 空间的接口(`details.reason = "space_mismatch"`) | **人链路不会出现**(它是 Key 专用的越权闸,`api_key_auth.py:234-241`);前端只需按统一壳直显 message,别归类成"你没权限" |
 | `API_KEY_CAPABILITY_DENIED` | 403 | 档位没这个能力（Key 打了未登记的双认证路由也会是这个码，但当前无此路径，见 §2） | 按 `details.actor` 分文案：`member` → "你的档位「{group_name}」未授予{能力}"；`api_key` → 第三方语义，不改 |
 | `API_KEY_SCOPE_DENIED` | 403 | 档位没勾任何库（`empty_scope`）或请求指向范围外库（`out_of_scope`） | 直显 `message`，并给"去档位页看我的范围"入口 |
-| `VALIDATION_ERROR` | 400/422 | 删档时挂着 Key/成员；换档前人未分配；`all_kbs=true` 还传了 `kb_ids` | **服务端 message 已是中文成品**（例："该档位下还有 3 把 API Key,请先吊销或改指到别的档位"），直显，不要前端再造一套判定。`details` 带 `key_count` / `member_count` 可用于二次确认弹窗。**一个坑（2026-09-23 dev 实测）**：`key_count` **含已吊销**的 Key，而"吊销"是 Key 唯一的下线手段 ⇒ 签发过 Key 的档位实际上删不掉，文案里的"请先吊销"是无效动作。前端**不要**在这条 400 上放"去吊销"按钮，直显 message 即可；语义待拍板（台账 OPT-44） |
+| `VALIDATION_ERROR` | 400/422 | 删档时挂着 Key/成员；换档前人未分配；`all_kbs=true` 还传了 `kb_ids` | **服务端 message 已是中文成品**（例："该档位下还有 3 把 API Key(2 把在用的先吊销、1 把已吊销的先清空历史凭据),处理完才能删档"），直显即可。删档那一条的 `details` 现在有四个计数：`key_count` / `active_key_count` / `revoked_key_count` / `member_count`。**OPT-44 的坑（2026-09-23 dev 实测并已修）**：`key_count` 含已吊销的 Key，而吊销是 Key 唯一的下线手段 ⇒ 只按"先吊销"永远删不掉档；出路是 `DELETE /{group_id}/revoked-keys`（见 §2）。前端建议：`revoked_key_count > 0 且 active_key_count === 0` 时给"清空历史凭据并重试"，仍有在用的就别替用户决定吊销 |
 | `AUTH_REQUIRED` | 401 | 没带 JWT 或 JWT 失效；**以及第三方拿 `X-API-Key` 去打"只认 JWT"的路由**（`/permission-groups`、`/api-keys`、`/users/*`、`/admin/*`、会话列表等） | 前端只会以第一种形态出现（刷新链跳登录）。第二种是第三方接入方的误用，与前端无关，见 §2 |
 | `FORBIDDEN` | 403 | 角色不足（写操作要 ADMIN+） | "仅管理员可操作" |
 | `NOT_FOUND` / `MEMBER_NOT_FOUND` | 404 | 档位不在本空间 / 目标不是本空间成员 | "档位不存在或无权访问" |
@@ -134,9 +135,10 @@ interface CreateApiKeyRequest {
 ## 7. 附带变更（容易漏）
 
 1. **移除成员多了查询参数** `DELETE /spaces/{sid}/members/{uid}?keep_mounts=false|true`（`routes/spaces.py:247-259`）。默认 false = 一并删掉此人的档位挂载行（推荐：留行会在他重新入空间时悄悄带回上次权限）；true = 保留，再拉回来即恢复。两个选择都进审计（detail 键 `keep_permission_mounts`）。→ 移除成员的二次确认要变成**二选一**，不能只是"确定/取消"。
-2. **审计新增 6 个动作码**（`domain/enums.py:76-81`）：`permission_group.created` / `.updated` / `.deleted` / `.member_assigned` / `.member_unassigned` / `.current_set`。`views/audit/AuditView.vue:40-64` 的 `ACTION_LABELS` 未登记 → 现在会原样显示英文码。改权限那一条 detail 带 `capabilities_before/after` + `kb_scope_before/after`（回答"谁把 3 个库放成全部库"）。
-3. `api_key.activated` 枚举值**保留但后端不再写**（历史审计行反序列化要用），前端 label 留着，别删。
-4. 旧的 `docs/api/m3-api-keys-接口说明.md` 里 activate / `is_active` 段落已过期，本次一并订正。
+2. **审计新增 6 个动作码**（`domain/enums.py:78-83`）：`permission_group.created` / `.updated` / `.deleted` / `.member_assigned` / `.member_unassigned` / `.current_set`。`views/audit/AuditView.vue:40-75` 的 `ACTION_LABELS` 未登记时会原样显示英文码（OPT-41 片已登记）。改权限那一条 detail 带 `capabilities_before/after` + `kb_scope_before/after`（回答"谁把 3 个库放成全部库"）。
+3. **审计多一个动作码 `api_key.purged`**（OPT-44，`domain/enums.py`）：某把**已吊销**凭据的台账行被"清空历史凭据"彻底删掉了。行已不在，这条 detail 就是它的全部归因（`key_id` / `key_hint` / `group_id` / `group_name` / `owner_user_id` / `created_by` / `created_at` / `revoked_at` / `last_used_at`），所以 `ACTION_LABELS` 必须登记（前端已加"清空历史凭据"）。
+4. `api_key.activated` 枚举值**保留但后端不再写**（历史审计行反序列化要用），前端 label 留着，别删。
+5. 旧的 `docs/api/m3-api-keys-接口说明.md` 里 activate / `is_active` 段落已过期，本次一并订正。
 
 ## 8. 待拍板（默认值我按推荐写进工单，如不同意请说）
 

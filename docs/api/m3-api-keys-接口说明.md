@@ -35,6 +35,11 @@
   给档位加一个能力,挂在该档上的所有 Key 下一次请求就有;收掉则立刻 403。
 - **吊销**:软删除(`revoked_at` 置值)。列表包含已吊销的 Key,前端建议置灰展示;
   吊销后用该 Key 的程序立即收到 401。
+- **吊销 ≠ 删行**:Key 台账行**唯一**的硬删入口在档位侧 ——
+  `DELETE /api/v1/spaces/{sid}/permission-groups/{gid}/revoked-keys`(OPT-44,Admin+,只认 JWT,
+  只清该档位下已吊销的行,返回 `{deleted_count}`)。为什么要硬删:`api_keys.group_id` 的外键是
+  `ON DELETE RESTRICT`,已吊销的行照样占着 ⇒ 不删行就删不掉档位。行一删,这把 Key 的归因
+  只剩删除前写入的 `api_key.purged` 审计快照,所以**不可逆且不留明文**。
 - **OPT-31 的 `is_active` / "正在使用" 已整条删除**:端点 `PUT /api-keys/{key_id}/activate`
   没了,字段 `is_active` 没了。"此刻用哪一档"改由档位侧的 `PUT /permission-groups/{id}/current`
   表达,且语义从台账标记升级为**真权限开关**。
@@ -46,6 +51,7 @@
 | `GET /api/v1/spaces/{space_id}/api-keys` | 列表(含已吊销);Viewer+ |
 | `POST /api/v1/spaces/{space_id}/api-keys` | 创建(须指定档位 + 归因成员),**201 返回明文仅此一次**;**Admin+** |
 | `DELETE /api/v1/spaces/{space_id}/api-keys/{key_id}` | 吊销(幂等,204);**Admin+** |
+| `DELETE /api/v1/spaces/{space_id}/permission-groups/{group_id}/revoked-keys` | **硬删**该档位下已吊销凭据的台账行(200 `{deleted_count}`);OPT-44,**Admin+**、只认 JWT |
 
 ### 创建请求
 
@@ -153,6 +159,6 @@ Content-Type: application/json
 - [ ] 创建成功弹窗:展示 `plaintext`,文案"仅此一次";关闭后列表只出现 `key_hint`
 - [ ] 吊销二次确认:文案说明"立即 401、不可恢复"(见原型)
 - [ ] 三态与权限:列表 loading/空/错误;创建/吊销入口按 **Admin+** 显隐(列表 Viewer+ 可看);
-      403/404 **直显服务端 `message`**(后端文案已是成品,例如"该档位下还有 3 把 API Key,请先吊销或改指到别的档位")
+      403/404 **直显服务端 `message`**(后端文案已是成品,例如"该档位下还有 3 把 API Key(2 把在用的先吊销、1 把已吊销的先清空历史凭据),处理完才能删档" —— 这句出现在**档位页**的删档动作上,Key 页只会出现吊销/签发的错)
 - [ ] 契约同步:`docs/api/openapi.json` 的 `ApiKeyOut` / `ApiKeyCreatedOut` /
       `CreateApiKeyRequest` / `ApiKeyGroupRef`

@@ -8,9 +8,11 @@ import {
   apiCreatePermissionGroup,
   apiDeletePermissionGroup,
   apiListPermissionGroups,
+  apiPurgeGroupRevokedKeys,
   apiSetCurrentGroup,
   apiUnassignGroupMember,
   apiUpdatePermissionGroup,
+  groupDeleteBlockedDetails,
 } from '@/api/permissionGroups'
 import { apiListMembers } from '@/api/spaces'
 import type { GroupMemberOut, MemberOut, PermissionGroupOut, UpsertPermissionGroupRequest } from '@/api/types'
@@ -21,8 +23,8 @@ import { isAtLeast, ROLE, roleLabel } from '@/utils/roles'
 /**
  * 权限档位(OPT-41)—— 一档 = "能做什么能力 + 能看哪些知识库",人和 API Key 共用同一份真相。
  *
- * 端点全挂在空间下且**只认 JWT**(程序凭据打它会 403 route_not_grantable —— 改权限不能由
- * 凭据自己发起):列表/详情 Viewer+,建档·改档·删档·分配·解除·换档一律 Admin+。
+ * 端点全挂在空间下且**只认 JWT**(带 API Key 打过来是 401 AUTH_REQUIRED,与未登录同构 ——
+ * 改权限不能由凭据自己发起):列表/详情 Viewer+,建档·改档·删档·分配·解除·换档一律 Admin+。
  *
  * 三条必须落到 UI 上的口径:
  * 1. 权限的唯一真相在这里 —— 改一次档位,其下全部已签发 Key 与新范围即时生效(不用重发明文);
@@ -238,14 +240,43 @@ async function onDelete(group: PermissionGroupOut) {
   const spaceId = auth.currentSpaceId
   if (!spaceId) return
   try {
-    await apiDeletePermissionGroup(spaceId, group.id)
-    groups.value = groups.value.filter((g) => g.id !== group.id)
-    if (drawerId.value === group.id) drawerId.value = null
-    ElMessage.success('档位已删除')
+    await deleteGroupWithPurgeRetry(spaceId, group)
   } catch (e) {
-    // 400 的 message 服务端已带数量与出路("请先吊销或改指到别的档位"),直显即可
     ElMessage.error(errMessage(e))
   }
+}
+
+/**
+ * 删档,并在"只被已吊销凭据挡住"时给一次清空重试的机会(OPT-44)。
+ *
+ * 坑在这:吊销只置 `revoked_at`,台账行还在,而档位外键是 RESTRICT —— 所以"先吊销"
+ * 对已吊销的 Key 不是出路,照文案再做一遍也删不掉档。清空历史凭据不可逆(行没了,
+ * 归因只剩审计),因此必须单独确认,且只在没有在用凭据时才自动递这一步。
+ */
+async function deleteGroupWithPurgeRetry(spaceId: string, group: PermissionGroupOut) {
+  try {
+    await apiDeletePermissionGroup(spaceId, group.id)
+  } catch (e) {
+    const { active_key_count: active = 0, revoked_key_count: revoked = 0 } =
+      groupDeleteBlockedDetails(e)
+    if (!revoked || active) throw e // 还有在用的:出路是人工吊销,不替用户决定
+    const go = await ElMessageBox.confirm(
+      `「${group.name}」还被 ${revoked} 把已吊销的历史凭据占着 —— 吊销不会删掉台账行,` +
+        '档位外键是 RESTRICT,所以删不掉。清空这些行之后才能删档:不可逆,清空后这些 Key 的' +
+        '归属与最后使用时间只留在审计里。',
+      '清空历史凭据并删除档位',
+      { type: 'warning', confirmButtonText: `清空 ${revoked} 把并重试`, cancelButtonText: '取消' },
+    ).catch(() => false)
+    if (!go) {
+      ElMessage.info('未清空历史凭据,档位保留')
+      return
+    }
+    await apiPurgeGroupRevokedKeys(spaceId, group.id)
+    await apiDeletePermissionGroup(spaceId, group.id)
+  }
+  groups.value = groups.value.filter((g) => g.id !== group.id)
+  if (drawerId.value === group.id) drawerId.value = null
+  ElMessage.success('档位已删除')
 }
 
 /* ───── 成员抽屉:分配(可用)→ 设为当前(生效)两步 ───── */

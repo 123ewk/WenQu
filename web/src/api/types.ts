@@ -534,6 +534,23 @@ export interface UpsertPermissionGroupRequest {
   all_kbs?: boolean
 }
 
+/** 清空档位下"已吊销凭据"的结果(OPT-44);0 = 本来就没有历史凭据,不是错误 */
+export interface PurgeRevokedKeysOut {
+  deleted_count: number
+}
+
+/**
+ * 删档被拒(400 VALIDATION_ERROR)时 `error.details` 的字段。
+ * 后端把在用的与已吊销的分开计数:前者出路是"吊销",后者是"清空历史凭据"。
+ */
+export interface GroupDeleteBlockedDetails {
+  group_id?: string
+  key_count?: number
+  active_key_count?: number
+  revoked_key_count?: number
+  member_count?: number
+}
+
 /** Key 响应里内联的档位快照:要看/要改权限去档位页,Key 这边只读 */
 export interface ApiKeyGroupRef {
   id: string

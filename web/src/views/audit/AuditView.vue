@@ -60,6 +60,8 @@ const ACTION_LABELS: Record<string, string> = {
   'document.reparsed': '重新解析',
   'api_key.created': '创建 API Key',
   'api_key.revoked': '吊销 API Key',
+  // OPT-44:台账行被彻底删除(不可逆),detail 是该 Key 的归因快照 —— 行已没,只剩这条
+  'api_key.purged': '清空历史凭据',
   // OPT-31 的历史标记:OPT-41 起后端不再写这个动作,但老审计行还得能渲染
   'api_key.activated': '设为正在使用(已停用)',
   /* ───── OPT-41:权限档位(改权限的唯一入口,detail 带改前/改后范围) ───── */
