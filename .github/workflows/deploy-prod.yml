@@ -36,6 +36,7 @@ jobs:
       ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
       WENQU_IMAGE_PREFIX: registry.cn-hangzhou.aliyuncs.com/${{ secrets.ACR_NAMESPACE }}
       WENQU_ENV_FILE: /home/ubuntu/wenqu/.env # 业务密钥只在服务器上,CD 链路不接触
+      WENQU_COMPOSE_PROJECT: wenqu # 钉死:卷前缀由它决定,留空则靠探测,而演练项目残留卷会让发布被门 1 拦下
       WENQU_STATE_FILE: /home/ubuntu/wenqu/.deploy-state
       BACKUP_DIR: /home/ubuntu/wenqu/backups
       WEB_URL: http://127.0.0.1 # runner 与栈同机,走宿主回环经 nginx 入口
