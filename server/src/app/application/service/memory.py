@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,16 @@ if TYPE_CHECKING:
     from app.core.config import Settings
 
 _KINDS = {"fact", "decision"}
+
+
+def normalize_memory_content(content: str) -> str:
+    """归一化:折叠所有连续空白为单空格,去首尾空白。提议去重与 dismissed 比对都用它。"""
+    return " ".join((content or "").split())
+
+
+def memory_content_hash(content: str) -> str:
+    """记忆正文的去重键(sha256 of 归一化内容),供忽略留痕跨提议匹配。"""
+    return hashlib.sha256(normalize_memory_content(content).encode("utf-8")).hexdigest()
 
 
 class MemoryService:

@@ -373,6 +373,9 @@ class QAService:
             self._event_log.append(sid, event_type, payload)
 
         memories = self._recall_memories(ctx)
+        settings = get_settings()
+        # 记忆总开关关掉时 max_proposals=0 → 循环不再弹任何提议卡片(工具仍无副作用)
+        max_proposals = settings.memory_proposal_max_per_turn if settings.memory_enabled else 0
         outcome = AgentRunner(
             chat=self._chat,
             search=self._agent_search(ctx),
@@ -381,8 +384,15 @@ class QAService:
             model_id=ctx.model_id,
             top_k_default=ctx.top_k,
             max_rounds=self._agent_max_rounds,
+            max_proposals=max_proposals,
         ).run(
-            ToolContext(user_id=ctx.user_id, space_id=ctx.space_id, kb_ids=ctx.kb_ids),
+            ToolContext(
+                user_id=ctx.user_id,
+                space_id=ctx.space_id,
+                kb_ids=ctx.kb_ids,
+                source_conversation_id=ctx.conversation.id,
+                source_message_id=ctx.user_message_id,
+            ),
             ctx.question,
             ctx.history,
             memories=memories,

@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     memory_recall_top_k: int = Field(5, validation_alias="APP_MEMORY_RECALL_TOP_K")
     # 召回相似度阈值:低于此值的记忆不注入,防噪声记忆污染上下文
     memory_recall_min_sim: float = Field(0.30, validation_alias="APP_MEMORY_RECALL_MIN_SIM")
+    # 单次 Agent 提问最多弹几条记忆提议(护栏,超出丢弃并记日志)
+    memory_proposal_max_per_turn: int = Field(
+        3, validation_alias="APP_MEMORY_PROPOSAL_MAX_PER_TURN"
+    )
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

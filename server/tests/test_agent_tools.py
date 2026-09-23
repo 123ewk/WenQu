@@ -99,9 +99,42 @@ def test_ledger_numbers_are_global_across_calls() -> None:
 
 def test_registry_builds_named_tools_with_declarations() -> None:
     tools = build_tools(RecordingSearch(), CitationLedger())
-    assert set(tools) == {"search_knowledge"}
+    assert set(tools) == {"search_knowledge", "propose_memory"}
     # 元测试契约:每个注册工具必须显式声明只读性(基准 07,防新增工具漏声明)
     assert all(isinstance(tool.READ_ONLY, bool) for tool in tools.values())
+    assert tools["search_knowledge"].READ_ONLY is True
+    assert tools["propose_memory"].READ_ONLY is False  # 提议会引导一次确认写入,非只读
+
+
+def test_propose_memory_builds_hashed_proposal_without_side_effect() -> None:
+    """propose_memory:归一化正文 + 稳定哈希 + 载荷,execute 自身不落库、不打模型。"""
+    tools = build_tools(RecordingSearch(), CitationLedger())
+    tool = tools["propose_memory"]
+    result = tool.execute(
+        _ctx(), {"content": "项目  上线 日期是 8 月", "kind": "decision", "topic": "排期"}
+    )
+    assert result.success
+    proposal = result.data["proposal"]
+    assert proposal["content"] == "项目 上线 日期是 8 月"  # 折叠空白
+    assert proposal["kind"] == "decision"
+    assert proposal["topic"] == "排期"
+    assert proposal["content_hash"] and len(proposal["content_hash"]) == 64
+    assert "等待" in result.output  # 给模型的说明:等用户确认,不自动保存
+
+
+def test_propose_memory_rejects_unknown_kind() -> None:
+    tools = build_tools(RecordingSearch(), CitationLedger())
+    result = tools["propose_memory"].execute(_ctx(), {"content": "结论", "kind": "nonsense"})
+    assert not result.success  # Literal 校验失败 → 回填模型可读错误,不产出卡片
+    assert "kind" in result.output
+
+
+def test_propose_memory_same_content_same_hash() -> None:
+    tools = build_tools(RecordingSearch(), CitationLedger())
+    tool = tools["propose_memory"]
+    a = tool.execute(_ctx(), {"content": "  同一个 结论  "})
+    b = tool.execute(_ctx(), {"content": "同一个 结论"})
+    assert a.data["proposal"]["content_hash"] == b.data["proposal"]["content_hash"]
 
 
 def test_tool_result_shape_is_stable() -> None:
