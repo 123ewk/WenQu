@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -93,4 +94,18 @@ def test_compose_injects_memory_block_and_empty_is_identical() -> None:
     # 空召回(None / [])与"无记忆"逐字节一致:回退不改变提示词形态
     assert without_mem[0]["content"] == none_mem[0]["content"]
     assert "已确认相关记忆" not in without_mem[0]["content"]
+
+
+def test_compose_summary_block_and_no_summary_is_identical() -> None:
+    citations = [{"index": 1, "filename": "手册.md", "excerpt": "资料内容"}]
+    with_sum = _build_messages([], "问题", citations, [], summary="更早的结论已合并")
+    no_sum = _build_messages([], "问题", citations, [])
+    assert "前情摘要" in with_sum[0]["content"]
+    assert "更早的结论已合并" in with_sum[0]["content"]
+    assert "前情摘要" not in no_sum[0]["content"]
+
+    # 装配处传入的 recent 原样拼接、不再二次截断(截断职责已上交 assemble_history)
+    recent = [SimpleNamespace(role="user", content=f"m{i}") for i in range(12)]
+    msgs = _build_messages(recent, "问题", citations, [])
+    assert [m["content"] for m in msgs[1:-1]] == [f"m{i}" for i in range(12)]
 

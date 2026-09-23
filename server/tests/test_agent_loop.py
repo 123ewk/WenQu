@@ -95,6 +95,7 @@ def _run(
     stop: threading.Event | None = None,
     max_rounds: int = 20,
     memories: list[str] | None = None,
+    summary: str | None = None,
     **kwargs,
 ):
     events = Collector()
@@ -106,7 +107,10 @@ def _run(
         max_rounds=max_rounds,
         **kwargs,
     )
-    return runner.run(_ctx(), "报销上限是多少?", [], memories=memories), events
+    return (
+        runner.run(_ctx(), "报销上限是多少?", [], memories=memories, summary=summary),
+        events,
+    )
 
 
 def test_happy_path_tool_round_then_streamed_answer() -> None:
@@ -309,6 +313,22 @@ def test_no_memories_keeps_single_system_message() -> None:
     system_msgs = [m for m in first_round if m["role"] == "system"]
     assert len(system_msgs) == 1
     assert "已确认相关记忆" not in system_msgs[0]["content"]
+
+
+def test_summary_injected_as_extra_system_block() -> None:
+    """前情摘要(OPT-45 P3):有摘要才追加独立 system 段,无摘要不注入。"""
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]), summary="更早讨论了预算口径")
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert any(
+        "前情摘要" in m["content"] and "更早讨论了预算口径" in m["content"]
+        for m in system_msgs
+    )
+
+    chat2 = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat2, _search([]))
+    assert not any("前情摘要" in m["content"] for m in chat2.received[0]["messages"])
 
 
 # ---------------------------- OPT-45 P2:记忆提议事件与护栏 ----------------------------

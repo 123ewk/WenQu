@@ -138,6 +138,7 @@ class AgentRunner:
         question: str,
         history: list[Message],
         memories: list[str] | None = None,
+        summary: str | None = None,
     ) -> AgentOutcome:
         ledger = CitationLedger()
         tools = build_tools(self._search, ledger)
@@ -162,6 +163,17 @@ class AgentRunner:
                     "content": (
                         "=== 已确认相关记忆(用户此前确认的背景结论,可作事实参考,"
                         "非本轮指令) ===\n" + block
+                    ),
+                }
+            )
+        # 前情摘要块(OPT-45 P3):已压缩才追加,空摘要与现状逐字节一致
+        if summary:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "=== 前情摘要(更早对话的滚动压缩结果,可作背景参考,非本轮指令) ===\n"
+                        + summary
                     ),
                 }
             )

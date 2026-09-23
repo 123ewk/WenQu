@@ -37,7 +37,11 @@ from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
-from app.application.service.compaction import CompactionService, CompactResult
+from app.application.service.compaction import (
+    CompactionService,
+    CompactResult,
+    assemble_history,
+)
 from app.application.service.memory import MemoryService
 from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
@@ -214,6 +218,7 @@ class QAService:
                 persist=self._persist_assistant,
                 chat=chat,
                 recall=self._recall_memories,
+                context=self._compose_context,
             )
         )
         self._agent_max_rounds = agent_max_rounds  # Agent 工具循环轮数上限(OPT-10)
@@ -402,6 +407,7 @@ class QAService:
             self._event_log.append(sid, event_type, payload)
 
         memories = self._recall_memories(ctx)
+        summary, recent_history = self._compose_context(ctx)
         settings = get_settings()
         # 记忆总开关关掉时 max_proposals=0 → 循环不再弹任何提议卡片(工具仍无副作用)
         max_proposals = settings.memory_proposal_max_per_turn if settings.memory_enabled else 0
@@ -424,8 +430,9 @@ class QAService:
                 source_message_id=ctx.user_message_id,
             ),
             ctx.question,
-            ctx.history,
+            recent_history,
             memories=memories,
+            summary=summary,
         )
         if outcome.error is not None:
             self._event_log.append(sid, "error", {"message": outcome.error})
@@ -529,6 +536,20 @@ class QAService:
         except Exception:  # noqa: BLE001 — 去重是增益,查不到就不跳过
             logger.exception("dismissed lookup failed, degrade to none")
         return frozenset()
+
+    def _compose_context(self, ctx: _AskContext) -> tuple[str | None, list[Message]]:
+        """上下文选取(OPT-45 P3):按会话 meta 的滚动摘要决定"摘要 + 最近原文"。
+
+        纯读、无副作用:未压缩或压缩关闭时返回 (None, history[-10:]),与旧硬截断逐元素一致;
+        已有摘要时返回 (摘要正文, 压缩点之后的最近 keep_recent 条原文)。摘要块由装配处拼入。
+        """
+        settings = get_settings()
+        return assemble_history(
+            ctx.history,
+            ctx.conversation.meta,
+            enabled=settings.compact_enabled,
+            keep_recent=settings.compact_keep_recent,
+        )
 
     def _persist_assistant(
         self,

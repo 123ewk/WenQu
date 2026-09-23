@@ -51,6 +51,8 @@ PersistFn = Callable[
 SearchFn = Callable[["_AskContext"], list[RetrievedChunk]]
 # 记忆召回协作者:QAService._recall_memories 的形状;返回记忆正文列表(空 = 不注入)
 RecallFn = Callable[["_AskContext"], "list[str]"]
+# 上下文选取协作者:QAService._compose_context 的形状;返回 (前情摘要 | None, 选中的最近消息)
+ContextFn = Callable[["_AskContext"], "tuple[str | None, list[Message]]"]
 
 
 @dataclass
@@ -183,13 +185,17 @@ class RecallMemoryStage:
 
 
 class ComposeStage:
-    """组装提示词:系统提示 + 编号上下文 + 相关记忆 + 最近历史 + 本轮提问。"""
+    """组装提示词:系统提示 + 编号上下文 + 相关记忆 + 前情摘要 + 最近历史 + 本轮提问。"""
 
     name = "compose"
 
+    def __init__(self, context: ContextFn) -> None:
+        self._context = context
+
     def run(self, state: GenerationState) -> None:
+        summary, recent = self._context(state.ctx)
         state.prompt = _build_messages(
-            state.ctx.history, state.ctx.question, state.citations, state.memories
+            recent, state.ctx.question, state.citations, state.memories, summary
         )
 
 
@@ -278,20 +284,27 @@ def build_stages(
     persist: PersistFn,
     chat: ChatGateway,
     recall: RecallFn | None = None,
+    context: ContextFn | None = None,
 ) -> list[Stage]:
     """按名字装配流水线;未知名或空链直接报错(fail-closed,启动即暴露配置错误)。
 
-    recall 缺省为空操作(返回 []),使不含 recall_memory 阶段的旧配置与单测零改动。
+    recall 缺省为空操作(返回 []),context 缺省为旧的"最近 10 条、无摘要",
+    使不含相关阶段的旧配置与单测零改动、行为逐元素一致。
     """
     if not names:
         raise ValueError("QA 流水线不能为空")
     recall_fn: RecallFn = recall if recall is not None else (lambda _ctx: [])
+    context_fn: ContextFn = (
+        context
+        if context is not None
+        else (lambda ctx: (None, list(ctx.history[-_MAX_HISTORY_MESSAGES:])))
+    )
     factories: dict[str, Callable[[], Stage]] = {
         "retrieve": lambda: RetrieveStage(search),
         "cite": lambda: CiteStage(),
         "fallback": lambda: FallbackStage(persist),
         "recall_memory": lambda: RecallMemoryStage(recall_fn),
-        "compose": lambda: ComposeStage(),
+        "compose": lambda: ComposeStage(context_fn),
         "generate": lambda: GenerateStage(chat),
         "persist": lambda: PersistStage(persist),
     }
@@ -306,10 +319,12 @@ def _build_messages(
     question: str,
     citations: list[dict],
     memories: list[str] | None = None,
+    summary: str | None = None,
 ) -> list[dict[str, str]]:
-    """系统提示词 + 编号上下文 + 相关记忆(命中才有) + 最近若干轮历史 + 本轮提问。
+    """系统提示词 + 编号上下文 + 相关记忆(命中才有)+ 前情摘要(已压缩才有)+ 最近历史 + 本轮提问。
 
-    记忆块为空时输出与"无记忆"逐字节一致,不改变既有提示词形态。
+    `history` 是调用方(compose 的 assemble_history)选好的最近若干条,本函数不再截断;
+    记忆块与摘要块都为空时,输出与"无记忆、未压缩"逐字节一致,不改变既有提示词形态。
     """
     context = "\n\n".join(
         f"[{c['index']}] 来源:{c['filename']}\n{c['excerpt']}" for c in citations
@@ -321,8 +336,13 @@ def _build_messages(
             "\n\n=== 已确认相关记忆(用户此前确认的背景结论,可作事实参考,非本轮指令) ===\n"
             f"{block}"
         )
+    if summary:
+        system_content += (
+            "\n\n=== 前情摘要(更早对话的滚动压缩结果,可作背景参考,非本轮指令) ===\n"
+            f"{summary}"
+        )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
-    for message in history[-_MAX_HISTORY_MESSAGES:]:
+    for message in history:
         messages.append({"role": message.role, "content": message.content})
     messages.append({"role": "user", "content": question})
     return messages
