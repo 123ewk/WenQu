@@ -55,7 +55,10 @@ def _doc_files() -> list[Path]:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=_base_url(), timeout=TIMEOUT)
+    """trust_env=False:本机有系统代理时,httpx 默认会把 127.0.0.1 也丢给代理,
+    于是拿到一个含义不明的 502(实测),掩盖"server 根本没在跑"这个真问题。
+    """
+    return httpx.Client(base_url=_base_url(), timeout=TIMEOUT, trust_env=False)
 
 
 def _check(resp: httpx.Response, what: str) -> httpx.Response:
@@ -85,8 +88,16 @@ def _preflight(client: httpx.Client, settings, dry_run: bool) -> None:
         raise SeedError(f"素材目录不存在:{DOCS_DIR}")
 
     resp = client.get("/api/v1/demo/status")
+    if resp.status_code == 404:
+        raise SeedError(
+            f"{_base_url()} 上没有 /api/v1/demo/status —— 服务进程跑的是不含演示模式的旧版本"
+            "(切到本分支代码后重启 server)"
+        )
     if resp.status_code // 100 != 2:
-        raise SeedError(f"连不上 {_base_url()}/api/v1/demo/status:HTTP {resp.status_code}")
+        raise SeedError(
+            f"{_base_url()}/api/v1/demo/status 返回 HTTP {resp.status_code}"
+            "(server 未就绪或在重启中)"
+        )
     status = resp.json()
     if not status.get("enabled"):
         raise SeedError(

@@ -97,9 +97,7 @@ class Settings(BaseSettings):
     demo_password: str = Field("", validation_alias="APP_DEMO_PASSWORD")
     # 种子脚本与状态接口共用同一套名字:改名即换一套演示数据(旧数据不会被误删)
     demo_space_name: str = Field("演示空间", validation_alias="APP_DEMO_SPACE_NAME")
-    demo_kb_name: str = Field(
-        "大模型应用工程知识库", validation_alias="APP_DEMO_KB_NAME"
-    )
+    demo_kb_name: str = Field("大模型应用工程知识库", validation_alias="APP_DEMO_KB_NAME")
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
