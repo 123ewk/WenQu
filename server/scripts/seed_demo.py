@@ -1,7 +1,7 @@
 """演示数据播种(OPT-46):把"新用户第一次打开网站该看到的东西"一次性准备好。
 
 跑完之后,demo 账号登录就能看到:演示空间 → 知识库(22 篇文档全部 completed)→ 3 条
-跨会话记忆。自动演示脚本(e2e/demo_run.py)只负责点页面,不负责造数据 —— 数据在这里造,
+跨会话记忆。自动演示脚本(scripts/demo_run.py)只负责点页面,不负责造数据 —— 数据在这里造,
 因为它要真的走向量模型(一次几分钟),不适合放在浏览器演示里现场等。
 
 为什么走 HTTP 而不是直接调服务层:演示的意义就是"这条链路真的通"。经 API 才能连带
@@ -318,7 +318,7 @@ def main() -> int:
             status = _check(client.get("/api/v1/demo/status"), "读取演示状态").json()
             print(f"完成:document_ready={status.get('document_ready')}/{status.get('document_total')}"
                   f"  ready={status.get('ready')}")
-            print("下一步:uv run python e2e/demo_run.py 跑自动演示")
+            print("下一步:make demo-browser 装一次浏览器内核,再 make demo-run 跑自动演示")
             return 0 if status.get("ready") else 1
         except SeedError as err:
             print(f"✗ {err}", file=sys.stderr)
