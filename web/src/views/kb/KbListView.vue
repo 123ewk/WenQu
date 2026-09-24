@@ -121,7 +121,7 @@ function openKb(kb: KnowledgeBaseOut) {
           共 {{ items.length }} 个<template v-if="spaceName"> · 当前空间:{{ spaceName }}</template>
         </div>
       </div>
-      <el-button v-if="canEdit" type="primary" @click="openCreate">
+      <el-button v-if="canEdit" type="primary" data-testid="kb-create-open" @click="openCreate">
         <el-icon class="btn-ic"><Plus /></el-icon>新建知识库
       </el-button>
     </div>
@@ -146,7 +146,7 @@ function openKb(kb: KnowledgeBaseOut) {
       </svg>
       <div class="state-title">创建第一个知识库</div>
       <div class="state-desc">上传团队文档,让知识随时可问、可溯源</div>
-      <el-button v-if="canEdit" type="primary" class="state-btn" @click="openCreate">
+      <el-button v-if="canEdit" type="primary" class="state-btn" data-testid="kb-create-open-empty" @click="openCreate">
         <el-icon class="btn-ic"><Plus /></el-icon>新建知识库
       </el-button>
       <div v-else class="state-desc role-hint">当前角色为 Viewer,无权新建知识库(需 Editor 及以上)</div>
