@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.application.repository.retrieval import build_tsquery
 from app.application.service.retrieval import (
     DEFAULT_FULLTEXT_WEIGHT,
     DEFAULT_MIN_VECTOR_SCORE,
@@ -455,3 +456,30 @@ def test_reranker_absent_means_zero_overhead() -> None:
     assert env.service._reranker is None  # noqa: SLF001
     results = env.service.search(env.user.id, env.space.id, "报销")
     assert [r.content for r in results] == ["第一条", "第二条"]
+
+
+# --- tsquery 构造(全文路的语法入口)-------------------------------------------
+# jieba 会把标点原样切成词位,而 to_tsquery 里 & | ! ( ) : < > * 是操作符。
+# 未转义的词位会让整条查询报 syntax error,问答直接失败(验收 §10-4 实测踩到)。
+
+
+def test_build_tsquery_quotes_every_lexeme() -> None:
+    assert build_tsquery("混合 检索") == "'混合' | '检索'"
+
+
+def test_build_tsquery_escapes_operator_tokens() -> None:
+    # 每个操作符字符单独喂进去,都要被关进引号里当字面量
+    for token in ["&", "|", "!", "(", ")", ":", "<", ">", "*", "?", ",", "_"]:
+        assert build_tsquery(f"检索 {token}") == f"'检索' | '{token}'"
+
+
+def test_build_tsquery_escapes_quote_and_backslash() -> None:
+    # 用 chr() 拼,避开测试源码自身的转义层级
+    bs, sq = chr(92), chr(39)
+    assert build_tsquery(f"it{sq}s") == f"'it{bs}{sq}s'"
+    assert build_tsquery(f"a{bs}b") == f"'a{bs}{bs}b'"
+
+
+def test_build_tsquery_drops_blank_tokens() -> None:
+    assert build_tsquery("  检索   ") == "'检索'"
+    assert build_tsquery("") == ""

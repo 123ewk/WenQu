@@ -14,10 +14,20 @@ from sqlalchemy.orm import Session
 from app.domain.models import Chunk, Document
 
 
+def _quote_lexeme(token: str) -> str:
+    """词位 → tsquery 带引号字面量:`\\` 与 `'` 必须反斜杠转义。
+
+    未加引号时 jieba 的分词结果里混进的 `& | ! ( ) : < > *`(以及 `?` `,` 这类会被
+    直接丢掉的标点)会被 to_tsquery 当成操作符解析,整个查询抛 syntax error,
+    导致全文检索路整条链路失败。
+    """
+    return "'" + token.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def build_tsquery(query_tokens: str) -> str:
-    """jieba 分词结果 → tsquery:OR 连接各词位,词内不含操作符。"""
+    """jieba 分词结果 → tsquery:OR 连接各词位,词位一律按字面量转义。"""
     parts = [token for token in query_tokens.split() if token.strip()]
-    return " | ".join(parts)
+    return " | ".join(_quote_lexeme(token) for token in parts)
 
 
 class RetrievalRepositoryImpl:
