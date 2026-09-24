@@ -4,7 +4,8 @@
 .PHONY: help version compose-dev-up compose-dev-down db-migrate \
         server-install server-run worker-run server-test server-lint server-openapi \
         parser-install parser-gen parser-run parser-test parser-lint \
-        web-install web-dev web-build
+        web-install web-dev web-build \
+        demo-seed demo-seed-purge
 
 help: ## 显示全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -62,3 +63,9 @@ web-dev: ## 启动前端开发服务器(:5173)
 
 web-build: ## 前端类型检查 + 构建
 	cd web && npm run build
+
+demo-seed: ## 播种演示数据(OPT-46;需 APP_DEMO_MODE=1 且 server/worker/parser 在跑)
+	cd server && uv run python scripts/seed_demo.py
+
+demo-seed-purge: ## 清理演示空间(OPT-46;演示账号保留)
+	cd server && uv run python scripts/seed_demo.py --purge

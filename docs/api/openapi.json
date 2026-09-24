@@ -4903,6 +4903,28 @@
           }
         }
       }
+    },
+    "/api/v1/demo/status": {
+      "get": {
+        "tags": [
+          "demo"
+        ],
+        "summary": "Demo Status",
+        "description": "未登录可读:演示入口 + 种子就绪状态(身份全部来自配置,不新增表)。",
+        "operationId": "demo_status_api_v1_demo_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoStatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6012,6 +6034,49 @@
           "name"
         ],
         "title": "CreateSpaceRequest"
+      },
+      "DemoStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "default": ""
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name",
+            "default": ""
+          },
+          "kb_name": {
+            "type": "string",
+            "title": "Kb Name",
+            "default": ""
+          },
+          "document_total": {
+            "type": "integer",
+            "title": "Document Total",
+            "default": 0
+          },
+          "document_ready": {
+            "type": "integer",
+            "title": "Document Ready",
+            "default": 0
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "DemoStatusOut"
       },
       "DismissProposalRequest": {
         "properties": {

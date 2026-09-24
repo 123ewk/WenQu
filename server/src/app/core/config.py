@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     # 低于此条数不压缩(太短没意义,且省一次摘要调用)
     compact_min_messages: int = Field(8, validation_alias="APP_COMPACT_MIN_MESSAGES")
 
+    # ---- 演示模式(OPT-46):一键体验用的开关 + 种子账号/空间身份 ----
+    # 默认 0 = 完全关闭(状态接口只回 enabled=false,前端演示入口不出现)。
+    # 打开后 /api/v1/demo/status 会公开"演示账号叫什么、种子数据是否就绪";
+    # 密码不在其中 —— 只有 scripts/seed_demo.py 与自动演示脚本从 APP_DEMO_PASSWORD 读。
+    demo_mode: bool = Field(False, validation_alias="APP_DEMO_MODE")
+    demo_username: str = Field("demo", validation_alias="APP_DEMO_USERNAME")
+    demo_password: str = Field("", validation_alias="APP_DEMO_PASSWORD")
+    # 种子脚本与状态接口共用同一套名字:改名即换一套演示数据(旧数据不会被误删)
+    demo_space_name: str = Field("演示空间", validation_alias="APP_DEMO_SPACE_NAME")
+    demo_kb_name: str = Field(
+        "大模型应用工程知识库", validation_alias="APP_DEMO_KB_NAME"
+    )
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
     avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")
