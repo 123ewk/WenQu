@@ -5,6 +5,9 @@
 - 是成员但角色不足 → 403;
 - 授权规则:授予/操作的目标角色必须**严格低于**操作者角色,唯一例外是 Owner 转让
   (转给他人 Owner 后自己降为 Admin,避免"最后一个 Owner"死锁)。
+
+OPT-41 在本服务里多管一件事:成员离开空间时,他的**档位挂载**默认一并删除
+(`remove_member(..., keep_mounts=True)` 显式保留;自己退空间没有可问的人,恒清)。
 """
 
 from __future__ import annotations
@@ -14,7 +17,12 @@ from datetime import datetime
 
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import AuditAction, Role
-from app.domain.interfaces import AuditRepository, SpaceRepository, UserRepository
+from app.domain.interfaces import (
+    AuditRepository,
+    PermissionGroupRepository,
+    SpaceRepository,
+    UserRepository,
+)
 from app.domain.models import AuditLog, Membership, Space, User
 
 
@@ -24,10 +32,14 @@ class SpaceService:
         spaces: SpaceRepository,
         users: UserRepository,
         audit: AuditRepository,
+        *,
+        mounts: PermissionGroupRepository,
     ) -> None:
         self._spaces = spaces
         self._users = users
         self._audit = audit
+        # OPT-41:移除成员要顺带处理他的档位挂载,所以非可选依赖(漏装配就该启动即失败)
+        self._mounts = mounts
 
     # ---------------------------- 空间 CRUD ----------------------------
 
@@ -190,8 +202,21 @@ class SpaceService:
         return target, target_user
 
     def remove_member(
-        self, space_id: uuid.UUID, actor: User, target_user_id: uuid.UUID, ip: str = ""
+        self,
+        space_id: uuid.UUID,
+        actor: User,
+        target_user_id: uuid.UUID,
+        ip: str = "",
+        keep_mounts: bool = False,
     ) -> None:
+        """移除成员。档位挂载默认一并清除,`keep_mounts=True` 才保留(OPT-41)。
+
+        默认清除是站在"重新入空间不该自动带回上次的权限"这一边:留行的话,他被移出
+        再拉回来时 current 指针还在,上一次的范围会静默复用 —— 那正是移出想达到的效果
+        的反面。确实要"回来还是原来那档"的,由动手移除的人在弹窗里显式选择保留,
+        并且这个选择会进审计。保留与否都不影响他此刻的可用性(人走 Key 停、
+        档位按成员身份实时判定),差别只在下次入空间。
+        """
         _space, actor_role = self._require_role(space_id, actor.id, Role.ADMIN)
         target = self._spaces.get_member(space_id, target_user_id)
         if target is None:
@@ -202,11 +227,19 @@ class SpaceService:
             raise AppError(ErrorCode.FORBIDDEN, "不能移除不低于自己的成员", http_status=403)
         target_user = self._users.get(target.user_id)
         self._spaces.remove_member(target)
+        detail: dict = {"keep_permission_mounts": keep_mounts}
+        if keep_mounts:
+            detail["permission_mounts_kept"] = self._count_mounts(space_id, target.user_id)
+        else:
+            detail["permission_mounts_cleared"] = self._mounts.delete_for_user(
+                space_id, target.user_id
+            )
         self._log(
             actor_id=actor.id,
             space_id=space_id,
             action=AuditAction.MEMBER_REMOVED,
             target=target_user.username if target_user else str(target.user_id),
+            detail=detail,
             ip=ip,
         )
 
@@ -219,13 +252,29 @@ class SpaceService:
                 ErrorCode.FORBIDDEN, "所有者不能退出空间,请先转让所有权或删除空间", http_status=403
             )
         self._spaces.remove_member(membership)
+        # 自己退空间没有"替他决定要不要留权限"的人,一律清干净
         self._log(
             actor_id=user.id,
             space_id=space_id,
             action=AuditAction.MEMBER_REMOVED,
             target=user.username,
-            detail={"self_leave": True},
+            detail={
+                "self_leave": True,
+                "permission_mounts_cleared": self._mounts.delete_for_user(
+                    space_id, user.id
+                ),
+            },
             ip=ip,
+        )
+
+    # ---------------------------- 档位挂载(OPT-41) ----------------------------
+
+    def _count_mounts(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """保留挂载时只为审计记个数(不改数据)。"""
+        return sum(
+            1
+            for mount in self._mounts.list_members_for_space(space_id)
+            if mount.user_id == user_id
         )
 
     def list_audit(

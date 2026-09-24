@@ -51,7 +51,14 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/conversations/{conversation_id}/stream",
     "/api/v1/spaces/{space_id}/api-keys",
     "/api/v1/spaces/{space_id}/api-keys/{key_id}",
-    "/api/v1/spaces/{space_id}/api-keys/{key_id}/activate",
+    # OPT-41 权限档位:Key 只是凭据,权限全部由档位承载
+    "/api/v1/spaces/{space_id}/permission-groups",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members/{user_id}",
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/current",
+    # OPT-44:删档死锁的出路 —— 清空档位下已吊销凭据的台账行
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/revoked-keys",
     "/api/v1/admin/model-protocols",
     "/api/v1/admin/model-providers",
     "/api/v1/admin/model-providers/{provider_id}",
@@ -112,6 +119,8 @@ REQUIRED_ERROR_CODES = {
     "API_KEY_CAPABILITY_DENIED",
     "API_KEY_SCOPE_DENIED",
     "MEMORY_NOT_FOUND",
+    "API_KEY_SPACE_MISMATCH",
+    "PERMISSION_GROUP_REQUIRED",
     "VALIDATION_ERROR",
     "INTERNAL_ERROR",
     "NOT_FOUND",
@@ -261,6 +270,8 @@ def test_unified_error_shell_on_protected_endpoints() -> None:
         ("GET", f"/api/v1/spaces/{space}/conversations/{_uuid.uuid4()}/stream"),
         ("POST", f"/api/v1/spaces/{space}/knowledge-bases"),
         ("DELETE", f"/api/v1/spaces/{space}/api-keys/{_uuid.uuid4()}"),
+        ("GET", f"/api/v1/spaces/{space}/permission-groups"),
+        ("DELETE", f"/api/v1/spaces/{space}/permission-groups/{_uuid.uuid4()}"),
     ]
     client = TestClient(create_app(), raise_server_exceptions=False)
     for method, path in protected:

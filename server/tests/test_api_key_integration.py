@@ -1,8 +1,9 @@
-"""API Key 集成测试(真 Postgres,OPT-6/OPT-26):对应 Go-Live 冒烟第 5 条。
+"""API Key 集成测试(真 Postgres,OPT-6/26/41):对应 Go-Live 冒烟第 5 条。
 
-「建 API Key → KB 范围限定生效 → 范围外被拒 → 审计有记录」的完整 HTTP 链路:
-签发只回显一次明文、能力级授权、范围收窄、吊销即失效、绑定成员移出即失效、审计留痕。
-OPT-26:Key 必须绑定空间成员,创建/吊销门槛 Admin+,运行时以绑定成员身份鉴权。
+「建档位 → 建 Key → 范围限定生效 → 范围外被拒 → 审计有记录」的完整 HTTP 链路:
+签发只回显一次明文、能力级授权、范围收窄、吊销即失效、归因成员移出即失效、审计留痕。
+OPT-41:Key 的权限口径完全来自档位 —— 响应里的 `group` 是唯一的权限视图,旧
+`capabilities`/`kb_ids`/`is_active` 字段已从契约移除(activate 端点一并删除)。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import create_group, create_key
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
@@ -42,24 +44,16 @@ def _create_key(
     capabilities: list[str],
     kb_ids: list[str] | None = None,
     name: str = "ci-key",
-    member_user_id: str | None = None,
+    owner_user_id: str | None = None,
+    group_name: str = "档",
 ) -> dict:
-    """建 Key。默认绑定到创建者本人(/users/me);OPT-26 起 member_user_id 必填。"""
-    if member_user_id is None:
-        member_user_id = client.get("/api/v1/users/me", headers=auth).json()["id"]
-    resp = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={
-            "name": name,
-            "description": "",
-            "capabilities": capabilities,
-            "kb_ids": kb_ids or [],
-            "member_user_id": member_user_id,
-        },
-        headers=auth,
+    """两件套:建档位 + 建凭据,归因缺省为调用者本人(OPT-26 起 owner 必填)。"""
+    group = create_group(
+        client, auth, space_id, name=group_name, capabilities=capabilities, kb_ids=kb_ids or []
     )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
+    return create_key(
+        client, auth, space_id, group["id"], name=name, owner_user_id=owner_user_id
+    )
 
 
 def _key_header(plaintext: str) -> dict:
@@ -73,23 +67,23 @@ def test_key_lifecycle_plaintext_shown_once(client) -> None:
 
     assert created["plaintext"].startswith("sk-")
     assert created["key_hint"] != created["plaintext"]
-    assert created["capabilities"] == ["chat"]
-    assert created["kb_ids"] == [kb_a]
+    assert created["group"]["capabilities"] == ["chat"]
+    assert created["group"]["kb_ids"] == [kb_a]
+    assert created["group"]["all_kbs"] is False
     assert created["revoked_at"] is None
+    # 旧契约字段必须彻底消失:留着就等于"两套权限口径"仍然可写可读
+    assert not {"capabilities", "kb_ids", "is_active"} & set(created)
 
     listed = client.get(f"/api/v1/spaces/{space_id}/api-keys", headers=auth).json()
     assert len(listed) == 1
     assert "plaintext" not in listed[0]  # 明文绝不二次出现
     assert listed[0]["key_hint"] == created["key_hint"]
+    assert listed[0]["group"]["id"] == created["group"]["id"]
 
-    # 未知能力名 → 422
+    # 未知能力名 → 422(现在在档位上校验,拼错不能变成"静默少给一个能力")
     resp = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={
-            "name": "bad",
-            "capabilities": ["root"],
-            "member_user_id": client.get("/api/v1/users/me", headers=auth).json()["id"],
-        },
+        f"/api/v1/spaces/{space_id}/permission-groups",
+        json={"name": "bad", "capabilities": ["root"]},
         headers=auth,
     )
     assert resp.status_code == 422
@@ -99,6 +93,7 @@ def test_key_create_requires_admin(client) -> None:
     """OPT-26:建 Key 门槛抬到 Admin+(与拉成员同闸);Viewer/Editor 403,Admin 201。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    group = create_group(client, auth, space_id, capabilities=["chat"])
     viewer_name = _uname("keyviewer")
     viewer = _register(client, viewer_name)
     viewer_auth = {"Authorization": f"Bearer {viewer['access_token']}"}
@@ -111,8 +106,8 @@ def test_key_create_requires_admin(client) -> None:
         f"/api/v1/spaces/{space_id}/api-keys",
         json={
             "name": "v",
-            "capabilities": ["chat"],
-            "member_user_id": viewer["user"]["id"],
+            "group_id": group["id"],
+            "owner_user_id": viewer["user"]["id"],
         },
         headers=viewer_auth,
     )
@@ -131,7 +126,7 @@ def test_key_create_requires_admin(client) -> None:
     )
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
-        json={"name": "e", "capabilities": ["chat"], "member_user_id": editor["user"]["id"]},
+        json={"name": "e", "group_id": group["id"], "owner_user_id": editor["user"]["id"]},
         headers=editor_auth,
     )
     assert resp.status_code == 403
@@ -147,11 +142,11 @@ def test_key_create_requires_admin(client) -> None:
     )
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
-        json={"name": "a", "capabilities": ["chat"], "member_user_id": admin["user"]["id"]},
+        json={"name": "a", "group_id": group["id"], "owner_user_id": admin["user"]["id"]},
         headers=admin_auth,
     )
     assert resp.status_code == 201, resp.text
-    assert resp.json()["member_user_id"] == admin["user"]["id"]
+    assert resp.json()["owner_user_id"] == admin["user"]["id"]
 
 
 def test_unauthenticated_and_invalid_keys(client) -> None:
@@ -220,12 +215,140 @@ def test_search_capability_and_scope(client) -> None:
     )
     assert resp.status_code == 503  # 同上,交集非空即放行
 
-    # 全库 Key(空范围)→ 不限制
+    # 显式勾了"全部库"的档位 → 不限制
     allkb = _create_key(client, auth, space_id, ["chat"], [], name="all-key")
     resp = client.post(
         url, json={"query": "q", "kb_ids": [kb_b]}, headers=_key_header(allkb["plaintext"])
     )
     assert resp.status_code == 503
+
+
+def test_group_with_no_kb_selected_denies_every_request(client) -> None:
+    """fail-closed:档位没勾"全部库"也没勾具体库 → 一个都不给,而不是默认全空间。"""
+    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    empty = create_group(
+        client, auth, space_id, name="漏勾范围", capabilities=["chat"], all_kbs=False
+    )
+    key = create_key(client, auth, space_id, empty["id"], name="empty-scope")
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "q", "kb_ids": [kb_a]},
+        headers=_key_header(key["plaintext"]),
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "API_KEY_SCOPE_DENIED"
+
+
+def test_group_permission_edit_applies_to_issued_key(client) -> None:
+    """OPT-41 的核心承诺(N8"修复权限"):改档位即时作用于其下已签发的明文,不必重签。"""
+    owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    group = create_group(
+        client, auth, space_id, name="只读A", capabilities=["chat"], kb_ids=[kb_a]
+    )
+    key = create_key(client, auth, space_id, group["id"], name="third-party")
+    url = f"/api/v1/spaces/{space_id}/retrieval/search"
+    headers = _key_header(key["plaintext"])
+
+    # 改口径之前:B 在范围外
+    assert (
+        client.post(url, json={"query": "q", "kb_ids": [kb_b]}, headers=headers).status_code
+        == 403
+    )
+    patched = client.patch(
+        f"/api/v1/spaces/{space_id}/permission-groups/{group['id']}",
+        json={"name": "只读B", "capabilities": ["chat"], "kb_ids": [kb_b]},
+        headers=auth,
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["kb_ids"] == [kb_b]
+
+    # 同一把明文:B 现在可用,A 反而越界 —— 第三方手里的 Key 一个字都没改
+    assert (
+        client.post(url, json={"query": "q", "kb_ids": [kb_b]}, headers=headers).status_code
+        == 503
+    )
+    assert (
+        client.post(url, json={"query": "q", "kb_ids": [kb_a]}, headers=headers).status_code
+        == 403
+    )
+    # Key 详情里的 group 口径跟着变(前端两处渲染同源)
+    listed = client.get(f"/api/v1/spaces/{space_id}/api-keys", headers=auth).json()
+    mine = next(k for k in listed if k["id"] == key["id"])
+    assert mine["group"]["kb_ids"] == [kb_b]
+
+
+def test_two_keys_of_one_group_share_the_permission(client) -> None:
+    """一个档位多把凭据:轮换明文不改权限,两把 Key 的行为必须完全一致。"""
+    owner, space_id, kb_a, kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    group = create_group(
+        client, auth, space_id, name="问答档", capabilities=["chat"], kb_ids=[kb_a]
+    )
+    a = create_key(client, auth, space_id, group["id"], name="a")
+    b = create_key(client, auth, space_id, group["id"], name="b")
+    url = f"/api/v1/spaces/{space_id}/retrieval/search"
+    for created in (a, b):
+        headers = _key_header(created["plaintext"])
+        assert (
+            client.post(url, json={"query": "q", "kb_ids": [kb_a]}, headers=headers).status_code
+            == 503
+        )
+        assert (
+            client.post(url, json={"query": "q", "kb_ids": [kb_b]}, headers=headers).status_code
+            == 403
+        )
+
+
+def test_key_cannot_cross_into_another_space_of_the_same_member(client) -> None:
+    """OPT-41 N2:Key 只能打它所属的空间 —— 同一个人两个空间也挡得住。
+
+    修复前:A 空间签发、范围为"全部库"的 Key 打 B 空间的 KB 列表会 **200 返回 B 的库**,
+    因为认证只校验"归因成员 ∈ 路径空间",而 Key 自己的 space_id 从未参与判断。
+    """
+    owner, space_a, kb_a, kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_b = client.post("/api/v1/spaces", json={"name": "另一空间"}, headers=auth).json()["id"]
+    kb_b2 = client.post(
+        f"/api/v1/spaces/{space_b}/knowledge-bases", json={"name": "B的库"}, headers=auth
+    ).json()["id"]
+
+    key_a = _create_key(client, auth, space_a, ["documents"], [], name="A空间Key")
+
+    # A 空间本身 → 放行,"全部库"= A 的两个库都看得到
+    listed_a = client.get(
+        f"/api/v1/spaces/{space_a}/knowledge-bases", headers=_key_header(key_a["plaintext"])
+    )
+    assert listed_a.status_code == 200, listed_a.text
+    assert {kb["id"] for kb in listed_a.json()} == {kb_a, kb_b}
+
+    # 同一把 Key 打 B 空间 → 403(修复前是 200 并泄露 B 的库)
+    resp = client.get(
+        f"/api/v1/spaces/{space_b}/knowledge-bases", headers=_key_header(key_a["plaintext"])
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "API_KEY_SPACE_MISMATCH"
+    assert kb_b2 not in resp.text
+
+
+def test_key_cannot_use_another_spaces_group(client) -> None:
+    """OPT-41:签发的权限不能指向别的空间的档位(那等于跨租户借权限)。"""
+    owner, space_a, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
+    auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    space_b = client.post("/api/v1/spaces", json={"name": "另一空间"}, headers=auth).json()["id"]
+    group_b = create_group(client, auth, space_b, name="B的档", capabilities=["chat"])
+    resp = client.post(
+        f"/api/v1/spaces/{space_a}/api-keys",
+        json={
+            "name": "串档",
+            "group_id": group_b["id"],
+            "owner_user_id": client.get("/api/v1/users/me", headers=auth).json()["id"],
+        },
+        headers=auth,
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_search_in_scope_returns_hits_with_stub_embedder(client) -> None:
@@ -334,7 +457,7 @@ def test_documents_capability_flow(client) -> None:
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "API_KEY_CAPABILITY_DENIED"
 
-    # 审计:Key 以创建者身份留下 document.uploaded
+    # 审计:Key 以归因成员身份留下 document.uploaded
     logs = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["items"]
     assert any(item["action"] == "document.uploaded" for item in logs)
 
@@ -360,11 +483,11 @@ def test_ask_with_key_scope(client) -> None:
 
 
 def test_revoke_and_member_removal_kill_key(client) -> None:
-    """吊销即 401;绑定成员被移出空间即 401(OPT-26 双校验);审计有 api_key.revoked 与拒绝记录。"""
+    """吊销即 401;归因成员被移出空间即 401(OPT-26 双校验);审计有 api_key.revoked 与拒绝记录。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
 
-    # admin 成员建 Key(绑定本人),随后被移出空间
+    # admin 成员建 Key(归因本人),随后被移出空间
     editor_name = _uname("keyeditor")
     editor = _register(client, editor_name)
     editor_auth = {"Authorization": f"Bearer {editor['access_token']}"}
@@ -428,49 +551,43 @@ def test_key_hint_stable_and_cross_space_isolation(client) -> None:
     assert key["key_hint"].startswith("sk-") and "****" in key["key_hint"]
 
 
-def test_create_key_validation_missing_name(client) -> None:
-    """name 必填;capabilities/kb_ids 有默认(可省略),未知能力名另测。"""
+def test_create_key_validation_missing_fields(client) -> None:
+    """name/group_id/owner_user_id 都是必填(缺任何一个都无从判定权限)。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
-    resp = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={"capabilities": ["chat"]},
-        headers=auth,
-    )
-    assert resp.status_code == 422
-
-    # OPT-26:member_user_id 同为必填
-    resp = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={"name": "k", "capabilities": ["chat"]},
-        headers=auth,
-    )
-    assert resp.status_code == 422
+    group = create_group(client, auth, space_id)
+    me = client.get("/api/v1/users/me", headers=auth).json()["id"]
+    for body in (
+        {"group_id": group["id"], "owner_user_id": me},  # 缺 name
+        {"name": "k", "owner_user_id": me},  # 缺 group_id
+        {"name": "k", "group_id": group["id"]},  # 缺 owner_user_id
+    ):
+        resp = client.post(
+            f"/api/v1/spaces/{space_id}/api-keys", json=body, headers=auth
+        )
+        assert resp.status_code == 422, body
 
 
 def test_create_key_target_must_be_member(client) -> None:
-    """绑定目标不是本空间成员 → 404 MEMBER_NOT_FOUND。"""
+    """归因目标不是本空间成员 → 404 MEMBER_NOT_FOUND。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
+    group = create_group(client, auth, space_id)
     stranger = _register(client, _uname("keystranger"))
     resp = client.post(
         f"/api/v1/spaces/{space_id}/api-keys",
-        json={
-            "name": "k",
-            "capabilities": ["chat"],
-            "member_user_id": stranger["user"]["id"],
-        },
+        json={"name": "k", "group_id": group["id"], "owner_user_id": stranger["user"]["id"]},
         headers=auth,
     )
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "MEMBER_NOT_FOUND"
 
 
-def test_key_acts_as_bound_member_role(client) -> None:
-    """OPT-26 核心:Key 认证通过后,运行时权限 = 绑定成员自己的角色。
+def test_key_acts_as_owner_role(client) -> None:
+    """OPT-26 核心:Key 认证通过后,运行时权限 = 归因成员自己的角色。
 
-    Admin 把 Key 绑给 Viewer:chat 能力+范围内上传(写)要 Editor,成员角色不够
-    → 服务层 FORBIDDEN(而不是 API_KEY_*);读检索则放行到模型闸。
+    Admin 把 Key 归因给 Viewer:档位给了 documents 能力+范围内上传(写)要 Editor,
+    成员角色不够 → 服务层 FORBIDDEN(而不是 API_KEY_*);读检索则放行到模型闸。
     """
     owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
@@ -482,12 +599,12 @@ def test_key_acts_as_bound_member_role(client) -> None:
         headers=auth,
     )
     key = _create_key(
-        client, auth, space_id, ["chat", "documents"], member_user_id=viewer["user"]["id"]
+        client, auth, space_id, ["chat", "documents"], owner_user_id=viewer["user"]["id"]
     )
-    assert key["member_role"] == 10
-    assert key["member_username"] == viewer_name
+    assert key["owner_role"] == 10
+    assert key["owner_username"] == viewer_name
 
-    # 上传被拒:能力有了,但绑定成员只是 Viewer → 服务层角色闸 403 FORBIDDEN
+    # 上传被拒:能力有了,但归因成员只是 Viewer → 服务层角色闸 403 FORBIDDEN
     resp = client.post(
         f"/api/v1/spaces/{space_id}/knowledge-bases/{kb_a}/documents",
         files={"file": ("x.md", b"x")},
@@ -505,8 +622,8 @@ def test_key_acts_as_bound_member_role(client) -> None:
     assert resp.status_code == 503
 
 
-def test_key_survives_creator_removal_dies_with_bound_member(client) -> None:
-    """认证只校验绑定成员:创建者(Admin)被移出空间,只要绑定成员还在,Key 仍可用。"""
+def test_key_survives_creator_removal_dies_with_owner(client) -> None:
+    """认证只校验归因成员:创建者(Admin)被移出空间,只要归因成员还在,Key 仍可用。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
     admin_name = _uname("keycreatoradmin")
@@ -524,18 +641,19 @@ def test_key_survives_creator_removal_dies_with_bound_member(client) -> None:
         json={"username": target_name, "role": 20},
         headers=auth,
     )
-    key = _create_key(
-        client, admin_auth, space_id, ["chat"], member_user_id=target["user"]["id"]
+    group = create_group(client, auth, space_id, capabilities=["chat"])
+    key = create_key(
+        client, admin_auth, space_id, group["id"], owner_user_id=target["user"]["id"]
     )
     url = f"/api/v1/spaces/{space_id}/retrieval/search"
     headers = _key_header(key["plaintext"])
     assert client.post(url, json={"query": "q"}, headers=headers).status_code in (200, 503)
 
-    # 移出创建者 → Key 仍可用(绑定成员还在)
+    # 移出创建者 → Key 仍可用(归因成员还在)
     client.delete(f"/api/v1/spaces/{space_id}/members/{admin['user']['id']}", headers=auth)
     assert client.post(url, json={"query": "q"}, headers=headers).status_code in (200, 503)
 
-    # 移出绑定成员 → 立即 401
+    # 移出归因成员 → 立即 401
     client.delete(f"/api/v1/spaces/{space_id}/members/{target['user']['id']}", headers=auth)
     resp = client.post(url, json={"query": "q"}, headers=headers)
     assert resp.status_code == 401
@@ -563,83 +681,21 @@ def test_revoke_requires_admin(client) -> None:
     assert resp.status_code == 204
 
 
-# ---------------------------- 生效标记 activate(OPT-31) ----------------------------
-
-
-def _activate(client, auth: dict, space_id: str, key_id: str) -> dict:
-    resp = client.put(
-        f"/api/v1/spaces/{space_id}/api-keys/{key_id}/activate", headers=auth
-    )
-    assert resp.status_code == 200, resp.text
-    return resp.json()
-
-
-def test_activate_flags_single_active_and_switches_exclusively(client) -> None:
-    """两把 Key 先后激活:同成员至多一把 is_active(真库部分唯一索引链路)。"""
-    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
-    auth = {"Authorization": f"Bearer {owner['access_token']}"}
-    a = _create_key(client, auth, space_id, ["chat"], [kb_a], name="a")
-    b = _create_key(client, auth, space_id, ["chat"], [kb_a], name="b")
-    assert a["is_active"] is False and b["is_active"] is False
-
-    _activate(client, auth, space_id, b["id"])
-    out = _activate(client, auth, space_id, a["id"])  # 换绑到 a
-    assert out["id"] == a["id"] and out["is_active"] is True
-    flags = {
-        k["name"]: k["is_active"]
-        for k in client.get(
-            f"/api/v1/spaces/{space_id}/api-keys", headers=auth
-        ).json()
-    }
-    assert flags == {"a": True, "b": False}
-
-    logs = client.get(f"/api/v1/spaces/{space_id}/audit-logs", headers=auth).json()["items"]
-    assert any(item["action"] == "api_key.activated" for item in logs)
-
-
-def test_activate_requires_admin(client) -> None:
-    owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
-    auth = {"Authorization": f"Bearer {owner['access_token']}"}
-    editor_name = _uname("keyactivator")
-    editor = _register(client, editor_name)
-    client.post(
-        f"/api/v1/spaces/{space_id}/members",
-        json={"username": editor_name, "role": 20},
-        headers=auth,
-    )
-    key = _create_key(
-        client, auth, space_id, ["chat"], member_user_id=editor["user"]["id"]
-    )
-    resp = client.put(
-        f"/api/v1/spaces/{space_id}/api-keys/{key['id']}/activate",
-        headers={"Authorization": f"Bearer {editor['access_token']}"},
-    )
-    assert resp.status_code == 403
-
-
-def test_activate_revoked_key_rejected(client) -> None:
+def test_group_with_keys_cannot_be_deleted_via_http(client) -> None:
+    """档位下还挂着凭据 → 删除被拒(400),不做"顺手级联"抹掉一批程序的权限。"""
     owner, space_id, _kb_a, _kb_b = _setup_space_with_two_kbs(client)
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
     key = _create_key(client, auth, space_id, ["chat"])
-    assert (
-        client.delete(
-            f"/api/v1/spaces/{space_id}/api-keys/{key['id']}", headers=auth
-        ).status_code
-        == 204
-    )
-    resp = client.put(
-        f"/api/v1/spaces/{space_id}/api-keys/{key['id']}/activate", headers=auth
+    resp = client.delete(
+        f"/api/v1/spaces/{space_id}/permission-groups/{key['group']['id']}", headers=auth
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
-
-
-def test_inactive_key_still_authenticates_over_http(client) -> None:
-    """"换着用"语义:没被标为「正在使用」的 Key,HTTP 调用照常放行。"""
-    owner, space_id, kb_a, _kb_b = _setup_space_with_two_kbs(client)
-    auth = {"Authorization": f"Bearer {owner['access_token']}"}
-    a = _create_key(client, auth, space_id, ["documents"], [kb_a], name="a")
-    b = _create_key(client, auth, space_id, ["documents"], [kb_a], name="b")
-    _activate(client, auth, space_id, b["id"])
-    base = f"/api/v1/spaces/{space_id}/knowledge-bases"
-    assert client.get(base, headers=_key_header(a["plaintext"])).status_code == 200
+    assert resp.json()["error"]["details"]["key_count"] == 1
+    # 凭据没被牵连:仍然可用(到模型闸为止)
+    resp = client.post(
+        f"/api/v1/spaces/{space_id}/retrieval/search",
+        json={"query": "q"},
+        headers=_key_header(key["plaintext"]),
+    )
+    assert resp.status_code == 503

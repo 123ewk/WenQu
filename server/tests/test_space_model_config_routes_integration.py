@@ -30,6 +30,7 @@ from app.domain.models import (
     SpaceModelSettings,
     User,
 )
+from tests.conftest import create_group, create_key
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
@@ -168,19 +169,17 @@ def test_gate_anon_nonmember_and_viewer_readonly(client) -> None:
 
 def test_api_key_cannot_touch_model_config(client) -> None:
     space_id, owner = _owner(client, "mckey", "钥匙空间")
-    key = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={
-            "name": "k",
-            "capabilities": ["chat", "documents"],
-            "member_user_id": _user_id_of(client, owner),
-        },
-        headers=owner,
+    created = create_key(
+        client,
+        owner,
+        space_id,
+        create_group(client, owner, space_id, capabilities=["chat", "documents"])["id"],
+        name="k",
+        owner_user_id=_user_id_of(client, owner),
     )
-    assert key.status_code == 201, key.text
     resp = client.get(
         f"/api/v1/spaces/{space_id}/model-config",
-        headers={"X-API-Key": key.json()["plaintext"]},
+        headers={"X-API-Key": created["plaintext"]},
     )
     assert resp.status_code == 401  # 本组路由只认 JWT
     assert resp.json()["error"]["code"] == "AUTH_REQUIRED"

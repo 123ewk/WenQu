@@ -44,8 +44,15 @@ export function apiUpdateMemberRole(spaceId: string, userId: string, body: Chang
   return http.patch<MemberOut>(`/spaces/${spaceId}/members/${userId}`, body).then((r) => r.data)
 }
 
-export function apiRemoveMember(spaceId: string, userId: string): Promise<void> {
-  return http.delete<void>(`/spaces/${spaceId}/members/${userId}`).then((r) => r.data)
+/**
+ * OPT-41:移出成员时要决定他的权限档位挂载行怎么处理。
+ * keepMounts=false(默认)= 一并清除,重新拉回来要重配档位;
+ * true = 保留挂载行,重新入空间即恢复上次权限 —— 会带回旧权限,慎用。两种选择都进审计。
+ */
+export function apiRemoveMember(spaceId: string, userId: string, keepMounts = false): Promise<void> {
+  return http
+    .delete<void>(`/spaces/${spaceId}/members/${userId}`, { params: { keep_mounts: keepMounts } })
+    .then((r) => r.data)
 }
 
 export function apiLeaveSpace(spaceId: string): Promise<void> {

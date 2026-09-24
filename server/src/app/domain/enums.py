@@ -72,6 +72,15 @@ class AuditAction(StrEnum):
     API_KEY_CREATED = "api_key.created"
     API_KEY_REVOKED = "api_key.revoked"
     API_KEY_ACTIVATED = "api_key.activated"  # OPT-31 设为"正在使用"(成员互斥切换)
+    # OPT-44:行没了,归因只能靠这条快照,所以彻底删除必须逐把留痕
+    API_KEY_PURGED = "api_key.purged"  # 已吊销凭据的台账行被彻底删除(不可逆)
+    # OPT-41 权限档位:权限只有一处真相,改一次全档生效 → 每一次改动都要能回答"谁改的、改前是什么"
+    PERMISSION_GROUP_CREATED = "permission_group.created"
+    PERMISSION_GROUP_UPDATED = "permission_group.updated"  # 能力/知识库范围(= N8"修复权限")
+    PERMISSION_GROUP_DELETED = "permission_group.deleted"
+    PERMISSION_GROUP_MEMBER_ASSIGNED = "permission_group.member_assigned"
+    PERMISSION_GROUP_MEMBER_UNASSIGNED = "permission_group.member_unassigned"
+    PERMISSION_GROUP_CURRENT_SET = "permission_group.current_set"  # 换档 = 权限开关,不是台账标记
     # OPT-25 自定义模型管理(superuser 操作,全部留痕)
     MODEL_PROVIDER_CREATED = "model_provider.created"
     MODEL_PROVIDER_UPDATED = "model_provider.updated"

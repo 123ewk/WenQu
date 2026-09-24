@@ -40,3 +40,18 @@ class ApiKeyRepositoryImpl:
                 .order_by(ApiKey.created_at)
             )
         )
+
+    def list_for_group(self, group_id: uuid.UUID) -> list[ApiKey]:
+        """某档位下的全部凭据(OPT-44:删档守卫与"清空历史凭据"都读这一份,口径不会分叉)。"""
+        return list(
+            self._db.scalars(
+                select(ApiKey)
+                .where(ApiKey.group_id == group_id)
+                .order_by(ApiKey.created_at)
+            )
+        )
+
+    def delete(self, api_key: ApiKey) -> None:
+        """彻底删除台账行(不可逆)。调用方必须先写出审计快照 —— 行没了归因就只剩审计。"""
+        self._db.delete(api_key)
+        self._db.flush()

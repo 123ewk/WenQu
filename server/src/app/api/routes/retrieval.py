@@ -10,14 +10,8 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
-from app.api.deps import (
-    Caller,
-    get_api_key_service,
-    get_current_actor,
-    get_retrieval_service,
-)
+from app.api.deps import Caller, get_current_actor, get_retrieval_service
 from app.api.routing import CommitBeforeSendRoute
-from app.application.service.api_keys import ApiKeyService
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
 
 router = APIRouter(
@@ -84,13 +78,12 @@ def search(
     body: SearchRequest,
     caller: Caller = Depends(get_current_actor),
     service: RetrievalService = Depends(get_retrieval_service),
-    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> list[RetrievedChunkOut]:
     user = caller.user
-    # API Key 调用:kb_ids 先按 Key 范围收窄(范围外被拒,绝不静默降级)
+    # 先按生效权限收窄 kb_ids(范围外直接拒,绝不静默降级成"全部"或"档位范围")
     kb_ids = body.kb_ids
-    if caller.api_key is not None:
-        kb_ids = key_service.resolve_kb_scope(caller.api_key, kb_ids)
+    if caller.perm is not None:
+        kb_ids = caller.perm.resolve_kb_scope(kb_ids)
     overrides = {
         key: value
         for key, value in (

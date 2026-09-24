@@ -886,6 +886,18 @@
               "format": "uuid",
               "title": "Member User Id"
             }
+          },
+          {
+            "name": "keep_mounts",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "OPT-41:true=保留此人的权限档位挂载行(再拉回来即恢复),false=一并删除(默认)",
+              "default": false,
+              "title": "Keep Mounts"
+            },
+            "description": "OPT-41:true=保留此人的权限档位挂载行(再拉回来即恢复),false=一并删除(默认)"
           }
         ],
         "responses": {
@@ -3085,13 +3097,121 @@
         }
       }
     },
-    "/api/v1/spaces/{space_id}/api-keys/{key_id}/activate": {
-      "put": {
+    "/api/v1/spaces/{space_id}/permission-groups": {
+      "get": {
         "tags": [
-          "api-keys"
+          "permission-groups"
         ],
-        "summary": "Activate Api Key",
-        "operationId": "activate_api_key_api_v1_spaces__space_id__api_keys__key_id__activate_put",
+        "summary": "List Permission Groups",
+        "operationId": "list_permission_groups_api_v1_spaces__space_id__permission_groups_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PermissionGroupOut"
+                  },
+                  "title": "Response List Permission Groups Api V1 Spaces  Space Id  Permission Groups Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Create Permission Group",
+        "operationId": "create_permission_group_api_v1_spaces__space_id__permission_groups_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertPermissionGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}": {
+      "get": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Get Permission Group",
+        "operationId": "get_permission_group_api_v1_spaces__space_id__permission_groups__group_id__get",
         "security": [
           {
             "HTTPBearer": []
@@ -3109,13 +3229,13 @@
             }
           },
           {
-            "name": "key_id",
+            "name": "group_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Key Id"
+              "title": "Group Id"
             }
           }
         ],
@@ -3125,7 +3245,378 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiKeyOut"
+                  "$ref": "#/components/schemas/PermissionGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Update Permission Group",
+        "operationId": "update_permission_group_api_v1_spaces__space_id__permission_groups__group_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertPermissionGroupRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Delete Permission Group",
+        "operationId": "delete_permission_group_api_v1_spaces__space_id__permission_groups__group_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/revoked-keys": {
+      "delete": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Purge Revoked Keys",
+        "description": "清空该档位**已吊销**凭据的台账行(OPT-44)。\n\n为什么单独一个端点而不是删档时顺带做:删凭据行是不可逆的,而且只该碰到已吊销的\nKey —— 让\"删档位\"顺手抹掉在用的凭据,等于给一次误点开了更大的口子。",
+        "operationId": "purge_revoked_keys_api_v1_spaces__space_id__permission_groups__group_id__revoked_keys_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurgeRevokedKeysOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members": {
+      "post": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Assign Group Member",
+        "operationId": "assign_group_member_api_v1_spaces__space_id__permission_groups__group_id__members_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupMemberRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Unassign Group Member",
+        "operationId": "unassign_group_member_api_v1_spaces__space_id__permission_groups__group_id__members__user_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/permission-groups/{group_id}/current": {
+      "put": {
+        "tags": [
+          "permission-groups"
+        ],
+        "summary": "Set Current Group",
+        "operationId": "set_current_group_api_v1_spaces__space_id__permission_groups__group_id__current_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupMemberRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PermissionGroupOut"
                 }
               }
             }
@@ -4455,7 +4946,10 @@
             "type": "string",
             "title": "Key Hint"
           },
-          "member_user_id": {
+          "group": {
+            "$ref": "#/components/schemas/ApiKeyGroupRef"
+          },
+          "owner_user_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -4464,9 +4958,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member User Id"
+            "title": "Owner User Id"
           },
-          "member_username": {
+          "owner_username": {
             "anyOf": [
               {
                 "type": "string"
@@ -4475,9 +4969,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member Username"
+            "title": "Owner Username"
           },
-          "member_nickname": {
+          "owner_nickname": {
             "anyOf": [
               {
                 "type": "string"
@@ -4486,9 +4980,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member Nickname"
+            "title": "Owner Nickname"
           },
-          "member_role": {
+          "owner_role": {
             "anyOf": [
               {
                 "type": "integer"
@@ -4497,7 +4991,7 @@
                 "type": "null"
               }
             ],
-            "title": "Member Role"
+            "title": "Owner Role"
           },
           "created_by": {
             "anyOf": [
@@ -4520,25 +5014,6 @@
               }
             ],
             "title": "Created By Name"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Capabilities"
-          },
-          "kb_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Kb Ids"
-          },
-          "is_active": {
-            "type": "boolean",
-            "title": "Is Active",
-            "default": false
           },
           "revoked_at": {
             "anyOf": [
@@ -4587,12 +5062,51 @@
           "name",
           "description",
           "key_hint",
-          "capabilities",
-          "kb_ids",
+          "group",
           "plaintext"
         ],
         "title": "ApiKeyCreatedOut",
         "description": "创建响应:比列表多一个 plaintext,且仅此一次。"
+      },
+      "ApiKeyGroupRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capabilities"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "all_kbs": {
+            "type": "boolean",
+            "title": "All Kbs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "capabilities",
+          "kb_ids",
+          "all_kbs"
+        ],
+        "title": "ApiKeyGroupRef",
+        "description": "Key 所属档位的权限口径(与 /permission-groups 同源,前端两处共用一套映射)。"
       },
       "ApiKeyOut": {
         "properties": {
@@ -4612,7 +5126,10 @@
             "type": "string",
             "title": "Key Hint"
           },
-          "member_user_id": {
+          "group": {
+            "$ref": "#/components/schemas/ApiKeyGroupRef"
+          },
+          "owner_user_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -4621,9 +5138,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member User Id"
+            "title": "Owner User Id"
           },
-          "member_username": {
+          "owner_username": {
             "anyOf": [
               {
                 "type": "string"
@@ -4632,9 +5149,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member Username"
+            "title": "Owner Username"
           },
-          "member_nickname": {
+          "owner_nickname": {
             "anyOf": [
               {
                 "type": "string"
@@ -4643,9 +5160,9 @@
                 "type": "null"
               }
             ],
-            "title": "Member Nickname"
+            "title": "Owner Nickname"
           },
-          "member_role": {
+          "owner_role": {
             "anyOf": [
               {
                 "type": "integer"
@@ -4654,7 +5171,7 @@
                 "type": "null"
               }
             ],
-            "title": "Member Role"
+            "title": "Owner Role"
           },
           "created_by": {
             "anyOf": [
@@ -4677,25 +5194,6 @@
               }
             ],
             "title": "Created By Name"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Capabilities"
-          },
-          "kb_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Kb Ids"
-          },
-          "is_active": {
-            "type": "boolean",
-            "title": "Is Active",
-            "default": false
           },
           "revoked_at": {
             "anyOf": [
@@ -4740,8 +5238,7 @@
           "name",
           "description",
           "key_hint",
-          "capabilities",
-          "kb_ids"
+          "group"
         ],
         "title": "ApiKeyOut"
       },
@@ -4836,6 +5333,13 @@
           "api_key.created",
           "api_key.revoked",
           "api_key.activated",
+          "api_key.purged",
+          "permission_group.created",
+          "permission_group.updated",
+          "permission_group.deleted",
+          "permission_group.member_assigned",
+          "permission_group.member_unassigned",
+          "permission_group.current_set",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",
@@ -5436,33 +5940,22 @@
             "title": "Description",
             "default": ""
           },
-          "member_user_id": {
+          "group_id": {
             "type": "string",
             "format": "uuid",
-            "title": "Member User Id"
+            "title": "Group Id"
           },
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 8,
-            "title": "Capabilities"
-          },
-          "kb_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "maxItems": 50,
-            "title": "Kb Ids"
+          "owner_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner User Id"
           }
         },
         "type": "object",
         "required": [
           "name",
-          "member_user_id"
+          "group_id",
+          "owner_user_id"
         ],
         "title": "CreateApiKeyRequest"
       },
@@ -5713,6 +6206,75 @@
         },
         "type": "object",
         "title": "EmbeddingKeyTestIn"
+      },
+      "GroupMemberOut": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          },
+          "nickname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nickname"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "is_current": {
+            "type": "boolean",
+            "title": "Is Current"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "username",
+          "nickname",
+          "role",
+          "is_current"
+        ],
+        "title": "GroupMemberOut"
+      },
+      "GroupMemberRequest": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "title": "GroupMemberRequest",
+        "description": "分配成员与设定当前档共用:都是\"这个档位 ↔ 这个人\"的一个动作,只差语义。"
       },
       "HTTPValidationError": {
         "properties": {
@@ -6532,6 +7094,70 @@
         "type": "object",
         "title": "OkOut"
       },
+      "PermissionGroupOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Capabilities"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Kb Ids"
+          },
+          "all_kbs": {
+            "type": "boolean",
+            "title": "All Kbs"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/GroupMemberOut"
+            },
+            "type": "array",
+            "title": "Members"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "capabilities",
+          "kb_ids",
+          "all_kbs",
+          "members"
+        ],
+        "title": "PermissionGroupOut"
+      },
       "ProtocolsOut": {
         "properties": {
           "protocols": {
@@ -6745,6 +7371,20 @@
         },
         "type": "object",
         "title": "ProviderUpdateIn"
+      },
+      "PurgeRevokedKeysOut": {
+        "properties": {
+          "deleted_count": {
+            "type": "integer",
+            "title": "Deleted Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted_count"
+        ],
+        "title": "PurgeRevokedKeysOut",
+        "description": "清空历史凭据的结果;0 = 该档位下没有已吊销的 Key(不是错误,前端据计数提示即可)。"
       },
       "RefreshRequest": {
         "properties": {
@@ -7671,6 +8311,49 @@
           "name"
         ],
         "title": "UpdateSpaceRequest"
+      },
+      "UpsertPermissionGroupRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Description",
+            "default": ""
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Capabilities"
+          },
+          "kb_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Kb Ids"
+          },
+          "all_kbs": {
+            "type": "boolean",
+            "title": "All Kbs",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "UpsertPermissionGroupRequest"
       },
       "UsageOut": {
         "properties": {

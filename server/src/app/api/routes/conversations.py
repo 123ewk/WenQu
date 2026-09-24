@@ -11,6 +11,10 @@ SSE 事件契约(前端按 type 分派;载荷均带单调 seq,断线重连按它
 断线续流:GET .../conversations/{cid}/stream?after=<最后收到的 seq> ——
 回放缺失事件后,若生成仍在进行则接着实时推;不可续返回 404 STREAM_NOT_RESUMABLE,
 前端回退拉 messages(部分答案已在其中)。
+
+OPT-41:/ask 与续流都在「双凭据强制清单」内 —— 人的问答能力受他当前档位的知识库范围与
+「对话检索」能力约束(见 `app/api/api_key_auth.py` 第 6 点)。会话 CRUD 不在清单内,
+只看成员角色,档位不是用来管历史会话的。
 """
 
 from __future__ import annotations
@@ -25,14 +29,12 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import (
     Caller,
-    get_api_key_service,
     get_current_actor,
     get_current_user,
     get_memory_service,
     get_qa_service,
 )
 from app.api.routing import CommitBeforeSendRoute
-from app.application.service.api_keys import ApiKeyService
 from app.application.service.memory import MemoryService
 from app.application.service.qa import QAService
 from app.domain.models import Conversation, Message, User
@@ -259,14 +261,13 @@ def ask(
     body: AskRequest,
     caller: Caller = Depends(get_current_actor),
     service: QAService = Depends(get_qa_service),
-    key_service: ApiKeyService = Depends(get_api_key_service),
 ) -> StreamingResponse:
     """SSE 流式问答。首帧 meta 携带(可能是新建的)conversation_id。"""
     user = caller.user
-    # API Key 调用:kb_ids 先按 Key 范围收窄(范围外被拒,绝不静默降级)
+    # 先按生效权限收窄 kb_ids(范围外直接拒,绝不静默降级成"全部"或"档位范围")
     kb_ids = body.kb_ids
-    if caller.api_key is not None:
-        kb_ids = key_service.resolve_kb_scope(caller.api_key, kb_ids)
+    if caller.perm is not None:
+        kb_ids = caller.perm.resolve_kb_scope(kb_ids)
     events: Iterator[str] = service.ask_stream(
         user.id,
         space_id,

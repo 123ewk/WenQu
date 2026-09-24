@@ -16,6 +16,7 @@ from sqlalchemy import delete
 from app.core.crypto import CredentialCipher
 from app.core.db import get_session_factory
 from app.domain.models import CustomModel, ModelProvider, User
+from tests.conftest import create_group, create_key
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
@@ -105,15 +106,14 @@ def test_api_key_cannot_touch_admin_routes(client) -> None:
     space_id = client.post("/api/v1/spaces", json={"name": "钥匙空间"}, headers=auth).json()[
         "id"
     ]
-    key = client.post(
-        f"/api/v1/spaces/{space_id}/api-keys",
-        json={
-            "name": "k",
-            "capabilities": ["chat"],
-            "member_user_id": owner["user"]["id"],
-        },
-        headers=auth,
-    ).json()
+    key = create_key(
+        client,
+        auth,
+        space_id,
+        create_group(client, auth, space_id, capabilities=["chat"])["id"],
+        name="k",
+        owner_user_id=owner["user"]["id"],
+    )
     resp = client.get(
         "/api/v1/admin/model-providers", headers={"X-API-Key": key["plaintext"]}
     )

@@ -3,11 +3,11 @@
 - 归属 = (space_id, user_id) 双维度隔离;跨用户/跨空间一律不可见;
 - embedding 走空间层 key,与 chunks 同维度(1024),供向量相关性召回;
 - source_* 溯源列:来源会话删除(SET NULL)不影响记忆本身。
-- 号段说明:本分支基线 main head=0016;0017/0018 预留给未合并的 OPT-41,
-  故本片从 0019 起,down_revision 指向当前真实 head 0016,merge 时以 alembic 合流即可。
+- 号段说明:OPT-41 已并入 main(head 0018),本片 down_revision 指向 0018,
+  本功能链为 0018→0019→0020→0021,单 head 合流。
 
 Revision ID: 0019
-Revises: 0016
+Revises: 0018
 Create Date: 2026-09-23
 """
 
@@ -16,7 +16,7 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 
 revision = "0019"
-down_revision = "0016"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 

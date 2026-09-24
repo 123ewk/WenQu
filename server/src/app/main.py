@@ -23,6 +23,7 @@ from app.api.routes import health as health_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import memories as memory_routes
 from app.api.routes import models as model_routes
+from app.api.routes import permission_groups as permission_group_routes
 from app.api.routes import retrieval as retrieval_routes
 from app.api.routes import space_models as space_model_routes
 from app.api.routes import spaces as spaces_routes
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(memory_routes.router)
     app.include_router(model_routes.router)
     app.include_router(api_key_routes.router)
+    app.include_router(permission_group_routes.router)
     app.include_router(admin_model_routes.router)
     app.include_router(space_model_routes.router)
     app.include_router(token_usage_routes.router)

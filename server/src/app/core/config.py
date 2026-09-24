@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     refresh_token_days: int = Field(7, validation_alias="APP_REFRESH_TOKEN_DAYS")
     audit_retention_days: int = Field(180, validation_alias="APP_AUDIT_RETENTION_DAYS")
 
+    # ---- OPT-41 N1 灰度开关:核心接口(问答/检索/文档增删)是否强制"人也要有生效档位" ----
+    # 默认 0 = 人链路只看角色(与今天一致)。上线前必须先给每个真人成员配好档位并设为
+    # 当前档,否则打开那一刻所有人都会掉进禁用态(需求单 Q6 选的"无档位即全禁")。
+    # 只影响人(JWT)链路;程序(X-API-Key)链路一直都按档位收口,不受此开关影响。
+    require_permission_group_for_core: bool = Field(
+        False, validation_alias="APP_REQUIRE_PERMISSION_GROUP_FOR_CORE"
+    )
+
     # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
     otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")
 
