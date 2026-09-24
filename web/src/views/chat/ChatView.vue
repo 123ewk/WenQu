@@ -6,7 +6,8 @@ import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
 import { apiListPermissionGroups } from '@/api/permissionGroups'
-import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
+import { apiDismissProposal, apiSaveMemory } from '@/api/memories'
+import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MemoryProposalEvent, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -78,6 +79,12 @@ type ToolCallView = {
   output: string
 }
 const streamTools = ref<ToolCallView[]>([])
+
+/* ───── 记忆提议卡(OPT-45,仅 Agent 模式) ───── */
+
+/** memory_proposal 帧 + 本地动作态;提议只在当前这轮回答后弹,用户不点确认就什么都不落库 */
+type ProposalView = MemoryProposalEvent & { status: 'pending' | 'saving' | 'dismissing' }
+const proposals = ref<ProposalView[]>([])
 
 /** args.query 做"正在检索:…"文案;args 结构由模型生成,取用前判型 */
 function toolQuery(args: Record<string, unknown>): string {
@@ -435,6 +442,7 @@ function resetConversation() {
   streamText.value = ''
   streamCitations.value = []
   streamTools.value = []
+  proposals.value = []
   drawerOpen.value = false
   msgError.value = null
   if (route.params.conversationId) router.push('/chat')
@@ -496,6 +504,7 @@ async function onSend() {
   streamText.value = ''
   streamCitations.value = []
   streamTools.value = []
+  proposals.value = [] // 新问答轮:上一轮未处理的提议卡作废
   drawerOpen.value = false
   drawerCitations.value = []
 
@@ -544,6 +553,9 @@ async function onSend() {
         call.durationMs = event.duration_ms
         call.output = event.output ?? ''
       }
+    } else if (event.type === 'memory_proposal') {
+      // OPT-45:AI 提议 ≠ 已存,只挂一张待确认卡;一轮可多条,去重/幂等由后端与内容键保证
+      proposals.value.push({ ...event, status: 'pending' })
     }
   }
 
@@ -671,6 +683,77 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     if (canSend.value) void onSend()
+  }
+}
+
+/* ───── OPT-45 记忆提议卡:三按钮 → 确认 / 编辑后确认 / 忽略 ───── */
+
+/** E1 落库;内容去重由后端保证(同结论重复确认返回同一 id),确认后卡片消失 */
+async function onConfirmProposal(p: ProposalView) {
+  p.status = 'saving'
+  try {
+    await apiSaveMemory(spaceId.value, {
+      content: p.content,
+      kind: p.kind,
+      topic: p.topic,
+      source_conversation_id: p.source.conversation_id,
+      source_message_id: p.source.message_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.success('已记住,后续会跨会话召回')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
+  }
+}
+
+/** 编辑后确认:正文用户改过再走 E1(改了正文,后端会按新正文重算向量与去重键) */
+async function onEditConfirmProposal(p: ProposalView) {
+  let content: string
+  try {
+    const res = await ElMessageBox.prompt('编辑要长期记住的内容', '编辑后确认', {
+      inputValue: p.content,
+      inputPattern: /\S/,
+      inputErrorMessage: '内容不能为空',
+      inputValidator: (v: string) => (v.trim().length > 2000 ? '内容不能超过 2000 个字' : true),
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    content = res.value.trim()
+  } catch {
+    return // 用户取消
+  }
+  p.status = 'saving'
+  try {
+    await apiSaveMemory(spaceId.value, {
+      content,
+      kind: p.kind,
+      topic: p.topic,
+      source_conversation_id: p.source.conversation_id,
+      source_message_id: p.source.message_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.success('已记住')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
+  }
+}
+
+/** E2 忽略:写带 TTL 的去重留痕(不传 content_hash,后端按正文自算);之后同结论短期内不再弹卡 */
+async function onDismissProposal(p: ProposalView) {
+  p.status = 'dismissing'
+  try {
+    await apiDismissProposal(spaceId.value, {
+      content: p.content,
+      kind: p.kind,
+      conversation_id: p.source.conversation_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.info('已忽略,同类结论短期内不再提示')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
   }
 }
 
@@ -1024,6 +1107,41 @@ onUnmounted(abortStream)
                   <span v-html="renderMarkdown(streamText, streamCitations.length)"></span>
                   <span class="blink"></span>
                 </div>
+              </div>
+            </div>
+
+            <!-- OPT-45 记忆提议卡:Agent 回答里 AI 认为值得长期记住的结论,点确认才落库(仅本地态,不落库不显示) -->
+            <div v-for="p in proposals" :key="p.proposal_id" class="mem-card">
+              <div class="mem-card-head">
+                <el-icon class="mem-ic" :size="14"><Collection /></el-icon>
+                <span class="mem-card-title">AI 建议记住</span>
+                <span class="mem-kind">{{ p.kind === 'decision' ? '决策' : '事实' }}</span>
+                <span v-if="p.topic" class="mem-topic truncate">{{ p.topic }}</span>
+              </div>
+              <div class="mem-card-body">{{ p.content }}</div>
+              <div class="mem-card-actions">
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="p.status === 'saving'"
+                  :disabled="p.status === 'dismissing'"
+                  @click="onConfirmProposal(p)"
+                  >确认</el-button
+                >
+                <el-button
+                  size="small"
+                  :disabled="p.status !== 'pending'"
+                  @click="onEditConfirmProposal(p)"
+                  >编辑后确认</el-button
+                >
+                <el-button
+                  size="small"
+                  text
+                  :loading="p.status === 'dismissing'"
+                  :disabled="p.status === 'saving'"
+                  @click="onDismissProposal(p)"
+                  >忽略</el-button
+                >
               </div>
             </div>
           </div>
@@ -1407,6 +1525,53 @@ onUnmounted(abortStream)
 }
 .msg-head.is-muted {
   color: #9ca3af;
+}
+.mem-card {
+  border: 1px solid #dfe3ff;
+  border-left: 3px solid #4f6ef2;
+  border-radius: 8px;
+  background: #f7f8ff;
+  padding: 10px 14px;
+  margin: 8px 0;
+}
+.mem-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mem-ic {
+  color: #4f6ef2;
+  flex-shrink: 0;
+}
+.mem-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+.mem-kind {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(79, 110, 242, 0.12);
+  color: #4f6ef2;
+  font-size: 11px;
+}
+.mem-topic {
+  font-size: 11px;
+  color: #6b7280;
+  max-width: 40%;
+}
+.mem-card-body {
+  margin: 6px 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mem-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .tool-card {
   border: 1px solid #e5e7eb;
