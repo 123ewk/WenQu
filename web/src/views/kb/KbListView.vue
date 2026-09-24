@@ -165,7 +165,7 @@ function openKb(kb: KnowledgeBaseOut) {
 
     <!-- 卡片网格 -->
     <div v-else class="kb-grid">
-      <div v-for="kb in items" :key="kb.id" class="kb-card" @click="openKb(kb)">
+      <div v-for="kb in items" :key="kb.id" class="kb-card" data-testid="kb-card" @click="openKb(kb)">
         <div class="kb-icon">
           <el-icon :size="20"><Collection /></el-icon>
         </div>

@@ -309,7 +309,7 @@ async function onRevoke(key: ApiKeyOut) {
           <div class="page-title">API Key</div>
           <div class="page-sub">程序化接入凭据;能做什么、能看哪些库由所属<b>权限档位</b>决定</div>
         </div>
-        <el-button v-if="canManage" type="primary" @click="openCreate">
+        <el-button v-if="canManage" type="primary" data-testid="key-create-open" @click="openCreate">
           <el-icon class="btn-ic"><Plus /></el-icon>新建 Key
         </el-button>
       </div>
@@ -455,13 +455,23 @@ async function onRevoke(key: ApiKeyOut) {
       <template v-if="!created">
         <el-form label-position="top" @submit.prevent>
           <el-form-item label="名称" required>
-            <el-input v-model="createForm.name" maxlength="64" placeholder="例如:ci-pipeline" />
+            <el-input
+              v-model="createForm.name"
+              maxlength="64"
+              placeholder="例如:ci-pipeline"
+              data-testid="key-name"
+            />
           </el-form-item>
           <el-form-item label="描述">
             <el-input v-model="createForm.description" maxlength="512" placeholder="用途说明(选填)" />
           </el-form-item>
           <el-form-item label="权限档位" required>
-            <el-select v-model="createForm.groupId" class="ak-select" placeholder="选择本空间的现存档位">
+            <el-select
+              v-model="createForm.groupId"
+              class="ak-select"
+              placeholder="选择本空间的现存档位"
+              data-testid="key-group"
+            >
               <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id">
                 <div class="ak-opt-row">
                   <span>{{ g.name }}</span>
@@ -491,7 +501,12 @@ async function onRevoke(key: ApiKeyOut) {
             </div>
           </el-form-item>
           <el-form-item label="归因成员" required>
-            <el-select v-model="createForm.ownerUserId" class="ak-select" placeholder="选择该空间的现存成员">
+            <el-select
+              v-model="createForm.ownerUserId"
+              class="ak-select"
+              placeholder="选择该空间的现存成员"
+              data-testid="key-owner"
+            >
               <el-option
                 v-for="m in members"
                 :key="m.user_id"
@@ -513,8 +528,8 @@ async function onRevoke(key: ApiKeyOut) {
         <div class="ak-created-sub">请立即复制保存,这是唯一一次完整展示。</div>
         <div class="ak-keybox">
           <div class="ak-keybox-label mono">X-API-Key</div>
-          <div class="mono ak-keybox-value">{{ created.plaintext }}</div>
-          <button class="ak-copy" @click="copyPlaintext">复制</button>
+          <div class="mono ak-keybox-value" data-testid="key-secret">{{ created.plaintext }}</div>
+          <button class="ak-copy" data-testid="key-copy" @click="copyPlaintext">复制</button>
         </div>
         <div class="ak-warn">
           <el-icon class="ak-warn-ic"><WarningFilled /></el-icon>
@@ -525,11 +540,19 @@ async function onRevoke(key: ApiKeyOut) {
       <template #footer>
         <template v-if="!created">
           <el-button @click="createOpen = false">取消</el-button>
-          <el-button type="primary" :loading="creating" :disabled="!canSubmit" @click="onCreate">
+          <el-button
+            type="primary"
+            :loading="creating"
+            :disabled="!canSubmit"
+            data-testid="key-submit"
+            @click="onCreate"
+          >
             创建 Key
           </el-button>
         </template>
-        <el-button v-else type="primary" @click="onCreatedClose">我已保存</el-button>
+        <el-button v-else type="primary" data-testid="key-created-close" @click="onCreatedClose">
+          我已保存
+        </el-button>
       </template>
     </el-dialog>
   </div>

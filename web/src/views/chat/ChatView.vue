@@ -997,14 +997,20 @@ onUnmounted(abortStream)
               <template v-else>当前空间还没有知识库,先到「知识库」页上传文档</template>
             </div>
             <div class="chips">
-              <button v-for="example in EXAMPLE_QUESTIONS" :key="example" class="chip" @click="useChip(example)">
+              <button
+                v-for="example in EXAMPLE_QUESTIONS"
+                :key="example"
+                class="chip"
+                data-testid="chat-example-chip"
+                @click="useChip(example)"
+              >
                 {{ example }}
               </button>
             </div>
           </div>
 
           <!-- 消息列表 -->
-          <div v-else class="chat-thread">
+          <div v-else class="chat-thread" data-testid="chat-thread">
             <div class="thread-divider">
               <span class="line"></span><span class="text">对话</span><span class="line"></span>
             </div>
@@ -1108,7 +1114,12 @@ onUnmounted(abortStream)
                   >
                     <el-icon :size="14"><WarningFilled /></el-icon>知识库中没有找到相关内容,以下回答未引用知识库资料。
                   </div>
-                  <div class="md" v-html="assistantHtml(message)" @click="onContentClick($event, message)"></div>
+                  <div
+                    class="md"
+                    data-testid="chat-answer"
+                    v-html="assistantHtml(message)"
+                    @click="onContentClick($event, message)"
+                  ></div>
                   <div v-if="message.partial" class="miss-notice is-muted">
                     <el-icon :size="14"><WarningFilled /></el-icon>连接中断,以上为已生成的部分回答。可重新提问获取完整内容。
                   </div>
@@ -1328,11 +1339,19 @@ onUnmounted(abortStream)
               rows="1"
               class="chat-textarea"
               :placeholder="inputPlaceholder"
+              data-testid="chat-input"
               @input="autoGrow"
               @keydown="onKeydown"
             ></textarea>
 
-            <button v-if="!streaming" class="send-btn" :disabled="!canSend" title="发送" @click="onSend">
+            <button
+              v-if="!streaming"
+              class="send-btn"
+              :disabled="!canSend"
+              title="发送"
+              data-testid="chat-send"
+              @click="onSend"
+            >
               <el-icon :size="16"><ArrowUp /></el-icon>
             </button>
             <button v-else class="stop-btn" title="停止生成" @click="onStop">

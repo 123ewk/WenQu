@@ -89,7 +89,7 @@ async function onLogout() {
     <div class="sb-space">
       <el-popover ref="spacePop" placement="bottom-start" :width="232" trigger="click" popper-class="menu-pop">
         <template #reference>
-          <button class="space-btn">
+          <button class="space-btn" data-testid="space-switcher">
             <el-icon class="space-ic"><OfficeBuilding /></el-icon>
             <span class="sb-text space-info">
               <span class="space-name">{{ auth.currentSpace?.name ?? '未选择空间' }}</span>
@@ -113,7 +113,7 @@ async function onLogout() {
           <span class="pop-side">{{ roleLabel(s.role) }}</span>
         </button>
         <div class="pop-divider"></div>
-        <button class="pop-item pop-primary" @click="spacePop?.hide(); createOpen = true">
+        <button class="pop-item pop-primary" data-testid="space-create-open" @click="spacePop?.hide(); createOpen = true">
           <el-icon><Plus /></el-icon>新建空间
         </button>
         <button class="pop-item" :disabled="!auth.currentSpaceId" @click="onManageSpace">
@@ -124,16 +124,16 @@ async function onLogout() {
 
     <!-- 主导航 -->
     <nav class="sb-nav">
-      <router-link to="/chat" class="nav-item" active-class="nav-active">
+      <router-link to="/chat" class="nav-item" active-class="nav-active" data-testid="nav-chat">
         <el-icon><ChatLineRound /></el-icon><span class="sb-text">对话</span>
       </router-link>
-      <router-link to="/kb" class="nav-item" active-class="nav-active">
+      <router-link to="/kb" class="nav-item" active-class="nav-active" data-testid="nav-kb">
         <el-icon><Collection /></el-icon><span class="sb-text">知识库</span>
       </router-link>
-      <router-link to="/api-keys" class="nav-item" active-class="nav-active">
+      <router-link to="/api-keys" class="nav-item" active-class="nav-active" data-testid="nav-api-keys">
         <el-icon><Key /></el-icon><span class="sb-text">API Key</span>
       </router-link>
-      <router-link to="/permission-groups" class="nav-item" active-class="nav-active">
+      <router-link to="/permission-groups" class="nav-item" active-class="nav-active" data-testid="nav-permission-groups">
         <el-icon><Lock /></el-icon><span class="sb-text">权限档位</span>
       </router-link>
       <router-link to="/settings/models" class="nav-item" active-class="nav-active">
