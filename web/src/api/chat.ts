@@ -1,5 +1,11 @@
 import { ApiError, apiBaseUrl, authHeader, http, refreshAccessToken } from './http'
-import type { AskRequest, CitationOut, ConversationOut, MessageOut } from './types'
+import type {
+  AskRequest,
+  CitationOut,
+  ConversationOut,
+  MemoryProposalEvent,
+  MessageOut,
+} from './types'
 
 export function apiListConversations(spaceId: string): Promise<ConversationOut[]> {
   return http.get<ConversationOut[]>(`/spaces/${spaceId}/conversations`).then((r) => r.data)
@@ -45,6 +51,8 @@ export function apiListMessages(spaceId: string, conversationId: string): Promis
  * 整体失败仍走 `error`。
  * OPT-29:`done` 帧新增 `context_used_tokens`/`context_window_tokens`(int|null),
  * 聊天页上下文进度条的实时数据源;老后端无这两字段,判 null 走"窗口未配置"分支。
+ * OPT-45:**Agent 模式**下每次 `propose_memory` 工具调用后紧跟一条 `memory_proposal`
+ * 帧(夹在工具轮与正文 delta 之间,一轮可多条),用于弹记忆确认卡;直检模式不产生。
  */
 export type AskEvent = (
   | { type: 'meta'; conversation_id: string }
@@ -61,6 +69,7 @@ export type AskEvent = (
   | { type: 'error'; message: string; code?: string }
   | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; id: string; name: string; ok: boolean; duration_ms: number; output: string }
+  | ({ type: 'memory_proposal' } & MemoryProposalEvent)
 ) & { seq?: number }
 
 function parseError(status: number, data: unknown): ApiError {
