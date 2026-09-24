@@ -5,7 +5,7 @@
         server-install server-run worker-run server-test server-lint server-openapi \
         parser-install parser-gen parser-run parser-test parser-lint \
         web-install web-dev web-build \
-        demo-seed demo-seed-purge
+        demo-seed demo-seed-purge demo-browser demo-run
 
 help: ## 显示全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -69,3 +69,14 @@ demo-seed: ## 播种演示数据(OPT-46;需 APP_DEMO_MODE=1 且 server/worker/pa
 
 demo-seed-purge: ## 清理演示空间(OPT-46;演示账号保留)
 	cd server && uv run python scripts/seed_demo.py --purge
+
+# 演示脚本刻意不进 pyproject 依赖:CI 永远不跑它,把 playwright 塞进锁文件
+# 只会拖慢每次 CI 安装。这里用 uv 的临时环境按需拉。版本必须钉死:playwright
+# 每个小版本要对应型号的 chromium 内核,装 latest 会让脚本找不到已装浏览器。
+PLAYWRIGHT ?= playwright==1.60.0
+
+demo-browser: ## 装一次演示用的浏览器内核(playwright chromium,约 150MB)
+	cd server && uv run --with "$(PLAYWRIGHT)" playwright install chromium
+
+demo-run: ## 自动演示(OPT-46;需 APP_DEMO_PASSWORD,可带 ARGS="-n 5 --headed")
+	cd server && uv run --with "$(PLAYWRIGHT)" python scripts/demo_run.py $(ARGS)
