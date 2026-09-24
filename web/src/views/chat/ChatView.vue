@@ -6,8 +6,8 @@ import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
 import { apiListPermissionGroups } from '@/api/permissionGroups'
-import { apiDismissProposal, apiSaveMemory } from '@/api/memories'
-import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MemoryProposalEvent, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
+import { apiCompress, apiDismissProposal, apiGetContext, apiSaveMemory } from '@/api/memories'
+import type { AgentStepOut, CitationOut, ContextOut, ConversationOut, KnowledgeBaseOut, MemoryProposalEvent, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -777,6 +777,60 @@ const ctxColor = computed(() => {
   return '#4f6ef2'
 })
 
+/* ───── OPT-45 悬浮窗读数(E7)+ 手动压缩(E6)───── */
+
+/** 悬停进度条时惰性拉取;值与 done 帧同源,只是补记忆条数/可压缩/缓存两态 */
+const ctxInfo = ref<ContextOut | null>(null)
+const ctxLoading = ref(false)
+const compressing = ref(false)
+
+/** 缓存两态:支持则显百分比(0% 是正常零命中),不支持显文案,绝不当 0% */
+const cacheHitText = computed(() => {
+  if (!ctxInfo.value) return '—'
+  if (!ctxInfo.value.cache_supported) return '当前模型暂不支持'
+  return `${Math.round((ctxInfo.value.cache_hit_rate ?? 0) * 100)}%`
+})
+
+async function loadContext() {
+  const cid = activeConversationId.value
+  if (!cid) return
+  ctxLoading.value = true
+  try {
+    ctxInfo.value = await apiGetContext(spaceId.value, cid)
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  } finally {
+    ctxLoading.value = false
+  }
+}
+
+/** E6 返回 200 未必真压缩;compressed=false 用 reason 分诊,成功后顺手刷一次 E7 */
+async function onCompress() {
+  const cid = activeConversationId.value
+  if (!cid) return
+  compressing.value = true
+  try {
+    const r = await apiCompress(spaceId.value, cid, selectedModelId.value)
+    if (r.compressed) {
+      ElMessage.success('已压缩历史,前情摘要已更新')
+    } else {
+      ElMessage.warning(COMPRESS_REASON_TEXT[r.reason] ?? '未压缩')
+    }
+    ctxInfo.value = await apiGetContext(spaceId.value, cid)
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  } finally {
+    compressing.value = false
+  }
+}
+
+const COMPRESS_REASON_TEXT: Record<string, string> = {
+  too_short: '对话还太短,暂不需要压缩',
+  nothing_to_fold: '没有可压缩的历史了',
+  disabled: '压缩功能当前已关闭',
+  empty_summary: '压缩暂时没成功,稍后再试',
+}
+
 /* ───── 会话操作 ───── */
 
 async function onNewConversation() {
@@ -1150,16 +1204,54 @@ onUnmounted(abortStream)
         <!-- 输入区 -->
         <div class="chat-input-wrap">
           <div v-if="msgError" class="inline-error">{{ msgError }}</div>
-          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径) -->
-          <div v-if="ctxVisible" class="ctx-row">
-            <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
-            <template v-if="ctxPct !== null">
-              <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
-              <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
-              <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径)
+               OPT-45 悬浮窗:进度条沿用 OPT-29,悬停时读 E7 补记忆条数/可压缩/缓存两态,并挂手动压缩按钮 -->
+          <el-popover
+            v-if="ctxVisible"
+            trigger="hover"
+            placement="top"
+            :width="280"
+            popper-class="ctx-pop"
+            @show="loadContext"
+          >
+            <template #reference>
+              <div class="ctx-row">
+                <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
+                <template v-if="ctxPct !== null">
+                  <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
+                  <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
+                  <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+                </template>
+                <span v-else class="ctx-hint">窗口未配置</span>
+              </div>
             </template>
-            <span v-else class="ctx-hint">窗口未配置</span>
-          </div>
+            <div class="ctx-pop-body">
+              <div v-if="ctxLoading && !ctxInfo" class="ctx-pop-muted">读数加载中…</div>
+              <div class="ctx-pop-row">
+                <span>本空间已存记忆</span><b>{{ ctxInfo?.in_scope_memory_count ?? '—' }} 条</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>可折叠旧消息</span><b>{{ ctxInfo?.compressible_messages ?? '—' }} 条</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>已有前情摘要</span><b>{{ ctxInfo ? (ctxInfo.has_summary ? '是' : '否') : '—' }}</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>缓存命中</span><b>{{ cacheHitText }}</b>
+              </div>
+              <el-button
+                class="ctx-compress-btn"
+                type="primary"
+                size="small"
+                :disabled="!ctxInfo?.can_compress"
+                :loading="compressing"
+                @click="onCompress"
+              >
+                压缩历史<template v-if="ctxInfo?.compressible_messages">（约折 {{ ctxInfo.compressible_messages }} 条）</template>
+              </el-button>
+              <div v-if="ctxInfo && !ctxInfo.can_compress" class="ctx-pop-muted">当前没有可压缩的历史(或压缩已关闭)</div>
+            </div>
+          </el-popover>
           <div class="chat-input-row">
             <!-- 知识库范围 -->
             <el-popover :width="300" trigger="click" popper-class="kb-scope-pop">
@@ -1525,6 +1617,28 @@ onUnmounted(abortStream)
 }
 .msg-head.is-muted {
   color: #9ca3af;
+}
+.ctx-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #374151;
+}
+.ctx-pop-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ctx-pop-row b {
+  color: #111827;
+  font-weight: 600;
+}
+.ctx-pop-muted {
+  color: #9ca3af;
+}
+.ctx-compress-btn {
+  margin-top: 4px;
 }
 .mem-card {
   border: 1px solid #dfe3ff;
