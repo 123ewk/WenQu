@@ -19,6 +19,8 @@ from app.domain.models import (
     Document,
     KnowledgeBase,
     Membership,
+    Memory,
+    MemoryProposal,
     Message,
     PermissionGroup,
     PermissionGroupMember,
@@ -159,6 +161,45 @@ class MessageRepository(Protocol):
     def add(self, message: Message) -> Message: ...
     def list_for_conversation(self, conversation_id: uuid.UUID) -> list[Message]: ...
     def next_seq(self, conversation_id: uuid.UUID) -> int: ...
+
+
+class MemoryRepository(Protocol):
+    """外部事实记忆(OPT-45):一切读写以 (space_id, user_id) 为强制谓词,越权即查不到。"""
+
+    def add(self, memory: Memory) -> Memory: ...
+    def get(
+        self, memory_id: uuid.UUID, space_id: uuid.UUID, user_id: uuid.UUID
+    ) -> Memory | None: ...
+    def list_for_actor(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[Memory], int]: ...
+    def find_duplicate(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, content: str
+    ) -> Memory | None: ...
+    def count_for_actor(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """本人在本空间的记忆条数:召回前的一眼判空,零记忆时免去昂贵的 embedding 调用。"""
+    def save(self, memory: Memory) -> Memory: ...
+    def delete(self, memory: Memory) -> None: ...
+    def search_by_embedding(
+        self,
+        space_id: uuid.UUID,
+        user_id: uuid.UUID,
+        embedding: list[float],
+        limit: int,
+        min_similarity: float = 0.0,
+    ) -> list[tuple[Memory, float]]: ...
+
+
+class MemoryProposalRepository(Protocol):
+    """记忆提议忽略留痕(OPT-45 P2):写 dismissed 行、查未过期哈希,同样按 (space,user) 隔离。"""
+
+    def add(self, proposal: MemoryProposal) -> MemoryProposal: ...
+    def exists(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, content_hash: str, now: datetime
+    ) -> bool: ...
+    def active_hashes(
+        self, space_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> set[str]: ...
 
 
 class ApiKeyRepository(Protocol):

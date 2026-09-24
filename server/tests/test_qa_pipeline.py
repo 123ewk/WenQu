@@ -1,12 +1,20 @@
-"""问答流水线装配测试(OPT-5):fail-closed 配置校验 + 阶段顺序。"""
+"""问答流水线装配测试(OPT-5):fail-closed 配置校验 + 阶段顺序;OPT-45 P2 记忆召回注入。"""
 
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from app.application.service.qa_pipeline import DEFAULT_PIPELINE, build_stages
+from app.application.service.qa_pipeline import (
+    DEFAULT_PIPELINE,
+    GenerationState,
+    RecallMemoryStage,
+    _build_messages,
+    build_stages,
+)
 
 
 def _noop(*_args: Any, **_kwargs: Any) -> Any:
@@ -16,6 +24,13 @@ def _noop(*_args: Any, **_kwargs: Any) -> Any:
 def test_default_pipeline_builds_all_stages_in_order() -> None:
     stages = build_stages(DEFAULT_PIPELINE, search=_noop, persist=_noop, chat=object())
     assert [stage.name for stage in stages] == list(DEFAULT_PIPELINE)
+
+
+def test_default_pipeline_includes_recall_memory_before_compose() -> None:
+    """记忆召回阶段必须在 compose 之前(否则召回结果进不了提示词)。"""
+    order = list(DEFAULT_PIPELINE)
+    assert "recall_memory" in order
+    assert order.index("recall_memory") < order.index("compose")
 
 
 def test_unknown_stage_fails_closed() -> None:
@@ -33,3 +48,64 @@ def test_pipeline_can_be_reordered() -> None:
     reordered = list(reversed(DEFAULT_PIPELINE))
     stages = build_stages(reordered, search=_noop, persist=_noop, chat=object())
     assert [stage.name for stage in stages] == reordered
+
+
+# ---------------------------- OPT-45 P2:记忆召回注入 ----------------------------
+
+
+def _make_state() -> GenerationState:
+    from types import SimpleNamespace
+
+    return GenerationState(
+        ctx=SimpleNamespace(question="q", space_id=uuid.uuid4(), user_id=uuid.uuid4()),  # type: ignore[arg-type]
+        handle=None,  # type: ignore[arg-type]
+        stream_id=uuid.uuid4(),
+        log=None,  # type: ignore[arg-type]
+    )
+
+
+def test_recall_stage_populates_memories_from_collaborator() -> None:
+    state = _make_state()
+    stage = RecallMemoryStage(lambda _ctx: ["报销上限两千元"])
+    stage.run(state)
+    assert state.memories == ["报销上限两千元"]
+
+
+def test_recall_stage_swallows_errors_and_degrades_to_empty() -> None:
+    """召回是增益不是必需:抛异常只置空,绝不冒泡中断问答。"""
+
+    def boom(_ctx: Any) -> list[str]:
+        raise RuntimeError("embedding down")
+
+    state = _make_state()
+    RecallMemoryStage(boom).run(state)
+    assert state.memories == []
+
+
+def test_compose_injects_memory_block_and_empty_is_identical() -> None:
+    citations = [{"index": 1, "filename": "手册.md", "excerpt": "资料内容"}]
+    with_mem = _build_messages([], "问题", citations, ["A 结论", "B 决策"])
+    without_mem = _build_messages([], "问题", citations, [])
+    none_mem = _build_messages([], "问题", citations)
+
+    system = with_mem[0]["content"]
+    assert "已确认相关记忆" in system
+    assert "- A 结论" in system and "- B 决策" in system
+    # 空召回(None / [])与"无记忆"逐字节一致:回退不改变提示词形态
+    assert without_mem[0]["content"] == none_mem[0]["content"]
+    assert "已确认相关记忆" not in without_mem[0]["content"]
+
+
+def test_compose_summary_block_and_no_summary_is_identical() -> None:
+    citations = [{"index": 1, "filename": "手册.md", "excerpt": "资料内容"}]
+    with_sum = _build_messages([], "问题", citations, [], summary="更早的结论已合并")
+    no_sum = _build_messages([], "问题", citations, [])
+    assert "前情摘要" in with_sum[0]["content"]
+    assert "更早的结论已合并" in with_sum[0]["content"]
+    assert "前情摘要" not in no_sum[0]["content"]
+
+    # 装配处传入的 recent 原样拼接、不再二次截断(截断职责已上交 assemble_history)
+    recent = [SimpleNamespace(role="user", content=f"m{i}") for i in range(12)]
+    msgs = _build_messages(recent, "问题", citations, [])
+    assert [m["content"] for m in msgs[1:-1]] == [f"m{i}" for i in range(12)]
+

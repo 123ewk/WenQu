@@ -62,6 +62,8 @@ class ErrorCode:
     MESSAGE_NOT_FOUND = (4001, "MESSAGE_NOT_FOUND")
     # OPT-3:流不可续(进程重启/事件淘汰/该会话从未生成过)→ 前端回退拉 messages
     STREAM_NOT_RESUMABLE = (4002, "STREAM_NOT_RESUMABLE")
+    # 7xxx 记忆(OPT-45):非本人/他空间的记忆一律按"不存在"返回(防枚举)
+    MEMORY_NOT_FOUND = (7000, "MEMORY_NOT_FOUND")
     # 6xxx 模型调用
     MODEL_NOT_CONFIGURED = (6001, "MODEL_NOT_CONFIGURED")
     MODEL_CALL_FAILED = (6000, "MODEL_CALL_FAILED")

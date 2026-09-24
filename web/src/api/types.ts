@@ -665,3 +665,64 @@ export interface AskRequest {
   /** OPT-10:true = ReAct 工具循环(SSE 增 tool_call/tool_result 事件);缺省 false 行为不变 */
   agent?: boolean
 }
+
+/* ───── OPT-45 外部事实记忆 + 历史滚动压缩 ───── */
+
+export type MemoryKind = 'fact' | 'decision'
+
+/** 已确认落库的一条跨会话事实记忆(归属 = 当前用户 + 当前空间;他空间/他人一律 404) */
+export interface MemoryOut {
+  id: string
+  space_id: string
+  kind: MemoryKind
+  content: string
+  topic: string
+  source_conversation_id: string | null
+  created_at: string | null
+}
+
+/** E1 确认落库请求:content 必填 1~2000;kind/topic/来源全可选 */
+export interface SaveMemoryRequest {
+  content: string
+  kind?: MemoryKind
+  topic?: string
+  source_conversation_id?: string | null
+  source_message_id?: string | null
+}
+
+/** E2 忽略提议:只回传正文与 kind,后端按正文归一化后自算去重哈希,前端不传 content_hash */
+export interface DismissProposalRequest {
+  content: string
+  kind?: MemoryKind
+  conversation_id?: string | null
+}
+
+/** E6 手动压缩出参:compressed=false 是 HTTP 200 非错误,用 reason 分诊(too_short/nothing_to_fold/disabled/empty_summary) */
+export interface CompressOut {
+  compressed: boolean
+  summary: string
+  summary_through_seq: number
+  reason: string
+}
+
+/** E7 上下文悬浮窗读数:used/window 可能同时为 null(老会话/未打模型);缓存两态见 cache_supported/cache_hit_rate */
+export interface ContextOut {
+  used_tokens: number | null
+  window_tokens: number | null
+  in_scope_memory_count: number
+  compressible_messages: number
+  can_compress: boolean
+  has_summary: boolean
+  cache_supported: boolean
+  cache_hit_rate: number | null
+}
+
+/** memory_proposal SSE 帧载荷(Agent 模式才有;一轮可多条,只发事件不落库) */
+export interface MemoryProposalEvent {
+  proposal_id: string
+  content: string
+  kind: MemoryKind
+  topic: string
+  content_hash: string
+  source: { conversation_id: string | null; message_id: string | null }
+}

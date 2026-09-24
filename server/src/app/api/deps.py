@@ -30,6 +30,8 @@ from app.application.repository.knowledge import (
     KbStatsRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.memories import MemoryRepositoryImpl
+from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.permission_groups import PermissionGroupRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
@@ -43,6 +45,7 @@ from app.application.service.effective_permission import (
     permission_of_member,
 )
 from app.application.service.knowledge import KnowledgeService
+from app.application.service.memory import MemoryService
 from app.application.service.model_admin import ModelAdminService
 from app.application.service.permission_groups import PermissionGroupService
 from app.application.service.profile import ProfileService
@@ -72,6 +75,8 @@ from app.domain.interfaces import (
     EmbeddingGateway,
     KbStatsRepository,
     KnowledgeBaseRepository,
+    MemoryProposalRepository,
+    MemoryRepository,
     MessageRepository,
     PermissionGroupRepository,
     RefreshTokenRepository,
@@ -344,6 +349,25 @@ def get_embedding_gateway(
     if space_id is None:
         return client
     return get_usage_recorder().embedding(client, space_id, caller.user.id)
+
+
+def get_memory_repository(db: Session = Depends(get_db)) -> MemoryRepository:
+    return MemoryRepositoryImpl(db)
+
+
+def get_memory_proposal_repository(
+    db: Session = Depends(get_db),
+) -> MemoryProposalRepository:
+    return MemoryProposalRepositoryImpl(db)
+
+
+def get_memory_service(
+    memories: MemoryRepository = Depends(get_memory_repository),
+    spaces: SpaceRepository = Depends(get_space_repository),
+    embedder: EmbeddingGateway = Depends(get_embedding_gateway),
+    proposals: MemoryProposalRepository = Depends(get_memory_proposal_repository),
+) -> MemoryService:
+    return MemoryService(memories, spaces, embedder, get_settings(), proposals)
 
 
 def _reranker_for(

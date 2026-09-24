@@ -6,7 +6,8 @@ import { ApiError, errMessage } from '@/api/http'
 import { apiGetChunk, apiListKbs } from '@/api/knowledge'
 import { apiGetModelCatalog } from '@/api/models'
 import { apiListPermissionGroups } from '@/api/permissionGroups'
-import type { AgentStepOut, CitationOut, ConversationOut, KnowledgeBaseOut, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
+import { apiCompress, apiDismissProposal, apiGetContext, apiSaveMemory } from '@/api/memories'
+import type { AgentStepOut, CitationOut, ContextOut, ConversationOut, KnowledgeBaseOut, MemoryProposalEvent, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -78,6 +79,12 @@ type ToolCallView = {
   output: string
 }
 const streamTools = ref<ToolCallView[]>([])
+
+/* ───── 记忆提议卡(OPT-45,仅 Agent 模式) ───── */
+
+/** memory_proposal 帧 + 本地动作态;提议只在当前这轮回答后弹,用户不点确认就什么都不落库 */
+type ProposalView = MemoryProposalEvent & { status: 'pending' | 'saving' | 'dismissing' }
+const proposals = ref<ProposalView[]>([])
 
 /** args.query 做"正在检索:…"文案;args 结构由模型生成,取用前判型 */
 function toolQuery(args: Record<string, unknown>): string {
@@ -435,6 +442,7 @@ function resetConversation() {
   streamText.value = ''
   streamCitations.value = []
   streamTools.value = []
+  proposals.value = []
   drawerOpen.value = false
   msgError.value = null
   if (route.params.conversationId) router.push('/chat')
@@ -496,6 +504,7 @@ async function onSend() {
   streamText.value = ''
   streamCitations.value = []
   streamTools.value = []
+  proposals.value = [] // 新问答轮:上一轮未处理的提议卡作废
   drawerOpen.value = false
   drawerCitations.value = []
 
@@ -544,6 +553,9 @@ async function onSend() {
         call.durationMs = event.duration_ms
         call.output = event.output ?? ''
       }
+    } else if (event.type === 'memory_proposal') {
+      // OPT-45:AI 提议 ≠ 已存,只挂一张待确认卡;一轮可多条,去重/幂等由后端与内容键保证
+      proposals.value.push({ ...event, status: 'pending' })
     }
   }
 
@@ -674,6 +686,77 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+/* ───── OPT-45 记忆提议卡:三按钮 → 确认 / 编辑后确认 / 忽略 ───── */
+
+/** E1 落库;内容去重由后端保证(同结论重复确认返回同一 id),确认后卡片消失 */
+async function onConfirmProposal(p: ProposalView) {
+  p.status = 'saving'
+  try {
+    await apiSaveMemory(spaceId.value, {
+      content: p.content,
+      kind: p.kind,
+      topic: p.topic,
+      source_conversation_id: p.source.conversation_id,
+      source_message_id: p.source.message_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.success('已记住,后续会跨会话召回')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
+  }
+}
+
+/** 编辑后确认:正文用户改过再走 E1(改了正文,后端会按新正文重算向量与去重键) */
+async function onEditConfirmProposal(p: ProposalView) {
+  let content: string
+  try {
+    const res = await ElMessageBox.prompt('编辑要长期记住的内容', '编辑后确认', {
+      inputValue: p.content,
+      inputPattern: /\S/,
+      inputErrorMessage: '内容不能为空',
+      inputValidator: (v: string) => (v.trim().length > 2000 ? '内容不能超过 2000 个字' : true),
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+    })
+    content = res.value.trim()
+  } catch {
+    return // 用户取消
+  }
+  p.status = 'saving'
+  try {
+    await apiSaveMemory(spaceId.value, {
+      content,
+      kind: p.kind,
+      topic: p.topic,
+      source_conversation_id: p.source.conversation_id,
+      source_message_id: p.source.message_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.success('已记住')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
+  }
+}
+
+/** E2 忽略:写带 TTL 的去重留痕(不传 content_hash,后端按正文自算);之后同结论短期内不再弹卡 */
+async function onDismissProposal(p: ProposalView) {
+  p.status = 'dismissing'
+  try {
+    await apiDismissProposal(spaceId.value, {
+      content: p.content,
+      kind: p.kind,
+      conversation_id: p.source.conversation_id,
+    })
+    proposals.value = proposals.value.filter((x) => x.proposal_id !== p.proposal_id)
+    ElMessage.info('已忽略,同类结论短期内不再提示')
+  } catch (e) {
+    p.status = 'pending'
+    ElMessage.error(errMessage(e))
+  }
+}
+
 /* ───── OPT-29 上下文窗口使用率(只读不算;数据来自 done 帧与 messages 接口) ───── */
 
 /** 渲染基准 = 该会话最后一条 assistant 消息;流式中沿用上轮 done 落地的值(V1 口径:不做实时爬升,防误导) */
@@ -693,6 +776,60 @@ const ctxColor = computed(() => {
   if (p >= 70) return '#f59e0b'
   return '#4f6ef2'
 })
+
+/* ───── OPT-45 悬浮窗读数(E7)+ 手动压缩(E6)───── */
+
+/** 悬停进度条时惰性拉取;值与 done 帧同源,只是补记忆条数/可压缩/缓存两态 */
+const ctxInfo = ref<ContextOut | null>(null)
+const ctxLoading = ref(false)
+const compressing = ref(false)
+
+/** 缓存两态:支持则显百分比(0% 是正常零命中),不支持显文案,绝不当 0% */
+const cacheHitText = computed(() => {
+  if (!ctxInfo.value) return '—'
+  if (!ctxInfo.value.cache_supported) return '当前模型暂不支持'
+  return `${Math.round((ctxInfo.value.cache_hit_rate ?? 0) * 100)}%`
+})
+
+async function loadContext() {
+  const cid = activeConversationId.value
+  if (!cid) return
+  ctxLoading.value = true
+  try {
+    ctxInfo.value = await apiGetContext(spaceId.value, cid)
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  } finally {
+    ctxLoading.value = false
+  }
+}
+
+/** E6 返回 200 未必真压缩;compressed=false 用 reason 分诊,成功后顺手刷一次 E7 */
+async function onCompress() {
+  const cid = activeConversationId.value
+  if (!cid) return
+  compressing.value = true
+  try {
+    const r = await apiCompress(spaceId.value, cid, selectedModelId.value)
+    if (r.compressed) {
+      ElMessage.success('已压缩历史,前情摘要已更新')
+    } else {
+      ElMessage.warning(COMPRESS_REASON_TEXT[r.reason] ?? '未压缩')
+    }
+    ctxInfo.value = await apiGetContext(spaceId.value, cid)
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  } finally {
+    compressing.value = false
+  }
+}
+
+const COMPRESS_REASON_TEXT: Record<string, string> = {
+  too_short: '对话还太短,暂不需要压缩',
+  nothing_to_fold: '没有可压缩的历史了',
+  disabled: '压缩功能当前已关闭',
+  empty_summary: '压缩暂时没成功,稍后再试',
+}
 
 /* ───── 会话操作 ───── */
 
@@ -1026,22 +1163,95 @@ onUnmounted(abortStream)
                 </div>
               </div>
             </div>
+
+            <!-- OPT-45 记忆提议卡:Agent 回答里 AI 认为值得长期记住的结论,点确认才落库(仅本地态,不落库不显示) -->
+            <div v-for="p in proposals" :key="p.proposal_id" class="mem-card">
+              <div class="mem-card-head">
+                <el-icon class="mem-ic" :size="14"><Collection /></el-icon>
+                <span class="mem-card-title">AI 建议记住</span>
+                <span class="mem-kind">{{ p.kind === 'decision' ? '决策' : '事实' }}</span>
+                <span v-if="p.topic" class="mem-topic truncate">{{ p.topic }}</span>
+              </div>
+              <div class="mem-card-body">{{ p.content }}</div>
+              <div class="mem-card-actions">
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="p.status === 'saving'"
+                  :disabled="p.status === 'dismissing'"
+                  @click="onConfirmProposal(p)"
+                  >确认</el-button
+                >
+                <el-button
+                  size="small"
+                  :disabled="p.status !== 'pending'"
+                  @click="onEditConfirmProposal(p)"
+                  >编辑后确认</el-button
+                >
+                <el-button
+                  size="small"
+                  text
+                  :loading="p.status === 'dismissing'"
+                  :disabled="p.status === 'saving'"
+                  @click="onDismissProposal(p)"
+                  >忽略</el-button
+                >
+              </div>
+            </div>
           </div>
         </div>
 
         <!-- 输入区 -->
         <div class="chat-input-wrap">
           <div v-if="msgError" class="inline-error">{{ msgError }}</div>
-          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径) -->
-          <div v-if="ctxVisible" class="ctx-row">
-            <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
-            <template v-if="ctxPct !== null">
-              <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
-              <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
-              <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+          <!-- OPT-29 上下文窗口使用率:每轮 done 后刷新,流式过程中不实时爬升(V1 口径)
+               OPT-45 悬浮窗:进度条沿用 OPT-29,悬停时读 E7 补记忆条数/可压缩/缓存两态,并挂手动压缩按钮 -->
+          <el-popover
+            v-if="ctxVisible"
+            trigger="hover"
+            placement="top"
+            :width="280"
+            popper-class="ctx-pop"
+            @show="loadContext"
+          >
+            <template #reference>
+              <div class="ctx-row">
+                <span class="ctx-text">上下文 {{ ctxUsed?.toLocaleString() }}<template v-if="ctxWindow"> / {{ ctxWindow.toLocaleString() }} tokens</template><template v-else> tokens</template></span>
+                <template v-if="ctxPct !== null">
+                  <span class="ctx-track"><span class="ctx-fill" :style="{ width: ctxPct + '%', background: ctxColor }"></span></span>
+                  <span class="ctx-pct" :style="{ color: ctxColor }">{{ ctxPct }}%</span>
+                  <span v-if="ctxPct > 90" class="ctx-hint" :style="{ color: ctxColor }">接近上限,建议新开会话</span>
+                </template>
+                <span v-else class="ctx-hint">窗口未配置</span>
+              </div>
             </template>
-            <span v-else class="ctx-hint">窗口未配置</span>
-          </div>
+            <div class="ctx-pop-body">
+              <div v-if="ctxLoading && !ctxInfo" class="ctx-pop-muted">读数加载中…</div>
+              <div class="ctx-pop-row">
+                <span>本空间已存记忆</span><b>{{ ctxInfo?.in_scope_memory_count ?? '—' }} 条</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>可折叠旧消息</span><b>{{ ctxInfo?.compressible_messages ?? '—' }} 条</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>已有前情摘要</span><b>{{ ctxInfo ? (ctxInfo.has_summary ? '是' : '否') : '—' }}</b>
+              </div>
+              <div class="ctx-pop-row">
+                <span>缓存命中</span><b>{{ cacheHitText }}</b>
+              </div>
+              <el-button
+                class="ctx-compress-btn"
+                type="primary"
+                size="small"
+                :disabled="!ctxInfo?.can_compress"
+                :loading="compressing"
+                @click="onCompress"
+              >
+                压缩历史<template v-if="ctxInfo?.compressible_messages">（约折 {{ ctxInfo.compressible_messages }} 条）</template>
+              </el-button>
+              <div v-if="ctxInfo && !ctxInfo.can_compress" class="ctx-pop-muted">当前没有可压缩的历史(或压缩已关闭)</div>
+            </div>
+          </el-popover>
           <div class="chat-input-row">
             <!-- 知识库范围 -->
             <el-popover :width="300" trigger="click" popper-class="kb-scope-pop">
@@ -1407,6 +1617,75 @@ onUnmounted(abortStream)
 }
 .msg-head.is-muted {
   color: #9ca3af;
+}
+.ctx-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #374151;
+}
+.ctx-pop-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ctx-pop-row b {
+  color: #111827;
+  font-weight: 600;
+}
+.ctx-pop-muted {
+  color: #9ca3af;
+}
+.ctx-compress-btn {
+  margin-top: 4px;
+}
+.mem-card {
+  border: 1px solid #dfe3ff;
+  border-left: 3px solid #4f6ef2;
+  border-radius: 8px;
+  background: #f7f8ff;
+  padding: 10px 14px;
+  margin: 8px 0;
+}
+.mem-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mem-ic {
+  color: #4f6ef2;
+  flex-shrink: 0;
+}
+.mem-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+.mem-kind {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(79, 110, 242, 0.12);
+  color: #4f6ef2;
+  font-size: 11px;
+}
+.mem-topic {
+  font-size: 11px;
+  color: #6b7280;
+  max-width: 40%;
+}
+.mem-card-body {
+  margin: 6px 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f2937;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mem-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .tool-card {
   border: 1px solid #e5e7eb;

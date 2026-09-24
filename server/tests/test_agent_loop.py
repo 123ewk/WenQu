@@ -89,7 +89,15 @@ class Collector:
         return [t for t, _p in self.events]
 
 
-def _run(chat, search, stop: threading.Event | None = None, max_rounds: int = 20, **kwargs):
+def _run(
+    chat,
+    search,
+    stop: threading.Event | None = None,
+    max_rounds: int = 20,
+    memories: list[str] | None = None,
+    summary: str | None = None,
+    **kwargs,
+):
     events = Collector()
     runner = AgentRunner(
         chat=chat,
@@ -99,7 +107,10 @@ def _run(chat, search, stop: threading.Event | None = None, max_rounds: int = 20
         max_rounds=max_rounds,
         **kwargs,
     )
-    return runner.run(_ctx(), "报销上限是多少?", []), events
+    return (
+        runner.run(_ctx(), "报销上限是多少?", [], memories=memories, summary=summary),
+        events,
+    )
 
 
 def test_happy_path_tool_round_then_streamed_answer() -> None:
@@ -278,3 +289,102 @@ def test_total_budget_skips_execution_and_guides_answer() -> None:
     assert len(search_calls) == 1  # 只有第一次真正执行
     exhausted = [p for t, p in events.events if t == "tool_result" and "预算已用尽" in p["output"]]
     assert len(exhausted) == 2  # c1/c2 被预算拦截
+
+
+# ---------------------------- OPT-45 P2:记忆召回注入 Agent 系统段 ----------------------------
+
+
+def test_memories_injected_as_extra_system_block() -> None:
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]), memories=["用户确认:A 方案已上线"])
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert any(
+        "已确认相关记忆" in m["content"] and "A 方案已上线" in m["content"]
+        for m in system_msgs
+    )
+
+
+def test_no_memories_keeps_single_system_message() -> None:
+    """空召回(None)与不传一致:仍只有一条基础 system,不注入记忆块。"""
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]))
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert len(system_msgs) == 1
+    assert "已确认相关记忆" not in system_msgs[0]["content"]
+
+
+def test_summary_injected_as_extra_system_block() -> None:
+    """前情摘要(OPT-45 P3):有摘要才追加独立 system 段,无摘要不注入。"""
+    chat = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat, _search([]), summary="更早讨论了预算口径")
+    first_round = chat.received[0]["messages"]
+    system_msgs = [m for m in first_round if m["role"] == "system"]
+    assert any(
+        "前情摘要" in m["content"] and "更早讨论了预算口径" in m["content"]
+        for m in system_msgs
+    )
+
+    chat2 = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
+    _run(chat2, _search([]))
+    assert not any("前情摘要" in m["content"] for m in chat2.received[0]["messages"])
+
+
+# ---------------------------- OPT-45 P2:记忆提议事件与护栏 ----------------------------
+
+
+def _propose_call(content: str, id: str = "p0") -> ToolCallRequest:
+    import json as _json
+
+    return _call(
+        name="propose_memory", args=_json.dumps({"content": content, "kind": "fact"}), id=id
+    )
+
+
+def _proposals(events: Collector) -> list[dict]:
+    return [p for t, p in events.events if t == "memory_proposal"]
+
+
+def test_propose_memory_emits_event_without_persisting() -> None:
+    chat = ScriptedAgentChat(
+        tool_rounds=[([], [_propose_call("上线日期是 8 月")]), ([], [])],
+        answer_pieces=["已记录提议"],
+    )
+    _outcome, events = _run(chat, _search([]))
+    proposals = _proposals(events)
+    assert len(proposals) == 1
+    payload = proposals[0]
+    assert payload["content"] == "上线日期是 8 月"
+    assert payload["proposal_id"] and len(payload["content_hash"]) == 64
+    assert payload["source"] == {"conversation_id": None, "message_id": None}
+    # 提议走 tool_call/tool_result(它是一次工具调用),但不产生检索/落库
+    assert "tool_call" in events.types() and events.types().count("memory_proposal") == 1
+
+
+def test_proposal_cap_drops_excess_over_max_per_turn() -> None:
+    """超过每轮上限的提议被丢弃,只弹 max_proposals 条(护栏)。"""
+    chat = ScriptedAgentChat(
+        tool_rounds=[
+            ([], [_propose_call("甲", id="p0")]),
+            ([], [_propose_call("乙", id="p1")]),
+            ([], []),
+        ],
+        answer_pieces=["答"],
+    )
+    _outcome, events = _run(chat, _search([]), max_proposals=1)
+    assert len(_proposals(events)) == 1
+
+
+def test_dismissed_content_hash_is_skipped() -> None:
+    """命中未过期 dismissed 内容的提议不再弹(P2c 会真查库注入哈希集合)。"""
+    from app.application.service.memory import memory_content_hash
+
+    chat = ScriptedAgentChat(
+        tool_rounds=[([], [_propose_call("别再提这条")]), ([], [])],
+        answer_pieces=["答"],
+    )
+    _outcome, events = _run(
+        chat, _search([]), dismissed_hashes=frozenset({memory_content_hash("别再提这条")})
+    )
+    assert _proposals(events) == []

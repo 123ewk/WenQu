@@ -331,6 +331,10 @@ class Message(Base):
     # OPT-29:当轮窗口使用快照(仅 assistant 行;老行与 user 行恒 NULL)
     context_used_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # OPT-45 P-cache:当轮缓存命中快照(cached/prompt),仅上游回报了 cached 才写,否则两列 NULL
+    # = "当前模型暂不支持缓存命中统计";与窗口快照同为"存当轮结果不现算"
+    context_cached_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    context_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -647,3 +651,68 @@ class TokenUsageEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Memory(Base):
+    """外部事实记忆(OPT-45):用户在某空间内跨会话沉淀的决策/事实性结论。
+
+    归属 = (space_id, user_id) 双维度:仓储一切读写强制带这对谓词,跨用户/跨空间一律不可见。
+    embedding 走空间层 key,与 chunks 同维度(1024),供向量相关性召回。
+    source_* 为溯源列:来源会话被删(SET NULL)不影响记忆本身。
+    """
+
+    __tablename__ = "memories"
+    __table_args__ = (Index("ix_memories_space_user", "space_id", "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="fact", server_default="fact")
+    content: Mapped[str] = mapped_column(Text)
+    topic: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MemoryProposal(Base):
+    """被用户"忽略"过的记忆提议留痕(OPT-45 P2):仅用于去重再提议,不落记忆本体。
+
+    表内每行 = 一条 dismissed 记录(不设 status 列)。命中未过期的 content_hash 时,
+    Agent 不再就同一结论弹卡片,避免反复骚扰;确认过的走 memories 内容去重。
+    归属同 memories:(space_id, user_id) 双维度隔离。
+    """
+
+    __tablename__ = "memory_proposals"
+    __table_args__ = (
+        Index("ix_mprops_lookup", "space_id", "user_id", "content_hash", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16), default="fact", server_default="fact")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

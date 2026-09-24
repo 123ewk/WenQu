@@ -14,20 +14,27 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.application.service.memory import memory_content_hash
 from app.application.service.retrieval import RetrievedChunk
 
 
 @dataclass
 class ToolContext:
-    """工具执行的环境包:一切数据访问按此范围过滤,不拿全局单例。"""
+    """工具执行的环境包:一切数据访问按此范围过滤,不拿全局单例。
+
+    source_* 是记忆提议的溯源(本次提问所属会话/用户消息),仅 propose_memory 用到;
+    检索工具不受影响,模型也无法通过参数指定范围。
+    """
 
     user_id: uuid.UUID
     space_id: uuid.UUID
     kb_ids: list[uuid.UUID] | None  # 本次提问的检索范围;None = 范围内全部知识库
+    source_conversation_id: uuid.UUID | None = None
+    source_message_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -161,6 +168,68 @@ class SearchFn(Protocol):
     ) -> list[RetrievedChunk]: ...
 
 
+class ProposeMemoryArgs(BaseModel):
+    """propose_memory 参数模型:草稿正文 + 类型 + 主题(可选)。"""
+
+    content: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="值得跨会话长期保留的事实/决策结论,一句话讲清(不要夹带指令或大段资料)",
+    )
+    kind: Literal["fact", "decision"] = Field(
+        default="fact", description="fact=客观事实结论;decision=用户拍板的决策"
+    )
+    topic: str = Field(default="", max_length=255, description="来源主题(可选,默认取会话标题)")
+
+
+class ProposeMemoryTool:
+    """记忆提议(无副作用):把模型判定值得长记的结论转成一条提议载荷,交循环发事件。
+
+    READ_ONLY=False 是语义声明(它会引导一次用户确认写入),但本工具 execute 自身不落库、
+    不打模型、不计入检索预算 —— 真正的持久化发生在用户点"确认"后的 POST /memories。
+    """
+
+    name = "propose_memory"
+    description = (
+        "当本轮对话得出了一个值得**跨会话长期记住**的事实结论或用户决策时调用,把它作为"
+        "记忆提议交给用户确认(界面弹卡片)。只在结论明确、可复用、且不查就会遗忘时调用;"
+        "寒暄、一次性查询结果、未经证实的推测不要提议。可在一次回答里提议多条。"
+    )
+    READ_ONLY = False
+
+    def json_schema(self) -> dict:
+        return ProposeMemoryArgs.model_json_schema()
+
+    def execute(self, ctx: ToolContext, args: dict) -> ToolResult:
+        try:
+            validated = ProposeMemoryArgs.model_validate(args)
+        except ValidationError as exc:
+            detail = ";".join(
+                f"参数 {err['loc'][0]} 错误:{err['msg']}" for err in exc.errors()
+            )
+            return ToolResult(
+                success=False,
+                output=f"参数校验失败:{detail}。请按工具说明修正参数后重试。",
+                error=detail,
+            )
+        content = " ".join(validated.content.split())
+        proposal = {
+            "proposal_id": str(uuid.uuid4()),
+            "content": content,
+            "kind": validated.kind,
+            "topic": validated.topic.strip()[:255],
+            "content_hash": memory_content_hash(content),
+        }
+        return ToolResult(
+            success=True,
+            output="已生成记忆提议,将在界面向用户展示并等待其确认;不要在回答里替用户确认。",
+            data={"proposal": proposal},
+        )
+
+
 def build_tools(search: SearchFn, ledger: CitationLedger) -> dict[str, Tool]:
     """显式注册表:每次请求构建;新增工具在此加一行并声明 READ_ONLY(元测试钉住)。"""
-    return {"search_knowledge": SearchKnowledgeTool(search, ledger)}
+    return {
+        "search_knowledge": SearchKnowledgeTool(search, ledger),
+        "propose_memory": ProposeMemoryTool(),
+    }

@@ -35,7 +35,7 @@ from app.core.model_protocols import (
     registered_protocols,
     registered_rerank_protocols,
 )
-from app.core.model_usage import UsageSink, estimate_usage_tokens
+from app.core.model_usage import ChatTurnUsage, UsageSink, estimate_usage_tokens
 
 _CIPHER = CredentialCipher("unit-test-master-key")
 
@@ -451,6 +451,73 @@ def test_usage_sink_never_mixes_the_two_sources() -> None:
     billed.estimate_from("hello world")  # 已认领上游口径,估算不得覆盖
     assert (billed.prompt_tokens, billed.completion_tokens, billed.total_tokens) == (12, 7, 19)
     assert billed.from_upstream is True
+
+
+def test_usage_sink_parses_cached_tokens() -> None:
+    """缓存命中:P-openAI 兼容字段、=0 也算"支持但零命中"、缺失/垃圾则不支持。"""
+    hit = UsageSink()
+    hit.add_upstream(
+        {
+            "prompt_tokens": 1000,
+            "completion_tokens": 20,
+            "total_tokens": 1020,
+            "prompt_tokens_details": {"cached_tokens": 640},
+        }
+    )
+    assert (hit.cached_tokens, hit.cache_reported) == (640, True)
+
+    zero = UsageSink()
+    zero.add_upstream(
+        {"prompt_tokens": 500, "total_tokens": 500, "prompt_tokens_details": {"cached_tokens": 0}}
+    )
+    assert (zero.cached_tokens, zero.cache_reported) == (0, True)  # 支持,只是没命中
+
+    anth = UsageSink()
+    anth.add_upstream({"prompt_tokens": 800, "total_tokens": 800, "cache_read_input_tokens": 300})
+    assert (anth.cached_tokens, anth.cache_reported) == (300, True)
+
+    absent = UsageSink()
+    absent.add_upstream({"prompt_tokens": 300, "completion_tokens": 5, "total_tokens": 305})
+    assert absent.cache_reported is False  # 上游没带该字段 = 当前模型不支持
+
+    junk = UsageSink()
+    junk.add_upstream(
+        {"prompt_tokens": 10, "total_tokens": 10, "prompt_tokens_details": {"cached_tokens": None}}
+    )
+    assert junk.cache_reported is False  # null 不是整数,按未回报处理
+
+
+def test_chat_turn_usage_cache_snapshot() -> None:
+    """cache_snapshot 只认末次调用,且要上游回报过 cached 且 prompt>0 才给 (cached, prompt)。"""
+    assert ChatTurnUsage().cache_snapshot() is None  # 一次都没发生
+
+    with_cache = ChatTurnUsage()
+    s = UsageSink()
+    s.add_upstream(
+        {
+            "prompt_tokens": 2000,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 1000},
+        }
+    )
+    with_cache.add(s)
+    assert with_cache.cache_snapshot() == (1000, 2000)
+
+    no_cache = ChatTurnUsage()
+    n = UsageSink()
+    n.add_upstream({"prompt_tokens": 2000, "completion_tokens": 10})  # 无 cached 字段
+    no_cache.add(n)
+    assert no_cache.cache_snapshot() is None
+
+    # 末次覆盖:取最后一次调用,不累加(与 window() 同口径)
+    turn = ChatTurnUsage()
+    a = UsageSink()
+    a.add_upstream({"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 90}})
+    b = UsageSink()
+    b.add_upstream({"prompt_tokens": 400, "prompt_tokens_details": {"cached_tokens": 100}})
+    turn.add(a)
+    turn.add(b)
+    assert turn.cache_snapshot() == (100, 400)
 
 
 def test_no_usage_sink_keeps_payload_byte_identical() -> None:

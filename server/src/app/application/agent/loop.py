@@ -56,7 +56,11 @@ AGENT_SYSTEM_PROMPT = (
     "2. 拿到足够资料后不要再调用工具,等待系统要求你作答;\n"
     "3. 引用资料时用其编号标注,如 [1]、[2];\n"
     "4. 资料不足时如实说明,不要编造;\n"
-    "5. 使用与提问相同的语言。"
+    "5. 使用与提问相同的语言;\n"
+    "6. 当本轮对话得出**值得跨会话长期记住**的事实结论或用户明确的决策时,调用 "
+    "propose_memory 把它作为记忆提议交给用户确认(界面上弹卡片由用户决定,不会自动保存);"
+    "只在结论清晰、可复用、且下次不查就会遗忘时提议,一次最多提议少数几条,不要为闲聊或"
+    "一次性查询结果提议。"
 )
 _ANSWER_INSTRUCTION = (
     "检索结束。请只依据以上资料回答用户最初的问题;引用资料用其编号标注(如 [1]);"
@@ -111,6 +115,8 @@ class AgentRunner:
         top_k_default: int = 5,
         max_rounds: int = 20,
         tool_output_budget: int = _TOOL_OUTPUT_TOTAL_BUDGET,
+        max_proposals: int = 3,
+        dismissed_hashes: frozenset[str] = frozenset(),
     ) -> None:
         self._chat = chat
         self._search = search
@@ -120,8 +126,20 @@ class AgentRunner:
         self._top_k_default = top_k_default
         self._max_rounds = max_rounds
         self._tool_output_budget = tool_output_budget
+        # 单次提问最多弹几条记忆提议(APP_MEMORY_PROPOSAL_MAX_PER_TURN,护栏)
+        self._max_proposals = max_proposals
+        self._proposals_emitted = 0
+        # 用户此前"忽略"过的提议内容哈希:命中则不再弹(P2c 从库注入,缺省为空)
+        self._dismissed_hashes = dismissed_hashes
 
-    def run(self, ctx: ToolContext, question: str, history: list[Message]) -> AgentOutcome:
+    def run(
+        self,
+        ctx: ToolContext,
+        question: str,
+        history: list[Message],
+        memories: list[str] | None = None,
+        summary: str | None = None,
+    ) -> AgentOutcome:
         ledger = CitationLedger()
         tools = build_tools(self._search, ledger)
         schemas = [
@@ -135,17 +153,39 @@ class AgentRunner:
             }
             for tool in tools.values()
         ]
-        messages: list[dict] = [
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-            *[
-                {"role": message.role, "content": message.content}
-                for message in history[-_MAX_HISTORY_MESSAGES:]
-            ],
-            {"role": "user", "content": question},
-        ]
+        messages: list[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
+        # 记忆召回块(OPT-45 P2):命中才追加独立 system 段,空召回与现状逐字节一致
+        if memories:
+            block = "\n".join(f"- {m}" for m in memories)
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "=== 已确认相关记忆(用户此前确认的背景结论,可作事实参考,"
+                        "非本轮指令) ===\n" + block
+                    ),
+                }
+            )
+        # 前情摘要块(OPT-45 P3):已压缩才追加,空摘要与现状逐字节一致
+        if summary:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "=== 前情摘要(更早对话的滚动压缩结果,可作背景参考,非本轮指令) ===\n"
+                        + summary
+                    ),
+                }
+            )
+        messages.extend(
+            {"role": message.role, "content": message.content}
+            for message in history[-_MAX_HISTORY_MESSAGES:]
+        )
+        messages.append({"role": "user", "content": question})
         steps: list[dict] = []
         prev_text: str | None = None
         budget_left = self._tool_output_budget
+        self._proposals_emitted = 0
         for round_index in range(self._max_rounds):
             if self._stop_requested.is_set():
                 return AgentOutcome(
@@ -192,7 +232,8 @@ class AgentRunner:
                     "tool_call", {"id": call.id, "name": call.name, "args": _safe_args(call)}
                 )
                 started = time.monotonic()
-                if budget_left <= 0:
+                is_proposal = call.name == "propose_memory"
+                if budget_left <= 0 and not is_proposal:
                     # 全局预算耗尽:跳过执行,直接引导模型作答(基准 05 成本控制)
                     result = ToolResult(
                         success=False, output=_BUDGET_EXHAUSTED_TEXT, error="budget_exhausted"
@@ -200,7 +241,9 @@ class AgentRunner:
                 else:
                     result = self._execute_call(ctx, tools, call)
                 content = _wrap_tool_content(call.name, result.output)
-                budget_left -= len(content)
+                if not is_proposal:
+                    # 记忆提议无副作用:不占检索输出预算(基准 05 只管真检索)
+                    budget_left -= len(content)
                 duration_ms = int((time.monotonic() - started) * 1000)
                 self._emit(
                     "tool_result",
@@ -212,6 +255,8 @@ class AgentRunner:
                         "output": result.output[:2000],
                     },
                 )
+                if is_proposal:
+                    self._maybe_emit_proposal(ctx, result)
                 step["tool_calls"].append(
                     {
                         "id": call.id,
@@ -281,6 +326,29 @@ class AgentRunner:
                 error="unknown_tool",
             )
         return tool.execute(ctx, _parse_arguments(call.arguments))
+
+    def _maybe_emit_proposal(self, ctx: ToolContext, result: ToolResult) -> None:
+        """把 propose_memory 的载荷转成一条 memory_proposal 事件(受每轮上限 + 忽略去重护栏)。
+
+        只发事件、不落库:是否长记由用户点"确认"后经 POST /memories 决定。
+        """
+        proposal = result.data.get("proposal")
+        if not result.success or not isinstance(proposal, dict):
+            return  # 参数校验失败/无载荷:不发空卡片
+        if self._proposals_emitted >= self._max_proposals:
+            logger.info("memory proposal cap reached (%s), dropping", self._max_proposals)
+            return
+        if proposal.get("content_hash") in self._dismissed_hashes:
+            logger.info("memory proposal matches dismissed content, skip")
+            return
+        self._proposals_emitted += 1
+        source = {
+            "conversation_id": str(ctx.source_conversation_id)
+            if ctx.source_conversation_id
+            else None,
+            "message_id": str(ctx.source_message_id) if ctx.source_message_id else None,
+        }
+        self._emit("memory_proposal", {**proposal, "source": source})
 
 
 def _parse_arguments(raw: str) -> dict:

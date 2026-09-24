@@ -33,8 +33,17 @@ from app.application.repository.knowledge import (
     DocumentRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.memories import MemoryRepositoryImpl
+from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
+from app.application.service.compaction import (
+    CompactionService,
+    CompactResult,
+    assemble_history,
+    read_summary,
+)
+from app.application.service.memory import MemoryService
 from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
     GenerationState,
@@ -44,6 +53,7 @@ from app.application.service.qa_pipeline import (
 )
 from app.application.service.retrieval import RetrievalService, RetrievedChunk
 from app.application.streaming import GenerationHandle, StreamSupervisor
+from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
 from app.core.event_log import EventLog, MemoryEventLog
 from app.core.model_usage import ChatTurnUsage
@@ -77,6 +87,47 @@ class _AskContext:
     top_k: int
     model_id: str | None
     agent: bool = False  # OPT-10:true = ReAct 工具循环(检索成为模型可调用的工具)
+
+
+def _last_context_usage(history: Sequence[Message]) -> tuple[int, int] | None:
+    """取最近一条带齐 OPT-29 双快照(used+window)的 assistant 消息,作占用估算依据。"""
+    for message in reversed(history):
+        if (
+            message.role == "assistant"
+            and message.context_used_tokens is not None
+            and message.context_window_tokens is not None
+        ):
+            return message.context_used_tokens, message.context_window_tokens
+    return None
+
+
+def _last_cache_usage(history: Sequence[Message]) -> tuple[int, int] | None:
+    """取最近一条带缓存快照(cached+prompt 都非空)的 assistant 消息 → (cached, prompt)。
+
+    与窗口快照独立:模型可能回了 cached 却没配窗口,或配了窗口却没回 cached。都缺则 None,
+    前端据此显示"当前模型暂不支持缓存命中统计"。
+    """
+    for message in reversed(history):
+        if (
+            message.role == "assistant"
+            and message.context_cached_tokens is not None
+            and message.context_prompt_tokens is not None
+        ):
+            return message.context_cached_tokens, message.context_prompt_tokens
+    return None
+
+
+@dataclass
+class ContextSnapshot:
+    """上下文悬浮窗读数(OPT-45 P4/P-cache):进度条 + 压缩可行性 + 缓存命中率。"""
+
+    used_tokens: int | None
+    window_tokens: int | None
+    compressible_messages: int
+    can_compress: bool
+    has_summary: bool
+    cache_supported: bool
+    cache_hit_rate: float | None
 
 
 class BackgroundDb:
@@ -135,6 +186,32 @@ class BackgroundDb:
                 kb_ids=ctx.kb_ids,
             )
 
+    def _memory_service(self, db: Session) -> MemoryService:
+        return MemoryService(
+            MemoryRepositoryImpl(db),
+            SpaceRepositoryImpl(db),
+            self._embedder,
+            get_settings(),
+            MemoryProposalRepositoryImpl(db),
+        )
+
+    def recall_memories(self, ctx: _AskContext) -> list[str]:
+        """记忆召回(OPT-45 P2):泵线程自开会话,按 (space,user) 向量召回本人本空间记忆。
+
+        MemoryService.recall 内部已受 APP_MEMORY_ENABLED 与相似度阈值控制,关闭或空命中
+        直接返回 [] —— 与"无记忆"逐事件等价,绝不阻断问答。
+        """
+        with self._session_factory() as db:
+            service = self._memory_service(db)
+            return [
+                m.content for m in service.recall(ctx.space_id, ctx.user_id, ctx.question)
+            ]
+
+    def dismissed_hashes(self, ctx: _AskContext) -> frozenset[str]:
+        """本人本空间未过期的"忽略过"提议哈希(P2c):Agent 弹卡前据此跳过。"""
+        with self._session_factory() as db:
+            return self._memory_service(db).dismissed_hashes(ctx.space_id, ctx.user_id)
+
     def save_message(self, message: Message) -> Message:
         with self._session_factory() as db:
             messages = MessageRepositoryImpl(db)
@@ -160,6 +237,7 @@ class QAService:
         pipeline: Sequence[str] | None = None,
         agent_max_rounds: int = 20,
         turn_usage: ChatTurnUsage | None = None,
+        recall: Callable[[_AskContext], list[str]] | None = None,
     ) -> None:
         self._conversations = conversations
         self._messages = messages
@@ -172,6 +250,8 @@ class QAService:
         self._event_log = event_log if event_log is not None else MemoryEventLog()
         self._supervisor = supervisor if supervisor is not None else StreamSupervisor()
         self._background_db = background_db
+        # 记忆召回协作者(非泵线程路径/单测注入);泵线程优先走 BackgroundDb.recall_memories
+        self._recall = recall
         # 流水线插件链(OPT-5):默认序 = M2 硬编码直调的行为;可按名重组
         self._pipeline = Pipeline(
             build_stages(
@@ -179,6 +259,8 @@ class QAService:
                 search=self._search,
                 persist=self._persist_assistant,
                 chat=chat,
+                recall=self._recall_memories,
+                context=self._compose_context,
             )
         )
         self._agent_max_rounds = agent_max_rounds  # Agent 工具循环轮数上限(OPT-10)
@@ -202,6 +284,61 @@ class QAService:
     ) -> list[Message]:
         conversation = self._get_conversation(user_id, space_id, conversation_id)
         return self._messages.list_for_conversation(conversation.id)
+
+    def compress_conversation(
+        self,
+        user_id: uuid.UUID,
+        space_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        model_id: str | None = None,
+    ) -> CompactResult:
+        """手动压缩会话历史(OPT-45 P3):滚动摘要写回 meta,原文不动。
+
+        复用 _get_conversation 的归属校验(他人/他空间一律 404 防枚举);同步执行,
+        走请求会话的仓储即可(不经泵线程)。
+        """
+        conversation = self._get_conversation(user_id, space_id, conversation_id)
+        service = CompactionService(
+            self._conversations, self._messages, self._chat.chat_stream, get_settings()
+        )
+        return service.compress(conversation, model_id)
+
+    def get_context_snapshot(
+        self, user_id: uuid.UUID, space_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> ContextSnapshot:
+        """悬浮窗读数:占用快照(复用 OPT-29)+ 还能折几条 + 能否压缩 + 缓存命中率(P-cache)。
+
+        used/window 取上一条带齐快照的 assistant;都没有则 null(首问/未打模型)。
+        can_compress 与手动端点同门槛:开启压缩 ∧ 压缩点后候选 ≥ min_messages ∧ 有可折叠项。
+        cache_hit_rate = cached/prompt(上一条回报了 cached 的 assistant);模型不支持则
+        cache_supported=False、rate=None,前端显示"当前模型暂不支持缓存命中统计"。
+        """
+        conversation = self._get_conversation(user_id, space_id, conversation_id)
+        history = self._messages.list_for_conversation(conversation.id)
+        estimate = _last_context_usage(history)
+        cache = _last_cache_usage(history)
+        settings = get_settings()
+        _, through = read_summary(conversation.meta)
+        candidates = [m for m in history if m.seq > through]
+        foldable = max(0, len(candidates) - settings.compact_keep_recent)
+        can_compress = (
+            settings.compact_enabled
+            and len(candidates) >= settings.compact_min_messages
+            and foldable > 0
+        )
+        cache_supported = cache is not None and cache[1] > 0
+        cache_hit_rate = (
+            round(cache[0] / cache[1], 3) if cache is not None and cache[1] > 0 else None
+        )
+        return ContextSnapshot(
+            used_tokens=None if estimate is None else estimate[0],
+            window_tokens=None if estimate is None else estimate[1],
+            compressible_messages=foldable,
+            can_compress=can_compress,
+            has_summary=through > 0,
+            cache_supported=cache_supported,
+            cache_hit_rate=cache_hit_rate,
+        )
 
     def rename_conversation(
         self,
@@ -276,6 +413,11 @@ class QAService:
         # 事务里此刻只有本次写入,提前提交无副作用。
         if self._db is not None:
             self._db.commit()
+        # 生成前自动兜底(OPT-45 P3):上一轮上下文占用逼近窗口上限时,先同步压缩再作答,
+        # 这一问略慢但绝不超限。改的是内存里的 ctx.conversation.meta,泵直接读得到。
+        self._maybe_auto_compact(ctx)
+        if self._db is not None:
+            self._db.commit()
         handle = self._supervisor.start(conversation.id)
         threading.Thread(
             target=self._generate, args=(handle, ctx), daemon=True, name="qa-generate"
@@ -348,6 +490,11 @@ class QAService:
         def emit(event_type: str, payload: dict) -> None:
             self._event_log.append(sid, event_type, payload)
 
+        memories = self._recall_memories(ctx)
+        summary, recent_history = self._compose_context(ctx)
+        settings = get_settings()
+        # 记忆总开关关掉时 max_proposals=0 → 循环不再弹任何提议卡片(工具仍无副作用)
+        max_proposals = settings.memory_proposal_max_per_turn if settings.memory_enabled else 0
         outcome = AgentRunner(
             chat=self._chat,
             search=self._agent_search(ctx),
@@ -356,10 +503,20 @@ class QAService:
             model_id=ctx.model_id,
             top_k_default=ctx.top_k,
             max_rounds=self._agent_max_rounds,
+            max_proposals=max_proposals,
+            dismissed_hashes=self._dismissed_hashes(ctx),
         ).run(
-            ToolContext(user_id=ctx.user_id, space_id=ctx.space_id, kb_ids=ctx.kb_ids),
+            ToolContext(
+                user_id=ctx.user_id,
+                space_id=ctx.space_id,
+                kb_ids=ctx.kb_ids,
+                source_conversation_id=ctx.conversation.id,
+                source_message_id=ctx.user_message_id,
+            ),
             ctx.question,
-            ctx.history,
+            recent_history,
+            memories=memories,
+            summary=summary,
         )
         if outcome.error is not None:
             self._event_log.append(sid, "error", {"message": outcome.error})
@@ -440,6 +597,68 @@ class QAService:
             model_id=ctx.model_id,
         )
 
+    def _recall_memories(self, ctx: _AskContext) -> list[str]:
+        """记忆召回(两条路径共用):泵线程用 BackgroundDb 自开会话,否则用注入协作者。
+
+        未注入(单测/无记忆底座)返回 [] —— 与"无记忆"逐事件等价。召回失败绝不冒泡:
+        它是增益不是必需路径,吞异常回退空记忆(直检路径另有 RecallMemoryStage 兜底)。
+        """
+        try:
+            if self._background_db is not None:
+                return self._background_db.recall_memories(ctx)
+            if self._recall is not None:
+                return self._recall(ctx)
+        except Exception:  # noqa: BLE001 — 记忆召回失败只降级,不中断问答
+            logger.exception("memory recall failed, degrade to no-memory")
+        return []
+
+    def _dismissed_hashes(self, ctx: _AskContext) -> frozenset[str]:
+        """未过期的被忽略提议哈希(Agent 弹卡去重):仅泵线程路径查库,失败即回退空集。"""
+        try:
+            if self._background_db is not None:
+                return self._background_db.dismissed_hashes(ctx)
+        except Exception:  # noqa: BLE001 — 去重是增益,查不到就不跳过
+            logger.exception("dismissed lookup failed, degrade to none")
+        return frozenset()
+
+    def _compose_context(self, ctx: _AskContext) -> tuple[str | None, list[Message]]:
+        """上下文选取(OPT-45 P3):按会话 meta 的滚动摘要决定"摘要 + 最近原文"。
+
+        纯读、无副作用:未压缩或压缩关闭时返回 (None, history[-10:]),与旧硬截断逐元素一致;
+        已有摘要时返回 (摘要正文, 压缩点之后的最近 keep_recent 条原文)。摘要块由装配处拼入。
+        """
+        settings = get_settings()
+        return assemble_history(
+            ctx.history,
+            ctx.conversation.meta,
+            enabled=settings.compact_enabled,
+            keep_recent=settings.compact_keep_recent,
+        )
+
+    def _maybe_auto_compact(self, ctx: _AskContext) -> None:
+        """生成前同步兜底压缩(OPT-45 P3):占用比 ≥ 阈值才压,仅这一次额外模型调用。
+
+        占用估算复用 OPT-29 落库的上一轮快照(最后一条带齐双值的 assistant 消息),
+        不引第三方分词器;窗口未知(window 为 NULL)则跳过 —— 宁可不压也不误判超限。
+        压缩失败绝不阻断问答:吞异常,交由后续 compose 用(可能仍偏长但可运行的)上下文。
+        """
+        settings = get_settings()
+        if not settings.compact_enabled:
+            return
+        estimate = _last_context_usage(ctx.history)
+        if estimate is None:
+            return
+        used, window = estimate
+        if window <= 0 or used / window < settings.compact_trigger_ratio:
+            return
+        try:
+            service = CompactionService(
+                self._conversations, self._messages, self._chat.chat_stream, settings
+            )
+            service.compress(ctx.conversation, ctx.model_id)
+        except Exception:  # noqa: BLE001 — 兜底压缩是增益,失败只回退不压缩的旧装配
+            logger.exception("auto-compaction failed before generate, continue uncompacted")
+
     def _persist_assistant(
         self,
         ctx: _AskContext,
@@ -453,7 +672,10 @@ class QAService:
         """落库 assistant 消息(完整答案或宽限截止的部分答案;agent 模式附工具轨迹)。
 
         两列窗口值是**本轮快照**(OPT-29),由调用方从计量外壳取;没打模型则留 null。
+        缓存命中快照(OPT-45 P-cache)同样从外壳末次调用读,只在上游回报 cached 时写两列,
+        不进 SSE —— 悬浮窗刷新时经 GET /context 读回即可。
         """
+        cache = self._turn_usage.cache_snapshot() if self._turn_usage is not None else None
         message = Message(
             conversation_id=ctx.conversation.id,
             space_id=ctx.space_id,
@@ -464,6 +686,8 @@ class QAService:
             agent_steps=agent_steps,
             context_used_tokens=context_used_tokens,
             context_window_tokens=context_window_tokens,
+            context_cached_tokens=None if cache is None else cache[0],
+            context_prompt_tokens=None if cache is None else cache[1],
         )
         if self._background_db is not None:
             return self._background_db.save_message(message)

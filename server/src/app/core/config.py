@@ -57,12 +57,36 @@ class Settings(BaseSettings):
     # 事件日志空闲 TTL:已完成且空闲超过该时长的流会被清道夫回收
     stream_log_ttl_seconds: float = Field(3600.0, validation_alias="APP_STREAM_LOG_TTL")
     # 问答流水线阶段序(OPT-5):逗号分隔,未知名/空值启动即失败(fail-closed)
+    # OPT-45 P2 起在 compose 前插 recall_memory(记忆召回);删掉该阶段即退回"无记忆注入"旧链
     qa_pipeline: str = Field(
-        "retrieve,cite,fallback,compose,generate,persist",
+        "retrieve,cite,fallback,recall_memory,compose,generate,persist",
         validation_alias="APP_QA_PIPELINE",
     )
     # Agent 工具循环轮数上限(OPT-10);复读/预算护栏另在循环内固定
     agent_max_rounds: int = Field(20, validation_alias="APP_AGENT_MAX_ITERATIONS")
+
+    # ---- 外部事实记忆与上下文压缩(OPT-45) ----
+    memory_enabled: bool = Field(True, validation_alias="APP_MEMORY_ENABLED")
+    memory_recall_top_k: int = Field(5, validation_alias="APP_MEMORY_RECALL_TOP_K")
+    # 召回相似度阈值:低于此值的记忆不注入,防噪声记忆污染上下文
+    memory_recall_min_sim: float = Field(0.30, validation_alias="APP_MEMORY_RECALL_MIN_SIM")
+    # 单次 Agent 提问最多弹几条记忆提议(护栏,超出丢弃并记日志)
+    memory_proposal_max_per_turn: int = Field(
+        3, validation_alias="APP_MEMORY_PROPOSAL_MAX_PER_TURN"
+    )
+    # "忽略"留痕的去重窗口(天):命中未过期 dismissed 内容则不再弹同一提议
+    memory_proposal_dismiss_ttl_days: int = Field(
+        7, validation_alias="APP_MEMORY_PROPOSAL_DISMISS_TTL_DAYS"
+    )
+
+    # ---- 历史滚动压缩(OPT-45 P3) ----
+    compact_enabled: bool = Field(True, validation_alias="APP_COMPACT_ENABLED")
+    # 生成前自动兜底阈值:上一轮上下文占用 > 窗口×此比例时,先同步压缩再作答
+    compact_trigger_ratio: float = Field(0.8, validation_alias="APP_COMPACT_TRIGGER_RATIO")
+    # 压缩后仍原样保留的最近消息条数(无摘要时回退"最近 10 条"旧行为)
+    compact_keep_recent: int = Field(6, validation_alias="APP_COMPACT_KEEP_RECENT")
+    # 低于此条数不压缩(太短没意义,且省一次摘要调用)
+    compact_min_messages: int = Field(8, validation_alias="APP_COMPACT_MIN_MESSAGES")
 
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")

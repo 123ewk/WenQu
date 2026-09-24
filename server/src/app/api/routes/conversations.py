@@ -31,9 +31,11 @@ from app.api.deps import (
     Caller,
     get_current_actor,
     get_current_user,
+    get_memory_service,
     get_qa_service,
 )
 from app.api.routing import CommitBeforeSendRoute
+from app.application.service.memory import MemoryService
 from app.application.service.qa import QAService
 from app.domain.models import Conversation, Message, User
 
@@ -152,6 +154,74 @@ def list_messages(
 ) -> list[MessageOut]:
     messages = service.get_conversation_messages(user.id, space_id, conversation_id)
     return [_message_out(m) for m in messages]
+
+
+class CompressRequest(BaseModel):
+    model_id: str | None = None
+
+
+class CompressOut(BaseModel):
+    compressed: bool
+    summary: str
+    summary_through_seq: int
+    reason: str = ""
+
+
+@router.post("/conversations/{conversation_id}/compress", response_model=CompressOut)
+def compress_conversation(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    body: CompressRequest,
+    user: User = Depends(get_current_user),
+    service: QAService = Depends(get_qa_service),
+) -> CompressOut:
+    """手动压缩会话历史:滚动摘要写回 meta,原文全保留;未达门槛时 compressed=false(非错误)。"""
+    result = service.compress_conversation(
+        user.id, space_id, conversation_id, model_id=body.model_id
+    )
+    return CompressOut(
+        compressed=result.compressed,
+        summary=result.summary,
+        summary_through_seq=result.summary_through_seq,
+        reason=result.reason,
+    )
+
+
+class ContextOut(BaseModel):
+    used_tokens: int | None = None
+    window_tokens: int | None = None
+    in_scope_memory_count: int
+    compressible_messages: int
+    can_compress: bool
+    has_summary: bool
+    cache_supported: bool
+    cache_hit_rate: float | None = None
+
+
+@router.get("/conversations/{conversation_id}/context", response_model=ContextOut)
+def get_conversation_context(
+    space_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    service: QAService = Depends(get_qa_service),
+    memory_service: MemoryService = Depends(get_memory_service),
+) -> ContextOut:
+    """上下文悬浮窗读数:占用/窗口、本范围记忆条数、可压缩条数、能否压缩、缓存命中率。
+
+    缓存命中率(OPT-45 P-cache)= cached/prompt,来自上一条回报了 cached 的 assistant 快照;
+    模型不支持时 cache_supported=False、cache_hit_rate=null,前端显示"当前模型暂不支持缓存命中统计"。
+    """
+    snapshot = service.get_context_snapshot(user.id, space_id, conversation_id)
+    return ContextOut(
+        used_tokens=snapshot.used_tokens,
+        window_tokens=snapshot.window_tokens,
+        in_scope_memory_count=memory_service.count(space_id, user.id),
+        compressible_messages=snapshot.compressible_messages,
+        can_compress=snapshot.can_compress,
+        has_summary=snapshot.has_summary,
+        cache_supported=snapshot.cache_supported,
+        cache_hit_rate=snapshot.cache_hit_rate,
+    )
 
 
 @router.get("/conversations/{conversation_id}/stream")

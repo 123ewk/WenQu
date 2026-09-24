@@ -565,3 +565,68 @@ def test_direct_mode_default_event_order_unchanged() -> None:
     conversation_id = uuid.UUID(events[0]["conversation_id"])
     stored = env.service.get_conversation_messages(env.user.id, env.space.id, conversation_id)
     assert stored[1].agent_steps is None  # 直检消息无轨迹
+
+
+def _seed_long_history(env, conv_id, *, used, window) -> None:
+    """塞 8 条历史,最后一条 assistant 带 OPT-29 快照(used/window 决定占用比)。"""
+    msgs = env.service._messages
+    for i in range(1, 9):
+        role = "user" if i % 2 else "assistant"
+        m = Message(
+            conversation_id=conv_id, space_id=env.space.id, role=role, content=f"h{i}", seq=i
+        )
+        if i == 8:
+            m.context_used_tokens = used
+            m.context_window_tokens = window
+        msgs.add(m)
+
+
+def test_auto_compact_fires_when_over_ratio() -> None:
+    chat = FakeChat(["旧摘要X"])
+    env = build_env(hits=[_hit("资料")], chat=chat)
+    conv = env.service.create_conversation(env.user.id, env.space.id, "长会话")
+    _seed_long_history(env, conv.id, used=90, window=100)  # 90% ≥ 阈值 80%
+
+    events = _events(
+        env.service.ask_stream(env.user.id, env.space.id, "新问题", conversation_id=conv.id)
+    )
+    assert [e["type"] for e in events][0] == "meta"
+    # 生成前那一次额外调用 = 摘要折叠提示词(排在作答之前)
+    assert "需要折叠进摘要的消息" in chat.messages[0][1]["content"]
+    # 摘要写回内存中的会话对象(泵/后续读得到)
+    assert conv.meta["summary"] == "旧摘要X"
+    # 压缩时含本轮新提问共 9 条候选,keep_recent=6 → 折叠最早的 seq 1..3
+    assert conv.meta["summary_through_seq"] == 3
+
+
+def test_auto_compact_skipped_when_under_ratio() -> None:
+    chat = FakeChat(["答案 [1]"])
+    env = build_env(hits=[_hit("资料")], chat=chat)
+    conv = env.service.create_conversation(env.user.id, env.space.id, "短会话")
+    _seed_long_history(env, conv.id, used=30, window=100)  # 30% < 阈值 → 不压
+
+    _events(env.service.ask_stream(env.user.id, env.space.id, "新问题", conversation_id=conv.id))
+    assert (conv.meta or {}).get("summary") is None
+    # 只有作答那一次模型调用,没有摘要调用
+    assert all("需要折叠进摘要的消息" not in m[1]["content"] for m in chat.messages)
+
+
+def test_auto_compact_skipped_when_window_unknown() -> None:
+    chat = FakeChat(["答案 [1]"])
+    env = build_env(hits=[_hit("资料")], chat=chat)
+    conv = env.service.create_conversation(env.user.id, env.space.id, "无窗口")
+    # 最后一条 assistant 只有 used 无 window → 估算不可用,宁可不压
+    msgs = env.service._messages
+    for i in range(1, 9):
+        role = "user" if i % 2 else "assistant"
+        m = Message(
+            conversation_id=conv.id, space_id=env.space.id, role=role, content=f"h{i}", seq=i
+        )
+        if i == 8:
+            m.context_used_tokens = 99999
+            m.context_window_tokens = None
+        msgs.add(m)
+
+    _events(env.service.ask_stream(env.user.id, env.space.id, "新问题", conversation_id=conv.id))
+    assert (conv.meta or {}).get("summary") is None
+    assert all("需要折叠进摘要的消息" not in m[1]["content"] for m in chat.messages)
