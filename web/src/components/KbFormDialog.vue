@@ -68,7 +68,12 @@ async function onSubmit() {
   >
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
       <el-form-item label="名称" prop="name" :error="serverErrors.name || undefined">
-        <el-input v-model="form.name" maxlength="64" placeholder="例如:产品手册库" />
+        <el-input
+          v-model="form.name"
+          maxlength="64"
+          placeholder="例如:产品手册库"
+          data-testid="kb-form-name"
+        />
       </el-form-item>
       <el-form-item v-if="isCreate" label="描述">
         <el-input
@@ -82,7 +87,7 @@ async function onSubmit() {
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="onSubmit">
+      <el-button type="primary" :loading="saving" data-testid="kb-form-submit" @click="onSubmit">
         {{ isCreate ? '创建' : '保存' }}
       </el-button>
     </template>

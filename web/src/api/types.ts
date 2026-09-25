@@ -726,3 +726,18 @@ export interface MemoryProposalEvent {
   content_hash: string
   source: { conversation_id: string | null; message_id: string | null }
 }
+
+/**
+ * OPT-46 演示模式状态(GET /demo/status,免登录)。
+ * enabled=false 时其余字段全为空/0;password 不在此接口(任何情况下都不会返回)。
+ * ready=演示空间的文档已全部入库完成,自动演示脚本据此决定能不能开始。
+ */
+export interface DemoStatusOut {
+  enabled: boolean
+  username: string
+  space_name: string
+  kb_name: string
+  document_total: number
+  document_ready: number
+  ready: boolean
+}

@@ -374,7 +374,7 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
           <div class="page-title">权限档位</div>
           <div class="page-sub">一档 = 一种"能做什么 + 能看哪些库";人和 API Key 共用同一份真相</div>
         </div>
-        <el-button v-if="canManage" type="primary" @click="openCreate">
+        <el-button v-if="canManage" type="primary" data-testid="group-create-open" @click="openCreate">
           <el-icon class="btn-ic"><Plus /></el-icon>新建档位
         </el-button>
       </div>
@@ -476,14 +476,24 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
     >
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="名称" required>
-          <el-input v-model="form.name" maxlength="64" placeholder="例如:只读检索-全部库" />
+          <el-input
+            v-model="form.name"
+            maxlength="64"
+            placeholder="例如:只读检索-全部库"
+            data-testid="group-name"
+          />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" maxlength="512" placeholder="给谁用、能做什么(选填)" />
         </el-form-item>
         <el-form-item label="能力">
           <el-checkbox-group v-model="form.capabilities" class="pg-caps">
-            <label v-for="opt in CAPABILITY_OPTIONS" :key="opt.value" class="pg-cap-opt">
+            <label
+              v-for="opt in CAPABILITY_OPTIONS"
+              :key="opt.value"
+              class="pg-cap-opt"
+              :data-testid="`group-cap-${opt.value}`"
+            >
               <el-checkbox :value="opt.value" />
               <span>
                 <span class="pg-cap-title">{{ capabilityLabel(opt.value) }}</span>
@@ -501,6 +511,7 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
               <span>放开本空间全部知识库(每次请求实时展开,新建的库自动在范围内)</span>
               <el-switch
                 :model-value="form.allKbs"
+                data-testid="group-all-kbs"
                 @update:model-value="(v: any) => toggleAllKbs(Boolean(v))"
               />
             </div>
@@ -538,7 +549,13 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
       </div>
       <template #footer>
         <el-button @click="formOpen = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!canSave" @click="onSave">
+        <el-button
+          type="primary"
+          :loading="saving"
+          :disabled="!canSave"
+          data-testid="group-submit"
+          @click="onSave"
+        >
           {{ editingId ? '保存' : '创建档位' }}
         </el-button>
       </template>

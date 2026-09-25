@@ -38,6 +38,21 @@ make db-migrate  # alembic upgrade head
 make server-openapi   # 改路由/模型后重导 docs/api/openapi.json(不重导会被契约门禁拦下)
 ```
 
+### 一键演示(OPT-46)
+
+给面试官/观众看时,不用手工点一遍 —— 数据提前种好,页面用真浏览器自动走。
+
+```bash
+make demo-seed      # 播种:demo 账号 + 演示空间 + 22 篇已入库文档 + 3 条记忆(幂等,可重跑)
+make demo-browser   # 装一次浏览器内核(playwright chromium,约 150MB)
+make demo-run ARGS="--headed -n 6"   # 自动演示:登录→建空间→建档位→签 Key→看库→提问,截图进 demo-out/
+make demo-seed-purge  # 收回演示空间(演示账号保留)
+```
+
+前提是服务端 `APP_DEMO_MODE=1` 且 `APP_DEMO_PASSWORD` 已设、server/worker/parser 在跑;
+对着生产播种与演示时加 `WENQU_BASE_URL=http://<站点>`。完整步骤与故障对照见
+[docs/上线手册.md](docs/上线手册.md) §9,设计口径见 [docs/设计-OPT46-演示模式.md](docs/设计-OPT46-演示模式.md)。
+
 ## 工程纪律(摘要,完整见设计文档)
 
 - 依赖:宽声明 + 锁安装(`uv sync --locked` / `npm ci`),lockfile 必须提交
@@ -56,8 +71,8 @@ make server-openapi   # 改路由/模型后重导 docs/api/openapi.json(不重�
 - [x] M3 体验与治理(父子分块/插件链化/API Key/契约测试扩面;另含凭据加密与断线续流,均提前交付)
 - [x] M4 Agent 与上线(ReAct 工具链与 `tool_call`/`tool_result` 事件;Go-Live 14 项翻转 + 备份恢复演练
       + 冒烟七条脚本化实测 23/23 零重试;生产发布走手动 dispatch + 固定 tag,已实跑至 v0.0.5)
-- [x] M4 之后的需求直插(OPT-25…OPT-45):模型配置空间化与参数自定义、API Key 与权限档位改造、
-      外部事实记忆与历史滚动压缩
+- [x] M4 之后的需求直插(OPT-25…OPT-46):模型配置空间化与参数自定义、API Key 与权限档位改造、
+      外部事实记忆与历史滚动压缩、演示模式(一键体验 + 自动演示脚本)
 
 > 判定依据:`docs/架构设计.md` §10 路线图与 git 提交历史(非本清单自身)。
 > 契约:`docs/api/openapi.json`;对接规则见 `web/对接文档.md`。
@@ -72,6 +87,7 @@ make server-openapi   # 改路由/模型后重导 docs/api/openapi.json(不重�
 | Agent 工具调用事件 | ✅ 已实现(OPT-10:`tool_call`/`tool_result` 成对 `id`,步骤落 `messages.agent_steps` 供刷新回看;OPT-45 再加 `memory_proposal`) |
 | 权限档位灰度生效 | ⏸ 代码已交付但开关默认关(`APP_REQUIRE_PERMISSION_GROUP_FOR_CORE=0`);打开前必须先给每个真人建档 + 分配 + 设生效档,否则那一刻无档位的真人核心接口全 403(OPT-42) |
 | OPT-45 记忆与压缩真机验收 | ⏳ 前后端已并 main;库要 `make db-migrate` 升到 0021 才有对应表/列,浏览器端按 `docs/api/前端接入工单-OPT45记忆卡片与上下文压缩.md` §10 的验收尚未跑 |
+| OPT-46 演示模式 | ⏳ 后端/前端/脚本已在 `feat/opt46-demo-mode` 交付(569 测试 + 前端构建全绿),**还没并 main、没发布**,所以生产站现在打开登录页看不到演示入口。并 main 发布后按 `docs/上线手册.md` §9 开开关 + 播种,再跑 A8/A9/A10 三条真机验收 |
 | 审计日志导出 / 邮箱体系 | ❌ 明确不做(见 `web/对接文档.md` §2.4 L3) |
 
 > **交付了什么、验收数字多少 → [`docs/V1交付台账.md`](docs/V1交付台账.md)。**

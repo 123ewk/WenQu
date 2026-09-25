@@ -32,3 +32,6 @@ build/
 
 # 备份产物(pg_dump/对象镜像,绝不出库)
 backups/
+
+# 自动演示(OPT-46)跑出来的截图,只在讲解机上留着
+demo-out/

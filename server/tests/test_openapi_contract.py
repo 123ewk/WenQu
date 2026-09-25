@@ -83,6 +83,8 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/memories",
     "/api/v1/spaces/{space_id}/memories/{memory_id}",
     "/api/v1/spaces/{space_id}/memories/proposals/dismiss",
+    # OPT-46 演示模式(未登录可读;开关关闭时只回 enabled=false)
+    "/api/v1/demo/status",
     "/health",
     "/system/info",
 }
