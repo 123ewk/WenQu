@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import sys
 import time
@@ -44,6 +45,16 @@ _DOC_TIMEOUT_SECONDS = 900  # 单份文档入库上限(向量化慢,留足)
 
 class SeedError(RuntimeError):
     """可预期的失败:打印这一句就够,不需要 traceback。"""
+
+
+def _utf8_console() -> None:
+    """Windows 控制台默认按 GBK 编码,而本脚本要打印 ✓ / ✗ / ⏱ 这类状态符号 —— 它们不在
+    GBK 里,直接抛 UnicodeEncodeError 把跑到一半的播种打死(本地实测踩过)。统一改走 UTF-8,
+    真编不了的字符退化成占位符,而不是让整个脚本失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _base_url() -> str:
@@ -286,6 +297,7 @@ def main() -> int:
     args.add_argument("--dry-run", action="store_true", help="只做前置检查并打印计划,不写库")
     args.add_argument("--purge", action="store_true", help="删除演示空间(演示账号保留)")
     opts = args.parse_args()
+    _utf8_console()
 
     settings = get_settings()
     print(f"目标:{_base_url()}  账号={settings.demo_username}  "

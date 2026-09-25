@@ -19,8 +19,10 @@ make demo-seed 灌好文档的那个演示空间,所以最后一步要切回去�
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -50,8 +52,25 @@ class DemoFailure(Exception):
     """演示跑不下去时的人话原因。"""
 
 
+def _doc_stem(filename: str) -> str:
+    """引用给的是文件名(01-RAG整体链路.md),清单里的 expected 故意只写标题主干
+    (RAG整体链路)—— 这样重排文档序号不用改清单。比对前把序号前缀去掉。
+    """
+    return re.sub(r"^\d+-", "", Path(filename).stem)
+
+
+def _utf8_console() -> None:
+    """Windows 控制台默认 GBK,页面里的文档标题、模型回答只要带一个不在 GBK 里的符号,
+    print 就抛 UnicodeEncodeError 把演示打死(种子脚本本地实测踩过)。统一改走 UTF-8。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _base_url() -> str:
-    return os.environ.get("WENQU_BASE_URL", "http://127.0.0.1:5173").rstrip("/")
+    # 默认 localhost 而不是 127.0.0.1:vite dev 默认只绑 IPv6(::1),写 127.0.0.1 连不上。
+    return os.environ.get("WENQU_BASE_URL", "http://localhost:5173").rstrip("/")
 
 
 def _client() -> httpx.Client:
@@ -143,8 +162,7 @@ class DemoRunner:
         items = self.page.locator(".menu-pop .pop-item .pop-name")
         items.first.wait_for(state="visible", timeout=5000)
         names = [items.nth(i).inner_text().strip() for i in range(items.count())]
-        self.page.keyboard.press("Escape")
-        self.page.wait_for_timeout(200)
+        self._close_popover()
         return names
 
     def switch_space(self, name: str) -> None:
@@ -152,8 +170,27 @@ class DemoRunner:
         item = self.page.locator(".menu-pop .pop-item", has_text=name).first
         item.wait_for(state="visible", timeout=5000)
         item.click()
+        self._close_popover()
         # 切空间会换令牌并重拉各页数据,留点时间
         self.page.wait_for_timeout(1000)
+
+    def _close_popover(self) -> None:
+        """空间弹层挂在侧栏下方,不关掉的话下一次点侧栏会点成"关掉弹层"本身 —— 点击有去无回,
+        表现为后面那步等元素超时(本地实测踩过)。收它只能点"别的地方":点回切换器会同时命中
+        "点外面关闭"和"再点一次打开",结果又开一层;Esc 这个组件不认。logo 是个不吃点击的方块。
+        """
+        pop = self.page.locator(".menu-pop")
+        if pop.count() > 0 and pop.first.is_visible():
+            self.page.locator(".logo-mark").first.click()
+            pop.first.wait_for(state="hidden", timeout=5000)
+
+    def goto_nav(self, testid: str, path: str) -> None:
+        """点侧栏导航并确认路由真的跳了:导航被遮挡时点击会静默失效,
+        只等目标元素要白等 30 秒才报错,报错信息还指不到根因。
+        """
+        self.wait_visible(testid).click()
+        self.page.wait_for_url(f"**{path}", timeout=self.args.timeout_ms)
+        self.page.wait_for_timeout(600)
 
     def current_space(self) -> str:
         return self.testid("space-switcher").first.inner_text().strip().splitlines()[0]
@@ -212,8 +249,7 @@ class DemoRunner:
         return "is-checked" in (root.first.get_attribute("class") or "")
 
     def create_group(self) -> None:
-        self.wait_visible("nav-permission-groups").click()
-        self.page.wait_for_timeout(800)
+        self.goto_nav("nav-permission-groups", "/permission-groups")
         if self.page.get_by_text(FLOW_GROUP).count() > 0:
             print(f"      档位「{FLOW_GROUP}」已存在,跳过创建", flush=True)
             return
@@ -230,8 +266,7 @@ class DemoRunner:
         self.page.wait_for_timeout(1000)
 
     def create_key(self) -> None:
-        self.wait_visible("nav-api-keys").click()
-        self.page.wait_for_timeout(800)
+        self.goto_nav("nav-api-keys", "/api-keys")
         self.testid("key-create-open").first.click()
         name = self.testid("key-name").first
         name.wait_for(state="visible", timeout=5000)
@@ -257,8 +292,7 @@ class DemoRunner:
     def show_kb(self) -> None:
         if self.current_space() != self.demo_space:
             self.switch_space(self.demo_space)
-        self.wait_visible("nav-kb").click()
-        self.page.wait_for_timeout(1000)
+        self.goto_nav("nav-kb", "/kb")
         card = self.testid("kb-card").first
         card.wait_for(state="visible", timeout=self.args.timeout_ms)
         self.shot("kb-list")
@@ -297,8 +331,7 @@ class DemoRunner:
             raise DemoFailure(f"等了 {self.args.ingest_timeout}s,「{name}」还停在「{status}」")
 
     def goto_chat(self) -> None:
-        self.wait_visible("nav-chat").click()
-        self.page.wait_for_timeout(800)
+        self.goto_nav("nav-chat", "/chat")
 
     def ask_questions(self) -> None:
         questions = json.loads(QUESTIONS_FILE.read_text(encoding="utf-8"))["questions"]
@@ -317,7 +350,7 @@ class DemoRunner:
         self.asked += 1
         files = self.open_citations()
         expected = set(q.get("expected") or [])
-        hit = sorted(expected & {Path(f).stem for f in files})
+        hit = sorted(expected & {_doc_stem(f) for f in files})
         if not expected or hit:
             self.cited += 1
         want = sorted(expected) or ["不限"]
@@ -327,14 +360,15 @@ class DemoRunner:
             print("      这条没命中期望文档,讲解时别照着它追问", flush=True)
 
     def wait_answer(self, before: int) -> None:
-        """这一轮结束的标志:多出一条回答,且发送按钮回到能点的状态。"""
+        """这一轮结束的标志:多出一条回答,且"停止生成"按钮消失(它只在生成过程中存在)。
+        不能拿发送按钮是否可点当信号 —— 发完输入框就清空,而它要求有文字才可点,会一直禁用。
+        """
         deadline = time.time() + self.args.answer_timeout
+        stop = self.page.locator('[data-testid="chat-stop"]')
         while time.time() < deadline:
-            if self.testid("chat-answer").count() > before:
-                send = self.testid("chat-send")
-                if send.count() > 0 and send.first.is_enabled():
-                    self.page.wait_for_timeout(400)
-                    return
+            if self.testid("chat-answer").count() > before and stop.count() == 0:
+                self.page.wait_for_timeout(400)
+                return
             self.page.wait_for_timeout(500)
         raise DemoFailure(f"等了 {self.args.answer_timeout}s 没等到回答(模型不可用?入库没完成?)")
 
@@ -411,6 +445,7 @@ def main() -> int:
     )
     parser.add_argument("--ingest-timeout", type=int, default=300, help="等这份文档入库完的秒数")
     args = parser.parse_args()
+    _utf8_console()
     try:
         return DemoRunner(args).run()
     except DemoFailure as exc:
