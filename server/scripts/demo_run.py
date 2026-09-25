@@ -14,6 +14,10 @@ make demo-seed 灌好文档的那个演示空间,所以最后一步要切回去�
 一步:当场上传一份文档、等它解析入库完成、再问一个只有这份稿子能答的问题
 (那 22 篇是提前灌好的,灌一次等不起;这一份不,状态条是当场往前推的)。
 每步截图写到 demo-out/(已在 .gitignore),投屏讲解用 --headed。
+
+加 --tour 走的是另一条路(OPT-47):不建任何东西,只登录后点产品自己带的那套导览,
+逐步验收"卡片在不在、锚点命中没命中、提问那步真问出 3 条没有"。导览是做在前端的,
+这里脚本只当那个"人" —— 所以它跑通不代表导览只能靠脚本跑,只代表前端那套没坏。
 """
 
 from __future__ import annotations
@@ -91,6 +95,8 @@ class DemoRunner:
         self.js_errors: list[str] = []
         self.asked = 0
         self.cited = 0
+        self.tour_fails: list[str] = []
+        self.tour_ask_total = 0
 
     # ---------------- 开跑前必须成立的前提 ----------------
 
@@ -393,6 +399,95 @@ class DemoRunner:
         self.page.wait_for_timeout(200)
         return names
 
+    # ---------------- 导览模式(OPT-47):脚本只当"人",点产品自带的导览 ----------------
+
+    def tour_check(self, cond: bool, msg: str) -> None:
+        if not cond:
+            self.tour_fails.append(msg)
+            print(f"      [不通过] {msg}", flush=True)
+
+    def tour_progress_total(self) -> int:
+        """步数以前端为准:读进度条上的 "3/7",不在脚本里再抄一份常量。"""
+        raw = self.testid("tour-progress").first.inner_text().strip()
+        try:
+            return int(raw.split("/")[1])
+        except (IndexError, ValueError) as exc:
+            raise DemoFailure(f"进度条文案读不出总步数:{raw!r}") from exc
+
+    def run_tour(self) -> None:
+        self.wait_visible("tour-consent")
+        self.shot("tour-consent")
+        self.testid("tour-consent-start").first.click()
+        self.wait_visible("tour-card")
+        total = self.tour_progress_total()
+        print(f"      导览共 {total} 步", flush=True)
+
+        start = time.time()
+        for i in range(1, total + 1):
+            self.wait_visible("tour-card")
+            card = self.testid("tour-card").first
+            key = card.get_attribute("data-step") or ""
+            title = self.testid("tour-title").first.inner_text().strip()
+            prog = self.testid("tour-progress").first.inner_text().strip()
+            self.tour_check(prog == f"{i}/{total}", f"第 {i} 步进度显示为 {prog!r}")
+            self.tour_check(bool(key), f"第 {i} 步卡片上没有 data-step,前端契约断了")
+            no_anchor = card.locator(".warn").count()
+            self.tour_check(no_anchor == 0, f"第 {i} 步「{title}」锚点没命中(卡片上出现提示)")
+            if key == "ask":
+                self.wait_ask_gate()
+                self.check_after_ask()
+            if i < total:
+                self.testid("tour-next").first.click()
+                # 下一步常要等翻页 + 接口回来才渲染(提问步除外,上面已经等完了)
+                if key != "ask":
+                    self.page.wait_for_timeout(1200)
+            else:
+                self.testid("tour-next").first.click()
+                self.page.wait_for_timeout(800)
+                self.tour_check(
+                    self.testid("tour-card").count() == 0, "最后一步点完「结束导览」卡片没消失"
+                )
+            self.shot(f"tour-{i:02d}-{title[:12]}")
+        print(f"      导览全程 {time.time() - start:.1f}s", flush=True)
+
+    def wait_ask_gate(self) -> None:
+        """提问这一步的「下一步」会先置灰并显示 "提问中 n/N…",答完才放开。
+        没置灰 = 自动提问根本没启动;等不到放开 = 有题目没答完。
+        """
+        nxt = self.testid("tour-next").first
+        for _ in range(17):
+            if nxt.is_disabled():
+                m = re.search(r"/(\d+)", nxt.inner_text() or "")
+                if m:
+                    # 题数以前端为准,不在脚本里再抄一份常量
+                    self.tour_ask_total = int(m.group(1))
+                break
+            self.page.wait_for_timeout(300)
+        else:
+            self.tour_check(False, "进提问步 5s 内按钮没置灰:自动提问没启动")
+            return
+        deadline = time.time() + self.args.tour_ask_timeout
+        while nxt.is_disabled():
+            if time.time() > deadline:
+                self.tour_check(False, f"自动提问等了 {self.args.tour_ask_timeout}s 没跑完")
+                break
+            self.page.wait_for_timeout(1000)
+
+    def check_after_ask(self) -> None:
+        note = self.testid("tour-ask-note")
+        if note.count() > 0:
+            reason = note.first.inner_text().strip()
+            self.tour_check(False, f"提问步被跳过,页面给出的原因:{reason!r}")
+        if not self.tour_ask_total:
+            self.tour_check(False, "提问步没读到应问题数(按钮文案里没有 n/N),无法核对回答条数")
+            return
+        answers = self.testid("chat-answer").count()
+        self.tour_check(
+            answers >= self.tour_ask_total,
+            f"提问步跑完只有 {answers} 条助手回答,期望 {self.tour_ask_total} 条",
+        )
+        print(f"      提问步:{self.tour_ask_total} 问 {answers} 答", flush=True)
+
     # ---------------- 主流程 ----------------
 
     def run(self) -> int:
@@ -403,14 +498,17 @@ class DemoRunner:
             try:
                 self.step("打开登录页", lambda: self.open_login(browser))
                 self.step("登录演示账号", self.login)
-                self.step("新建空间", self.create_space)
-                self.step("新建权限档位", self.create_group)
-                self.step("签发 API Key", self.create_key)
-                self.step("展示知识库", self.show_kb)
-                if self.args.live:
-                    self.step("现场上传并入库一份文档", self.live_upload)
-                self.step("回到对话页", self.goto_chat)
-                self.ask_questions()
+                if self.args.tour:
+                    self.step("跟着产品自带的导览走一遍", self.run_tour)
+                else:
+                    self.step("新建空间", self.create_space)
+                    self.step("新建权限档位", self.create_group)
+                    self.step("签发 API Key", self.create_key)
+                    self.step("展示知识库", self.show_kb)
+                    if self.args.live:
+                        self.step("现场上传并入库一份文档", self.live_upload)
+                    self.step("回到对话页", self.goto_chat)
+                    self.ask_questions()
             except (DemoFailure, PlaywrightError) as exc:
                 failed = True
                 print(f"\n演示中断:{exc}", file=sys.stderr, flush=True)
@@ -420,11 +518,19 @@ class DemoRunner:
                     except PlaywrightError:
                         pass
             browser.close()
-        print(f"\n提问 {self.asked} 条,其中命中期望引用 {self.cited} 条", flush=True)
         if self.js_errors:
             print(f"页面 JS 报错 {len(self.js_errors)} 条,首条:{self.js_errors[0]}", flush=True)
         if not self.args.no_shots:
             print(f"截图在 {OUT_DIR}", flush=True)
+        if self.args.tour:
+            if self.tour_fails:
+                print(f"导览 {len(self.tour_fails)} 项不通过:", flush=True)
+                for line in self.tour_fails:
+                    print(f"  - {line}", flush=True)
+            else:
+                print("导览全部通过", flush=True)
+            return 1 if (self.tour_fails or failed) else 0
+        print(f"提问 {self.asked} 条,其中命中期望引用 {self.cited} 条", flush=True)
         return 1 if failed else 0
 
 
@@ -444,6 +550,12 @@ def main() -> int:
         help="加一个真跑入口:当场上传一份文档,等它解析入库完再问它一句",
     )
     parser.add_argument("--ingest-timeout", type=int, default=300, help="等这份文档入库完的秒数")
+    parser.add_argument(
+        "--tour",
+        action="store_true",
+        help="只登录,然后跟着产品自带的导览走一遍并逐步验收(不建空间、不建档位、不发 Key)",
+    )
+    parser.add_argument("--tour-ask-timeout", type=int, default=240, help="等提问步答完的秒数")
     args = parser.parse_args()
     _utf8_console()
     try:
