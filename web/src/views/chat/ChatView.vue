@@ -1354,7 +1354,7 @@ onUnmounted(abortStream)
             >
               <el-icon :size="16"><ArrowUp /></el-icon>
             </button>
-            <button v-else class="stop-btn" title="停止生成" @click="onStop">
+            <button v-else class="stop-btn" data-testid="chat-stop" title="停止生成" @click="onStop">
               <span class="stop-square"></span>停止生成
             </button>
           </div>
