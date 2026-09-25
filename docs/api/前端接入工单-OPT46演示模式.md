@@ -107,10 +107,13 @@
 | 导航 | `nav-chat`、`nav-kb`、`nav-api-keys`、`nav-permission-groups` |
 | 权限档位 | `group-create-open`、`group-name`、`group-cap-chat`、`group-cap-documents`(按能力码生成)、`group-all-kbs`、`group-submit` |
 | API Key | `key-create-open`、`key-name`、`key-group`、`key-owner`、`key-submit`、`key-secret`、`key-copy`、`key-created-close` |
-| 对话 | `chat-thread`、`chat-input`、`chat-send`、`chat-answer`、`chat-example-chip` |
+| 对话 | `chat-thread`、`chat-input`、`chat-send`、`chat-answer`、`chat-stop`(停止生成按钮)、`chat-example-chip` |
 | 知识库 | `kb-card`、`kb-create-open`、`kb-create-open-empty`(空态按钮)、`kb-form-name`、`kb-form-submit`、`doc-upload` |
 
 两个 Element Plus 的坑（脚本里已按这个处理,别改回去）:
 - `el-switch` 的状态**只认根节点的 `is-checked` 类**,`aria-checked` 在这个组件上不可靠;
 - `el-select` / `el-popover` 的面板会挂到 `<body>` 下(不在组件原位),要先点开再按
-  `.el-select-dropdown__item` / `.menu-pop .pop-item` 找选项。
+  `.el-select-dropdown__item` / `.menu-pop .pop-item` 找选项;
+- 判断"这一回答完了没有"**不能用发送按钮变回可点**:`chat-send` 发出去后就一直是灰的
+  (它要求输入框非空,而脚本会清空输入框)。真正的结束信号是画布上多出一条 `chat-answer`
+  并且 `chat-stop`(停止生成)按钮消失 —— 两者缺一不可,所以这两个钩子都不能删。
