@@ -9,6 +9,7 @@ import { apiListPermissionGroups } from '@/api/permissionGroups'
 import { apiCompress, apiDismissProposal, apiGetContext, apiSaveMemory } from '@/api/memories'
 import type { AgentStepOut, CitationOut, ContextOut, ConversationOut, KnowledgeBaseOut, MemoryProposalEvent, MessageOut, ModelCatalogOut, ModelItem, PermissionGroupOut } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useTourStore } from '@/stores/tour'
 import { fmtClock, fmtDayGroup } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
 
@@ -25,6 +26,7 @@ import { renderMarkdown } from '@/utils/markdown'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const tour = useTourStore()
 
 const spaceId = computed(() => auth.currentSpaceId ?? '')
 
@@ -673,6 +675,46 @@ async function onSend() {
     document.querySelector('.chat-scroll')?.scrollTo({ top: 999999, behavior: 'smooth' })
   })
 }
+
+/**
+ * OPT-47 导览的自动提问:问题由导览给,发送走页面自己这条 onSend 链路。
+ * 不让外部脚本代打 —— 那样演示的是脚本,不是产品;也不等回答完成再走,
+ * onSend 本身就 await 整条流,答完才回报。
+ */
+/**
+ * 导览进这一步时页面往往刚挂载:模型清单是异步拉的,`selectedModelId` 还是空串,
+ * 这时直接调 onSend 会被它自己的前置校验挡回去(静默 return),一条问题都没问出去
+ * 却照样回报"问完了"。所以必须等真能发问再打,等不到就如实说"这步跳过了"。
+ */
+async function waitSendable(timeoutMs = 15000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (selectedModelId.value && !streaming.value) return true
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  return false
+}
+
+let autoAsking = false
+watch(
+  () => tour.askQueue,
+  async (queue) => {
+    if (!queue?.length || autoAsking) return
+    autoAsking = true
+    for (const question of queue) {
+      if (!tour.askQueue) break // 中途跳过导览就收手
+      if (!(await waitSendable())) {
+        tour.reportAskSkipped('本空间还没有可用的对话模型,这一步没有真的提问')
+        break
+      }
+      draft.value = question
+      await onSend()
+      tour.reportAskDone()
+    }
+    autoAsking = false
+  },
+  { immediate: true },
+)
 
 function onStop() {
   abortStream()
@@ -1340,6 +1382,7 @@ onUnmounted(abortStream)
               class="chat-textarea"
               :placeholder="inputPlaceholder"
               data-testid="chat-input"
+              data-tour="tour-chat"
               @input="autoGrow"
               @keydown="onKeydown"
             ></textarea>
