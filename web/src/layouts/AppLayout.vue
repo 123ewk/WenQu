@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import * as session from '@/api/session'
 import AppSidebar from '@/components/AppSidebar.vue'
+import TourOverlay from '@/components/tour/TourOverlay.vue'
 import UploadProgress from '@/components/UploadProgress.vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -34,6 +35,7 @@ onMounted(() => {
         <router-view />
       </main>
     </div>
+    <TourOverlay />
   </div>
 </template>
 

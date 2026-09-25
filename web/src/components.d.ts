@@ -49,6 +49,7 @@ declare module 'vue' {
     KbFormDialog: typeof import('./components/KbFormDialog.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    TourOverlay: typeof import('./components/tour/TourOverlay.vue')['default']
     UploadProgress: typeof import('./components/UploadProgress.vue')['default']
   }
   export interface GlobalDirectives {

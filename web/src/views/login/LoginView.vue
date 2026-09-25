@@ -5,6 +5,7 @@ import type { DemoStatusOut } from '@/api/types'
 import { apiDemoStatus } from '@/api/demo'
 import { errMessage, fieldErrors, ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useTourStore } from '@/stores/tour'
 
 /**
  * 登录/注册页(原型 01):420px 居中卡片,极淡主色几何背景。
@@ -14,6 +15,7 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const tour = useTourStore()
 
 const tab = ref<'login' | 'reg'>('login')
 const loginRef = ref<FormInstance>()
@@ -75,6 +77,10 @@ async function onLogin() {
   try {
     await auth.login(loginForm.username.trim(), loginForm.password)
     ElMessage.success('登录成功')
+    // OPT-47:演示账号登录后先弹知情确认,再决定是否被导览带着走
+    if (demo.value.enabled && loginForm.username.trim() === demo.value.username) {
+      tour.armConsent(demo.value)
+    }
     goWorkspace()
   } catch (e) {
     loginServerError.value = errMessage(e)
