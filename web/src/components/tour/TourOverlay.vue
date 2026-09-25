@@ -25,7 +25,8 @@ function anchorEl(name: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-tour="${name}"]`)
 }
 
-async function locate(retry = 8) {
+/** 翻页后目标可能要等接口回来才渲染(权限档位页 loading 时整张表都不在),所以给约 4s 重试 */
+async function locate(retry = 20) {
   const step = tour.step
   if (!tour.running || !step) {
     rect.value = null
@@ -40,7 +41,7 @@ async function locate(retry = 8) {
   const el = anchorEl(step.anchor)
   if (!el) {
     if (retry > 0) {
-      retryTimer = setTimeout(() => void locate(retry - 1), 150)
+      retryTimer = setTimeout(() => void locate(retry - 1), 200)
       return
     }
     rect.value = null
@@ -142,7 +143,13 @@ function fmt(s: string): string {
 
   <template v-if="tour.running && tour.step">
     <div class="hole" :style="holeStyle" />
-    <div ref="cardRef" class="card" data-testid="tour-card" :style="cardStyle">
+    <div
+      ref="cardRef"
+      class="card"
+      data-testid="tour-card"
+      :data-step="tour.step.key"
+      :style="cardStyle"
+    >
       <div class="head">
         <span class="idx mono" data-testid="tour-progress">{{ tour.index + 1 }}/{{ total }}</span>
         <strong data-testid="tour-title">{{ tour.step.title }}</strong>
