@@ -117,3 +117,29 @@
 - 判断"这一回答完了没有"**不能用发送按钮变回可点**:`chat-send` 发出去后就一直是灰的
   (它要求输入框非空,而脚本会清空输入框)。真正的结束信号是画布上多出一条 `chat-answer`
   并且 `chat-stop`(停止生成)按钮消失 —— 两者缺一不可,所以这两个钩子都不能删。
+
+## 附录 B：产品导览的钩子（OPT-47，2026-09-25 追加）
+
+导览做在前端（`web/src/components/tour/`），**不依赖本工单的脚本**；但两者共用同一批页面，
+所以这里的属性名一改动，导览就会指错地方或指不到地方。
+
+`data-tour`（导览高亮目标，改结构时**必须保留**）：
+
+| 值 | 在哪个元素上 | 哪一步用 |
+|---|---|---|
+| `space-switcher` | 侧栏空间切换按钮（与 `data-testid` 同名并存） | 第 1 步 空间 |
+| `tour-models` | 模型配置页的嵌入模型卡 `.card.mc-emb` | 第 2 步 模型配置 |
+| `tour-groups` | 权限档位页的表格卡 `.card.table-card`（`v-else` 分支，loading 期间不在 DOM 上） | 第 3 步 权限档位 |
+| `tour-kb` | 知识库页第一张 `.kb-card` | 第 4 步 知识库 |
+| `tour-chunks` | 分块预览页的 `.chunk-list` | 第 5 步 分块 |
+| `tour-chat` | 对话页输入框（与 `chat-input` 同一元素） | 第 6 步 提问 |
+
+`data-testid`（导览自己的可测点，`demo_run.py --tour` 只认这些）：
+`tour-consent`、`tour-consent-body`、`tour-consent-start`、`tour-consent-later`、
+`tour-card`（带 `data-step`，值就是步骤 key：`space/models/groups/kb/chunks/ask/done`）、
+`tour-title`、`tour-progress`（文案 `n/7`）、`tour-skip`、`tour-prev`、`tour-next`、`tour-ask-note`。
+
+三条口径：
+1. **步数和应问题数不写死在前端之外** —— 脚本从 `tour-progress` 与 `tour-next` 的文案里读，加一步不用改脚本；
+2. 锚点找不到时卡片居中并显示提示，**不会卡住流程**，所以 `tour-card .warn` 出现就是"页面结构变了"的信号；
+3. 第 6 步的「下一步」在 3 条问答跑完前是灰的；灰不掉 = 自动提问根本没启动（见 `设计-OPT47-产品导览.md` §5）。
