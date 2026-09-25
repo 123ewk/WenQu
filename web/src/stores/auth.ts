@@ -71,12 +71,30 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 登录/注册按契约不绑空间(`current_space_id=null`),但令牌里没有 `sid` 时,
+   * 从令牌解析空间的端点(模型清单)会看成"没有空间",新账号登录后第一屏就是
+   * "本空间未配置对话模型"。所以落地后补一次 switch-space,让令牌与侧边栏显示一致。
+   */
+  async function bindFirstSpace(data: AuthResponse) {
+    if (data.current_space_id || !data.spaces.length) return
+    try {
+      await serialized(() => switchUnlocked(data.spaces[0].id))
+    } catch {
+      /* 补绑失败不算登录失败:登录态已落地,刷新时 bootstrap 会再补一次 */
+    }
+  }
+
   async function login(username: string, password: string) {
-    applyAuth(await apiLogin({ username, password }))
+    const data = await apiLogin({ username, password })
+    applyAuth(data)
+    await bindFirstSpace(data)
   }
 
   async function register(username: string, nickname: string, password: string) {
-    applyAuth(await apiRegister({ username, nickname, password }))
+    const data = await apiRegister({ username, nickname, password })
+    applyAuth(data)
+    await bindFirstSpace(data)
   }
 
   function switchSpace(spaceId: string): Promise<void> {
