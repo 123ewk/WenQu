@@ -89,7 +89,7 @@ async function onLogout() {
     <div class="sb-space">
       <el-popover ref="spacePop" placement="bottom-start" :width="232" trigger="click" popper-class="menu-pop">
         <template #reference>
-          <button class="space-btn" data-testid="space-switcher">
+          <button class="space-btn" data-testid="space-switcher" data-tour="space-switcher">
             <el-icon class="space-ic"><OfficeBuilding /></el-icon>
             <span class="sb-text space-info">
               <span class="space-name">{{ auth.currentSpace?.name ?? '未选择空间' }}</span>

@@ -140,7 +140,7 @@ function onReparse() {
             <span class="kind kind-table">表格</span>
           </div>
         </div>
-        <div class="chunk-list">
+        <div class="chunk-list" data-tour="tour-chunks">
           <button
             v-for="chunk in chunks"
             :key="chunk.id"

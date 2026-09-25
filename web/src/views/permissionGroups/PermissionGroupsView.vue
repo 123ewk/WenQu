@@ -414,7 +414,7 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
       </div>
 
       <!-- 列表 -->
-      <div v-else class="card table-card" v-loading="loading">
+      <div v-else class="card table-card" data-tour="tour-groups" v-loading="loading">
         <el-table :data="groups" style="width: 100%">
           <el-table-column label="档位" min-width="200">
             <template #default="{ row }">

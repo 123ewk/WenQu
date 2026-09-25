@@ -149,7 +149,7 @@ async function onRerankSwitch(v: boolean) {
       </div>
 
       <!-- 区块①:Embedding -->
-      <div v-if="embedding" class="card mc-emb">
+      <div v-if="embedding" class="card mc-emb" data-tour="tour-models">
         <div class="mc-title">向量化(Embedding)</div>
         <div class="mc-sub">模型与维度由入库向量兼容性决定,已锁死不可更换;只需配置本空间的 API Key</div>
 
