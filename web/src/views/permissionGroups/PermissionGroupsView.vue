@@ -7,17 +7,25 @@ import {
   apiAssignGroupMember,
   apiCreatePermissionGroup,
   apiDeletePermissionGroup,
+  apiGetSpaceToggle,
   apiListPermissionGroups,
   apiPurgeGroupRevokedKeys,
+  apiPutSpaceToggle,
   apiSetCurrentGroup,
   apiUnassignGroupMember,
   apiUpdatePermissionGroup,
   groupDeleteBlockedDetails,
 } from '@/api/permissionGroups'
 import { apiListMembers } from '@/api/spaces'
-import type { GroupMemberOut, MemberOut, PermissionGroupOut, UpsertPermissionGroupRequest } from '@/api/types'
+import type {
+  GroupMemberOut,
+  MemberOut,
+  PermissionGroupOut,
+  SpaceToggleStatusOut,
+  UpsertPermissionGroupRequest,
+} from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
-import { fmtDate } from '@/utils/format'
+import { fmtDate, fmtDateTime } from '@/utils/format'
 import { isAtLeast, ROLE, roleLabel } from '@/utils/roles'
 
 /**
@@ -47,6 +55,57 @@ const drawerId = ref<string | null>(null)
 
 /** 读 Viewer+ 可进本页;写 Admin+ —— 允许成员自己挂档 = 允许自己给自己提权 */
 const canManage = computed(() => isAtLeast(auth.role, ROLE.ADMIN))
+
+/* ───── OPT-48 v2:空间级权限挡位功能开关(本空间 Admin+ 专属) ───── */
+
+const spaceToggle = ref<SpaceToggleStatusOut | null>(null)
+const toggleSaving = ref(false)
+
+async function loadToggle() {
+  if (!auth.currentSpaceId) return
+  try {
+    spaceToggle.value = await apiGetSpaceToggle(auth.currentSpaceId)
+  } catch {
+    // 无权(非 Admin+)/加载失败都不影响档位列表本身,卡片不渲染即可
+    spaceToggle.value = null
+  }
+}
+
+/** 拨动前的二次确认;自锁不拦(拍板 3),但打开时明确提示"你还没给自己配挡"的后果 */
+async function confirmToggle(): Promise<boolean> {
+  const current = spaceToggle.value
+  if (!current || toggleSaving.value || !auth.currentSpaceId) return false
+  const opening = !current.enabled
+  const impact = current.impact
+  const message = opening
+    ? `打开后,本空间的核心功能(问答/检索/文档)需要"生效挡位",没有的人会立即被拦` +
+      `(本空间 ${impact.members_total} 条成员关系中有 ${impact.members_without_active_group} 条没有生效档)。` +
+      (impact.actor_has_active_group
+        ? ''
+        : '你还没给自己配挡,打开后你也将无法使用核心功能(管理功能不受影响,可先给自己分配一档并设为当前)。') +
+      '确认打开?'
+    : '关闭后,本空间恢复只看成员角色;给成员分配/换当前挡位的操作会不可用。确认关闭?'
+  try {
+    await ElMessageBox.confirm(message, opening ? '打开权限挡位功能开关' : '关闭权限挡位功能开关', {
+      confirmButtonText: opening ? '确认打开' : '确认关闭',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return false
+  }
+  try {
+    toggleSaving.value = true
+    spaceToggle.value = await apiPutSpaceToggle(auth.currentSpaceId, { enabled: opening })
+    ElMessage.success(opening ? '已打开:本进程已生效,其它实例进程最多 60 秒后跟上' : '已关闭:本空间恢复只看角色')
+    return true
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+    return false
+  } finally {
+    toggleSaving.value = false
+  }
+}
 
 const CAPABILITY_LABELS: Record<string, string> = {
   chat: '对话检索',
@@ -85,7 +144,7 @@ watch(
   () => auth.currentSpaceId,
   async () => {
     drawerId.value = null
-    await Promise.all([load(), loadKbs(), loadMembers()])
+    await Promise.all([load(), loadKbs(), loadMembers(), loadToggle()])
   },
   { immediate: true },
 )
@@ -379,6 +438,37 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
         </el-button>
       </div>
 
+      <!-- OPT-48 v2:空间级权限挡位功能开关(本空间 Admin+;核心功能清单口径) -->
+      <div v-if="canManage && spaceToggle" class="card pg-toggle" data-testid="space-toggle-card">
+        <div class="pg-toggle-main">
+          <div>
+            <div class="pg-toggle-title">权限挡位功能开关</div>
+            <div class="pg-toggle-cap">
+              {{ spaceToggle.enabled
+                ? '已打开:本空间核心功能(问答/检索/文档)需要生效挡位'
+                : '已关闭:本空间只看成员角色' }}
+              <template v-if="spaceToggle.updated_at && spaceToggle.updated_by_hint">
+                · 由 {{ spaceToggle.updated_by_hint }} 于 {{ fmtDateTime(spaceToggle.updated_at) }} 拨动
+              </template>
+            </div>
+          </div>
+          <el-switch
+            :model-value="spaceToggle.enabled"
+            :before-change="confirmToggle"
+            :loading="toggleSaving"
+            size="large"
+            data-testid="space-toggle-switch"
+          />
+        </div>
+        <div class="pg-toggle-impact">
+          本空间 {{ spaceToggle.impact.members_total }} 条成员关系中有
+          <b>{{ spaceToggle.impact.members_without_active_group }}</b> 条没有生效档
+          <span v-if="spaceToggle.enabled && !spaceToggle.impact.actor_has_active_group" class="pg-toggle-warn">
+            · 你还没给自己配挡,你将无法使用核心功能(可先在下方给自己分配一档并设为当前)
+          </span>
+        </div>
+      </div>
+
       <div class="pg-note">
         <el-icon class="pg-note-ic"><WarningFilled /></el-icon>
         <span>
@@ -386,6 +476,9 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
           改一次档位,其下全部已签发的 Key 与新范围<b>即时生效</b>,不用重发明文。
           成员要生效需两步:先「分配」到某一档(表示可以用),再「设为当前」(表示此刻就按这档走)。
           <b>什么都不勾的档位等于什么都不能做</b>(默认拒绝),"放开全部知识库"必须显式勾选。
+          <b v-if="spaceToggle && !spaceToggle.enabled" class="pg-toggle-warn">
+            本空间的开关未打开:给成员「分配」和「设为当前」暂不可用。
+          </b>
         </span>
       </div>
 
@@ -886,5 +979,29 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
 }
 .pg-member-ops {
   flex-shrink: 0;
+}
+.pg-toggle-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.pg-toggle-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.pg-toggle-cap {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.pg-toggle-impact {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.pg-toggle-warn {
+  color: var(--el-color-warning);
+  font-weight: 600;
 }
 </style>

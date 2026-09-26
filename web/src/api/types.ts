@@ -743,41 +743,30 @@ export interface DemoStatusOut {
 }
 
 /**
- * OPT-48 实例级档位灰度开关(GET/PUT /admin/permission-enforcement)。
- * 效果是**全局**的:打开 = 整个实例所有空间的成员在核心接口都必须有生效档位。
+ * OPT-48 v2 空间级权限挡位功能开关(GET/PUT /spaces/{space_id}/permission-group-toggle)。
+ * 打开 = 本空间核心功能(问答/检索/文档)需要生效挡位;管理页只看角色。
+ * 谁能拨:本空间 Admin+(role≥30),superuser 兜底。
  */
-/** 操作者有成员身份、但没有生效档位的空间(409 details 与 impact 统计共用) */
-export interface EnforcementSpaceGapOut {
-  space_id: string
-  space_name: string
-}
-
-export interface EnforcementImpactOut {
-  /** 全实例空间总数 */
-  spaces: number
-  /** 全实例成员关系总数(同一人在多个空间各算一条) */
+export interface SpaceToggleImpactOut {
+  /** 本空间成员关系总数 */
   members_total: number
-  /** 其中没有生效档位的成员关系数(打开后会立刻被拦的人次口径,只展示不拦) */
+  /** 其中没有生效挡的数量(打开后会立即被拦的人次口径,只展示不拦) */
   members_without_active_group: number
-  /** 操作者本人是否处处有生效档(所在每个空间都有 current 挂载;无成员身份 = true) */
+  /** 操作者本人是否有生效挡(打开前自查;false 时页面提示可自救) */
   actor_has_active_group: boolean
-  /** 操作者本人缺生效档的空间清单(打开前先给自己配好) */
-  actor_spaces_without_group: EnforcementSpaceGapOut[]
 }
 
-export interface EnforcementStatusOut {
-  /** 当前生效值(库里没有配置行时 = env 兜底值) */
-  effective: boolean
-  /** 值的来源:db = 页面拨过;env_fallback = 库里没行,回落环境变量 */
-  source: 'db' | 'env_fallback'
-  /** 最后拨动时间;库里无行 = 从未在页面拨过,恒 null */
+export interface SpaceToggleStatusOut {
+  /** 当前是否打开(表无行 = 从未拨过 = 关) */
+  enabled: boolean
+  /** 最后拨动时间;表无行恒 null */
   updated_at: string | null
-  /** 最后拨动人用户名(展示用);库里无行恒 null */
+  /** 最后拨动人用户名(展示用);表无行恒 null */
   updated_by_hint: string | null
-  impact: EnforcementImpactOut
+  impact: SpaceToggleImpactOut
 }
 
-/** PUT /admin/permission-enforcement 请求体 */
-export interface EnforcementToggleRequest {
+/** PUT /spaces/{space_id}/permission-group-toggle 请求体 */
+export interface SpaceToggleRequest {
   enabled: boolean
 }

@@ -86,14 +86,6 @@ const router = createRouter({
           meta: { title: 'Token 用量', desc: '对话与向量化的 token 消耗统计 · 按成员汇总需 Admin 及以上' },
         },
         {
-          // OPT-48:实例级档位灰度开关。效果全局,任意空间 Admin+(role≥30)可见可拨;
-          // 刻意不用 adminOnly(那是按当前空间角色判的,这里是"任意空间"口径),侧栏与页内控显隐。
-          path: 'settings/permission-enforcement',
-          name: 'settings-permission-enforcement',
-          component: () => import('@/views/settings/PermissionEnforcementView.vue'),
-          meta: { title: '档位灰度开关', desc: '人链路是否强制生效档位 · 影响整个实例,需 Admin 及以上' },
-        },
-        {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/audit/AuditView.vue'),

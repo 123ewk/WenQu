@@ -16,6 +16,8 @@ import type {
   GroupMemberOut,
   PermissionGroupOut,
   PurgeRevokedKeysOut,
+  SpaceToggleRequest,
+  SpaceToggleStatusOut,
   UpsertPermissionGroupRequest,
 } from './types'
 
@@ -123,4 +125,22 @@ export type {
   PermissionGroupOut,
   PurgeRevokedKeysOut,
   UpsertPermissionGroupRequest,
+}
+
+/* ───── OPT-48 v2:空间级权限挡位功能开关 ───── */
+
+/**
+ * 读本空间开关状态与影响面(仅本空间 Admin+,其余 403,调用方自行降级)。
+ * enabled=false 且 updated_at=null = 从未拨过(库里无行)。
+ */
+export function apiGetSpaceToggle(spaceId: string): Promise<SpaceToggleStatusOut> {
+  return http.get<SpaceToggleStatusOut>(`/spaces/${spaceId}/permission-group-toggle`).then((r) => r.data)
+}
+
+/**
+ * 拨动本空间开关;本进程立即生效,其它实例进程最多 60s 后跟上(缓存 TTL)。
+ * 打开后才能给成员 分配/换当前(没开时那两个接口 409 PERMISSION_GROUP_TOGGLE_OFF)。
+ */
+export function apiPutSpaceToggle(spaceId: string, body: SpaceToggleRequest): Promise<SpaceToggleStatusOut> {
+  return http.put<SpaceToggleStatusOut>(`/spaces/${spaceId}/permission-group-toggle`, body).then((r) => r.data)
 }
