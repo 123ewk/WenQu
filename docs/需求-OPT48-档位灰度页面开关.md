@@ -382,3 +382,34 @@ A9 门禁：make server-test ≥ 基线（只增不减）、make server-lint 绿
 - **OPT-42** = "真的把它打开"这个动作（含先给真人配档位的硬前置）；**OPT-48** 只负责"怎么拨"。两者不合并。
 - **OPT-41** 的 A–H 与 OPT-44 已随 PR #9 并入 main（`52bc6c7`），本需求是它的**运维入口改造**，不改档位数据模型（除新增一张全局开关表）。
 - **OPT-46/47**（演示模式与产品导览）不在本需求范围；§5 B1 是唯一被它们牵连的地方（演示账号非 superuser）。
+
+---
+
+## 11. 真机验收轮（第二轮,2026-09-26 用户发起;本节先写方案再照做,结果追加在 11.3）
+
+### 11.1 环境方案（不碰 :8000/:5173,不改别人 worktree）
+
+| 项 | 决定 |
+|---|---|
+| 后端 | 另起 **:8010**,从 `enforce-backend/server` 跑本分支代码;环境变量 `set -a; . /g/my/my_file/my_rag/server/.env; set +a` **只 source 进进程**（不复制 .env、不打印值,键名清单已核对:无 APP_REQUIRE_PERMISSION_GROUP_FOR_CORE ⇒ 初始回落态=关） |
+| 前端 | 另起 **:5174**,从 `enforce-backend/web` 跑 vite,`VITE_PROXY_TARGET=http://localhost:8010`（vite 代理目标已可配,提交 `6ab41dc`;后端无 CORS,必须走代理） |
+| 数据库 | 共享 dev 库 wenqu,head 0021 → 本轮 **先备份 → upgrade 0022 → 测完 downgrade 0021**。降级原因:三个 worktree 共用此库,`alembic_version` 停在 0022 会让 demo-backend/my_rag 的 `alembic upgrade head` 报"Can't locate revision" |
+| 备份 | `docker exec`（不带 -t）`pg_dump -U wenqu -d wenqu` 落到**仓库外** `~/wenqu-backup-pre-opt48-live-<日期>.sql`,完成后报告路径,由用户决定去留 |
+| 账号 | `uitester01`（「UI 冒烟空间」「第二空间」Owner=40,联调记忆中的凭证）走管理员路径;`viewercx01eg`（Viewer）走无权路径。**不注册新用户、不用 demo 账号**（demo 密码不进任何输出） |
+
+### 11.2 浏览器用例（DOM innerText 为证据,截图不可靠）
+
+| # | 用例 | 期望 |
+|---|---|---|
+| U1 | 未登录直开 `/settings/permission-enforcement` | 重定向登录页 |
+| U2 | `viewercx01eg` 登录 | 侧栏**无**「档位灰度开关」;直开该路由显示空态「仅空间管理员(Admin)及以上…」（A7 文案真机） |
+| U3 | `uitester01` 登录开页 | 入口可见;开关=关、来源=环境变量兜底;impact 数字与 psql 只读 SELECT 一致;自查行提示缺档空间含其两个空间 |
+| U4 | uitester01 未配档直接拨 | 确认弹窗文案含「影响整个实例」+ 无档人数;确认后 **409** 提示列出缺档空间;开关保持关;页面仍可读（A5 真机） |
+| U5 | UI 里给两个空间各建档位+自挂+设当前 | 回开关页刷新,自查行变「你所在的空间都已配置生效档位,可以安全打开」 |
+| U6 | 拨开 | 成功;开关=开、来源=页面配置(库里)、updated_by_hint=uitester01 |
+| U7 | 切 `viewercx01eg` 开知识库页 | 403「本空间还没有为你分配权限档位…」（A2 开方向真机） |
+| U8 | uitester01 拨关 → viewercx01eg 刷新 | 恢复可见（A2 关方向真机） |
+
+### 11.3 结果（执行后填写）
+
+- 待执行。
