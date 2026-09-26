@@ -26,6 +26,8 @@ REQUIRED_PATHS = {
     "/api/v1/users/me/password",
     "/api/v1/users/me/avatar",
     "/api/v1/models",
+    # OPT-48:实例级档位灰度开关(superuser 或任意空间 Admin+ 可读可拨,效果全局)
+    "/api/v1/admin/permission-enforcement",
     "/api/v1/spaces/{space_id}/ingestion-progress",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/reparse",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks/{chunk_id}",

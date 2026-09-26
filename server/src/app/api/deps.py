@@ -8,6 +8,7 @@ from functools import lru_cache
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.api_key_auth import (
@@ -32,6 +33,9 @@ from app.application.repository.knowledge import (
 )
 from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
+from app.application.repository.permission_enforcement import (
+    PermissionEnforcementRepositoryImpl,
+)
 from app.application.repository.permission_groups import PermissionGroupRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
@@ -47,6 +51,7 @@ from app.application.service.effective_permission import (
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.memory import MemoryService
 from app.application.service.model_admin import ModelAdminService
+from app.application.service.permission_enforcement import PermissionEnforcementService
 from app.application.service.permission_groups import PermissionGroupService
 from app.application.service.profile import ProfileService
 from app.application.service.qa import BackgroundDb, QAService
@@ -66,6 +71,7 @@ from app.core.model_client import ChatClient, EmbeddingClient, RerankClient
 from app.core.model_usage import ChatTurnUsage
 from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
+from app.domain.enums import Role
 from app.domain.interfaces import (
     AuditRepository,
     ChunkQueryRepository,
@@ -86,7 +92,7 @@ from app.domain.interfaces import (
     TaskRepository,
     UserRepository,
 )
-from app.domain.models import ApiKey, User
+from app.domain.models import ApiKey, Membership, User
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -112,6 +118,32 @@ def get_current_superuser(user: User = Depends(get_current_user)) -> User:
     """平台管理员守卫(OPT-25):模型管理是全局配置,只认 is_superuser 的 JWT 身份。"""
     if not user.is_superuser:
         raise AppError(ErrorCode.FORBIDDEN, "仅平台管理员可管理模型", http_status=403)
+    return user
+
+
+def get_enforcement_manager(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """实例级灰度开关的管理者守卫(OPT-48):superuser 或任意空间 Admin+(role≥30)。
+
+    不复用 get_current_superuser 的文案:那条「仅平台管理员可管理模型」是模型管理
+    专用,拨档位开关被拒时显示它会误导(B2)。粒度仍是全局(D1)——空间 Admin 拨的
+    是整个实例的开关,前端措辞必须写明"影响整个实例所有空间"。
+    """
+    if user.is_superuser:
+        return user
+    admin_memberships = db.scalar(
+        select(func.count())
+        .select_from(Membership)
+        .where(Membership.user_id == user.id, Membership.role >= Role.ADMIN.value)
+    )
+    if not admin_memberships:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "仅空间管理员(Admin)及以上可拨动此实例级开关",
+            http_status=403,
+        )
     return user
 
 
@@ -432,6 +464,17 @@ def get_permission_group_service(
     """
     return PermissionGroupService(
         groups, spaces, kbs, audit, ApiKeyRepositoryImpl(db), users
+    )
+
+
+def get_permission_enforcement_service(
+    db: Session = Depends(get_db),
+    audit: AuditRepository = Depends(get_audit_repository),
+    users: UserRepository = Depends(get_user_repository),
+) -> PermissionEnforcementService:
+    """实例级灰度开关服务(OPT-48):db 只喂读值缓存路径,行与统计走仓储。"""
+    return PermissionEnforcementService(
+        db, PermissionEnforcementRepositoryImpl(db), users, audit
     )
 
 

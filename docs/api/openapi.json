@@ -4032,6 +4032,78 @@
         }
       }
     },
+    "/api/v1/admin/permission-enforcement": {
+      "get": {
+        "tags": [
+          "admin-permission-enforcement"
+        ],
+        "summary": "Get Permission Enforcement",
+        "description": "读当前生效值、来源与影响面统计。同一个人 GET 恒 200(A5),拦人只发生在 PUT。",
+        "operationId": "get_permission_enforcement_api_v1_admin_permission_enforcement_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnforcementStatusOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "admin-permission-enforcement"
+        ],
+        "summary": "Put Permission Enforcement",
+        "description": "拨动(全局生效);本进程立刻生效,其它 worker 最多缓存 TTL 秒后跟上。",
+        "operationId": "put_permission_enforcement_api_v1_admin_permission_enforcement_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnforcementToggleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnforcementStatusOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/spaces/{space_id}/model-config": {
       "get": {
         "tags": [
@@ -6273,6 +6345,105 @@
         "type": "object",
         "title": "EmbeddingKeyTestIn"
       },
+      "EnforcementImpactOut": {
+        "properties": {
+          "spaces": {
+            "type": "integer",
+            "title": "Spaces"
+          },
+          "members_total": {
+            "type": "integer",
+            "title": "Members Total"
+          },
+          "members_without_active_group": {
+            "type": "integer",
+            "title": "Members Without Active Group"
+          },
+          "actor_has_active_group": {
+            "type": "boolean",
+            "title": "Actor Has Active Group"
+          },
+          "actor_spaces_without_group": {
+            "items": {
+              "$ref": "#/components/schemas/SpaceGapOut"
+            },
+            "type": "array",
+            "title": "Actor Spaces Without Group"
+          }
+        },
+        "type": "object",
+        "required": [
+          "spaces",
+          "members_total",
+          "members_without_active_group",
+          "actor_has_active_group",
+          "actor_spaces_without_group"
+        ],
+        "title": "EnforcementImpactOut",
+        "description": "影响面统计(打开前的自查与\"会锁多少人\"的预览;缺档只展示不拦,D3)。"
+      },
+      "EnforcementStatusOut": {
+        "properties": {
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "db",
+              "env_fallback"
+            ],
+            "title": "Source"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Hint"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/EnforcementImpactOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "effective",
+          "source",
+          "impact"
+        ],
+        "title": "EnforcementStatusOut"
+      },
+      "EnforcementToggleIn": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "EnforcementToggleIn"
+      },
       "GroupMemberOut": {
         "properties": {
           "user_id": {
@@ -7847,6 +8018,25 @@
           "role"
         ],
         "title": "SpaceBriefOut"
+      },
+      "SpaceGapOut": {
+        "properties": {
+          "space_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Space Id"
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "space_id",
+          "space_name"
+        ],
+        "title": "SpaceGapOut"
       },
       "SpaceModelConfigOut": {
         "properties": {
