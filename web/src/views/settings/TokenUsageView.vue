@@ -108,7 +108,7 @@ function memberLabel(m: MemberUsageOut): string {
 
 <template>
   <div class="page-pad">
-    <div class="tu-wrap" v-loading="loading">
+    <div class="tu-wrap" data-tour="tour-usage" v-loading="loading">
       <div class="page-head-row">
         <div>
           <div class="page-title">Token 用量</div>

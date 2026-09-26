@@ -131,13 +131,14 @@
 | `tour-models` | 模型配置页的嵌入模型卡 `.card.mc-emb` | 第 2 步 模型配置 |
 | `tour-groups` | 权限档位页的表格卡 `.card.table-card`（`v-else` 分支，loading 期间不在 DOM 上） | 第 3 步 权限档位 |
 | `tour-kb` | 知识库页第一张 `.kb-card` | 第 4 步 知识库 |
-| `tour-chunks` | 分块预览页的 `.chunk-list` | 第 5 步 分块 |
+| `tour-chunks` | 分块预览抽屉的 `.drawer-body`（列表 + 详情整块；**不要**下移到 `.chunk-list`，每篇演示文档只切 1~3 块，框小了就是一片空白） | 第 5 步 分块 |
 | `tour-chat` | 对话页输入框（与 `chat-input` 同一元素） | 第 6 步 提问 |
+| `tour-usage` | Token 用量页的 `.tu-wrap`（合计卡 + 成员表整块） | 第 7 步 Token 用量 |
 
 `data-testid`（导览自己的可测点，`demo_run.py --tour` 只认这些）：
 `tour-consent`、`tour-consent-body`、`tour-consent-start`、`tour-consent-later`、
-`tour-card`（带 `data-step`，值就是步骤 key：`space/models/groups/kb/chunks/ask/done`）、
-`tour-title`、`tour-progress`（文案 `n/7`）、`tour-skip`、`tour-prev`、`tour-next`、`tour-ask-note`。
+`tour-card`（带 `data-step`，值就是步骤 key：`space/models/groups/kb/chunks/ask/usage/done`）、
+`tour-title`、`tour-progress`（文案 `n/8`）、`tour-skip`、`tour-prev`、`tour-next`、`tour-ask-note`。
 
 三条口径：
 1. **步数和应问题数不写死在前端之外** —— 脚本从 `tour-progress` 与 `tour-next` 的文案里读，加一步不用改脚本；
