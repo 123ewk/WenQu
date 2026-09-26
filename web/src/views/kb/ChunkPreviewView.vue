@@ -130,7 +130,8 @@ function onReparse() {
       <el-button class="state-btn" @click="load">重试</el-button>
     </div>
 
-    <div v-else class="drawer-body" v-loading="loading">
+    <!-- 导览锚点放在整个"列表 + 详情"上:每篇演示文档只有 2~3 块,单框列表会框出一片空白 -->
+    <div v-else class="drawer-body" data-tour="tour-chunks" v-loading="loading">
       <!-- 左 40%:分块列表 -->
       <div class="chunk-col">
         <div class="chunk-col-head">
@@ -140,7 +141,7 @@ function onReparse() {
             <span class="kind kind-table">表格</span>
           </div>
         </div>
-        <div class="chunk-list" data-tour="tour-chunks">
+        <div class="chunk-list">
           <button
             v-for="chunk in chunks"
             :key="chunk.id"

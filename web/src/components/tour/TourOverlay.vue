@@ -55,7 +55,7 @@ async function locate(retry = 20) {
   placeCard()
 }
 
-/** 卡片优先放在高亮框的下方,放不下就上方/居中 */
+/** 卡片优先放在高亮框的下方,放不下就上方;上下都放不下(整屏级高亮)时贴到视口底部,别压住内容开头 */
 function placeCard() {
   const h = cardRef.value?.offsetHeight ?? 260
   const w = cardRef.value?.offsetWidth ?? 380
@@ -65,7 +65,11 @@ function placeCard() {
     return
   }
   const below = box.bottom + GAP
-  const top = below + h < window.innerHeight ? below : Math.max(16, box.top - GAP - h)
+  const above = box.top - GAP - h
+  let top: number
+  if (below + h < window.innerHeight) top = below
+  else if (above > 16) top = above
+  else top = Math.max(16, window.innerHeight - h - GAP)
   const left = Math.min(Math.max(16, box.left), Math.max(16, window.innerWidth - w - 16))
   cardStyle.value = { left: `${left}px`, top: `${top}px`, transform: 'none' }
 }
