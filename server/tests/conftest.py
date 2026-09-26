@@ -32,12 +32,16 @@ def client():
         from alembic import command
         from alembic.config import Config
 
+        from app.application.service.permission_enforcement import clear_enforcement_cache
         from app.core.config import get_settings
         from app.core.db import get_engine, get_session_factory
 
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
+        # OPT-48:开关读值是进程级 TTL 缓存,换库(测试容器)后必须一并清掉,
+        # 否则上一个进程状态里缓存的开关值会泄漏进本会话的断言。
+        clear_enforcement_cache()
 
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")

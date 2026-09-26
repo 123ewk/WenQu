@@ -15,6 +15,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -465,6 +466,29 @@ class PermissionGroupMember(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PermissionEnforcement(Base):
+    """实例级灰度开关单行表(OPT-48):人链路核心接口是否强制"生效档位"。
+
+    - 全局单行(CHECK id=1,粒度=整个实例,D1,不做按空间);
+    - **表为空 = 库里没配过**,读值服务回落 env(默认 False)——
+      库里什么都不配 = 行为与今天逐字节一致(fail-closed 底线);
+    - 行上的 updated_at/updated_by 只是最新状态;谁在什么时候从什么拨到什么
+      的完整留痕走 audit_logs(OPT-48 N3),这里不重复记历史。
+    """
+
+    __tablename__ = "permission_enforcement"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_permission_enforcement_singleton"),)
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
 

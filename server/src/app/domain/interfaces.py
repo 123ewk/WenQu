@@ -22,6 +22,7 @@ from app.domain.models import (
     Memory,
     MemoryProposal,
     Message,
+    PermissionEnforcement,
     PermissionGroup,
     PermissionGroupMember,
     RefreshToken,
@@ -241,6 +242,17 @@ class PermissionGroupRepository(Protocol):
     ) -> PermissionGroupMember | None: ...
     def delete_member(self, member_id: uuid.UUID) -> None: ...
     def delete_for_user(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int: ...
+
+
+class PermissionEnforcementRepository(Protocol):
+    """实例级灰度开关持久化(OPT-48):全局单行(CHECK id=1)。
+
+    表为空 = 库里没配过,读值服务回落 env —— 本协议只管行本身,
+    "有行用行、无行回落"的优先级在读值服务里。
+    """
+
+    def get_row(self) -> PermissionEnforcement | None: ...
+    def upsert(self, *, enabled: bool, updated_by: uuid.UUID) -> PermissionEnforcement: ...
 
 
 class ChatGateway(Protocol):
