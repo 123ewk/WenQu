@@ -8,6 +8,11 @@ on:
     paths: ["server/**", ".github/workflows/server.yml"]
   workflow_call: # 供 deploy-prod.yml 复用同一套门禁,避免发布链与 CI 口径漂移
 
+# 云端 runner 直连官方 PyPI(美国机房,快且稳):清华镜像只适合国内开发机,
+# 在 CI 上间歇性 403(实测 pymupdf wheel 拉取被拒)。生产机自托管部署不受影响(仍走镜像)。
+env:
+  UV_DEFAULT_INDEX: "https://pypi.org/simple"
+
 jobs:
   test:
     runs-on: ubuntu-latest
