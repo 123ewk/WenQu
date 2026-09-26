@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WenQu API",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/health": {
@@ -4032,6 +4032,112 @@
         }
       }
     },
+    "/api/v1/spaces/{space_id}/permission-group-toggle": {
+      "get": {
+        "tags": [
+          "permission-group-toggle"
+        ],
+        "summary": "Get Space Permission Group Toggle",
+        "description": "读本空间开关状态与影响面。有资格的人 GET 恒 200,拦人只发生在写路径。",
+        "operationId": "get_space_permission_group_toggle_api_v1_spaces__space_id__permission_group_toggle_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceToggleStatusOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "permission-group-toggle"
+        ],
+        "summary": "Put Space Permission Group Toggle",
+        "description": "拨动本空间开关;本进程立刻生效,其它 worker 最多缓存 TTL 秒后跟上。",
+        "operationId": "put_space_permission_group_toggle_api_v1_spaces__space_id__permission_group_toggle_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpaceToggleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceToggleStatusOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/spaces/{space_id}/model-config": {
       "get": {
         "tags": [
@@ -4903,6 +5009,28 @@
           }
         }
       }
+    },
+    "/api/v1/demo/status": {
+      "get": {
+        "tags": [
+          "demo"
+        ],
+        "summary": "Demo Status",
+        "description": "未登录可读:演示入口 + 种子就绪状态(身份全部来自配置,不新增表)。",
+        "operationId": "demo_status_api_v1_demo_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoStatusOut"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5340,6 +5468,7 @@
           "permission_group.member_assigned",
           "permission_group.member_unassigned",
           "permission_group.current_set",
+          "permission_group_toggle.set",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",
@@ -6012,6 +6141,49 @@
           "name"
         ],
         "title": "CreateSpaceRequest"
+      },
+      "DemoStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username",
+            "default": ""
+          },
+          "space_name": {
+            "type": "string",
+            "title": "Space Name",
+            "default": ""
+          },
+          "kb_name": {
+            "type": "string",
+            "title": "Kb Name",
+            "default": ""
+          },
+          "document_total": {
+            "type": "integer",
+            "title": "Document Total",
+            "default": 0
+          },
+          "document_ready": {
+            "type": "integer",
+            "title": "Document Ready",
+            "default": 0
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "DemoStatusOut"
       },
       "DismissProposalRequest": {
         "properties": {
@@ -8176,6 +8348,83 @@
         },
         "type": "object",
         "title": "SpaceProviderUpdateIn"
+      },
+      "SpaceToggleImpactOut": {
+        "properties": {
+          "members_total": {
+            "type": "integer",
+            "title": "Members Total"
+          },
+          "members_without_active_group": {
+            "type": "integer",
+            "title": "Members Without Active Group"
+          },
+          "actor_has_active_group": {
+            "type": "boolean",
+            "title": "Actor Has Active Group"
+          }
+        },
+        "type": "object",
+        "required": [
+          "members_total",
+          "members_without_active_group",
+          "actor_has_active_group"
+        ],
+        "title": "SpaceToggleImpactOut",
+        "description": "本空间影响面(打开前的自查;缺挡只展示不拦,没有挡位的成员仍可用管理功能自救)。"
+      },
+      "SpaceToggleRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "SpaceToggleRequest"
+      },
+      "SpaceToggleStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Hint"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/SpaceToggleImpactOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "impact"
+        ],
+        "title": "SpaceToggleStatusOut"
       },
       "SwitchSpaceRequest": {
         "properties": {

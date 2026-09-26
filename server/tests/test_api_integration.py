@@ -545,6 +545,14 @@ def test_hybrid_retrieval_real_pg(client) -> None:
             uuid_mod.UUID(space_id), " ".join(jieba.cut_for_search("检索算法")), None, 5
         )
         assert fulltext_hits and "混合检索算法" in fulltext_hits[0][0].content
+        # 回归:jieba 会把标点切成词位,未转义时 to_tsquery 报 syntax error 拖垮整条问答
+        punct_hits = repo.fulltext_search(
+            uuid_mod.UUID(space_id),
+            " ".join(jieba.cut_for_search("检索算法:是什么?")),
+            None,
+            5,
+        )
+        assert punct_hits and "混合检索算法" in punct_hits[0][0].content
         # 租户谓词:换一个空间查同一内容 → 空
         assert repo.vector_search(uuid_mod.uuid4(), _vec(True), None, 5) == []
         assert repo.fulltext_search(uuid_mod.uuid4(), "检索", None, 5) == []

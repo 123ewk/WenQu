@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     # 低于此条数不压缩(太短没意义,且省一次摘要调用)
     compact_min_messages: int = Field(8, validation_alias="APP_COMPACT_MIN_MESSAGES")
 
+    # ---- 演示模式(OPT-46):一键体验用的开关 + 种子账号/空间身份 ----
+    # 默认 0 = 完全关闭(状态接口只回 enabled=false,前端演示入口不出现)。
+    # 打开后 /api/v1/demo/status 会公开"演示账号叫什么、种子数据是否就绪";
+    # 密码不在其中 —— 只有 scripts/seed_demo.py 与自动演示脚本从 APP_DEMO_PASSWORD 读。
+    demo_mode: bool = Field(False, validation_alias="APP_DEMO_MODE")
+    demo_username: str = Field("demo", validation_alias="APP_DEMO_USERNAME")
+    demo_password: str = Field("", validation_alias="APP_DEMO_PASSWORD")
+    # 种子脚本与状态接口共用同一套名字:改名即换一套演示数据(旧数据不会被误删)
+    demo_space_name: str = Field("演示空间", validation_alias="APP_DEMO_SPACE_NAME")
+    demo_kb_name: str = Field("大模型应用工程知识库", validation_alias="APP_DEMO_KB_NAME")
+
     # ---- 上传 ----
     upload_max_mb: int = Field(50, validation_alias="APP_UPLOAD_MAX_MB")
     avatar_max_mb: int = Field(2, validation_alias="APP_AVATAR_MAX_MB")
@@ -105,6 +116,11 @@ class Settings(BaseSettings):
     # 只影响人(JWT)链路;程序(X-API-Key)链路一直都按档位收口,不受此开关影响。
     require_permission_group_for_core: bool = Field(
         False, validation_alias="APP_REQUIRE_PERMISSION_GROUP_FOR_CORE"
+    )
+    # OPT-48 v2:上述开关落库(每空间一行)后,DB 值的进程内缓存 TTL(秒),按 space_id 分键。
+    # 本进程写后立即失效;其它 worker 最多 TTL 秒后跟上——晚跟上只是晚开始拒绝,不会越权。
+    permission_group_toggle_cache_ttl_seconds: int = Field(
+        60, validation_alias="APP_PERMISSION_GROUP_TOGGLE_CACHE_TTL_SECONDS"
     )
 
     # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----

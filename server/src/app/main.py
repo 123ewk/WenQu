@@ -19,6 +19,7 @@ from app.api.routes import api_keys as api_key_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
 from app.api.routes import conversations as conversation_routes
+from app.api.routes import demo as demo_routes
 from app.api.routes import health as health_routes
 from app.api.routes import knowledge as knowledge_routes
 from app.api.routes import memories as memory_routes
@@ -26,6 +27,7 @@ from app.api.routes import models as model_routes
 from app.api.routes import permission_groups as permission_group_routes
 from app.api.routes import retrieval as retrieval_routes
 from app.api.routes import space_models as space_model_routes
+from app.api.routes import space_permission_toggle as space_permission_toggle_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import token_usage as token_usage_routes
 from app.api.routes import users as users_routes
@@ -126,8 +128,10 @@ def create_app() -> FastAPI:
     app.include_router(api_key_routes.router)
     app.include_router(permission_group_routes.router)
     app.include_router(admin_model_routes.router)
+    app.include_router(space_permission_toggle_routes.router)
     app.include_router(space_model_routes.router)
     app.include_router(token_usage_routes.router)
+    app.include_router(demo_routes.router)
     return app
 
 

@@ -385,6 +385,7 @@ function openChunks(doc: DocumentOut) {
               :show-file-list="false"
               :accept="UPLOAD_ACCEPT"
               multiple
+              data-testid="doc-upload"
               @change="onUploadChange"
             >
               <el-button type="primary" :loading="uploading">

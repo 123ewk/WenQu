@@ -54,7 +54,13 @@ async function onSubmit() {
   <el-dialog v-model="visible" title="新建空间" width="420px" append-to-body>
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
       <el-form-item label="空间名称" prop="name" :error="serverErrors.name || undefined">
-        <el-input v-model="form.name" placeholder="例如:产品研发部" maxlength="64" @input="serverErrors.name = ''" />
+        <el-input
+          v-model="form.name"
+          placeholder="例如:产品研发部"
+          maxlength="64"
+          data-testid="space-create-name"
+          @input="serverErrors.name = ''"
+        />
       </el-form-item>
       <el-form-item label="描述(可选)">
         <el-input
@@ -68,7 +74,9 @@ async function onSubmit() {
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="onSubmit">创建</el-button>
+      <el-button type="primary" :loading="saving" data-testid="space-create-submit" @click="onSubmit">
+        创建
+      </el-button>
     </template>
   </el-dialog>
 </template>

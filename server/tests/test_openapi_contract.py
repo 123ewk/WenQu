@@ -26,6 +26,8 @@ REQUIRED_PATHS = {
     "/api/v1/users/me/password",
     "/api/v1/users/me/avatar",
     "/api/v1/models",
+    # OPT-48 v2:空间级权限挡位功能开关(该空间 Admin+ 可读可拨)
+    "/api/v1/spaces/{space_id}/permission-group-toggle",
     "/api/v1/spaces/{space_id}/ingestion-progress",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/reparse",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks/{chunk_id}",
@@ -83,6 +85,8 @@ REQUIRED_PATHS = {
     "/api/v1/spaces/{space_id}/memories",
     "/api/v1/spaces/{space_id}/memories/{memory_id}",
     "/api/v1/spaces/{space_id}/memories/proposals/dismiss",
+    # OPT-46 演示模式(未登录可读;开关关闭时只回 enabled=false)
+    "/api/v1/demo/status",
     "/health",
     "/system/info",
 }
@@ -121,6 +125,7 @@ REQUIRED_ERROR_CODES = {
     "MEMORY_NOT_FOUND",
     "API_KEY_SPACE_MISMATCH",
     "PERMISSION_GROUP_REQUIRED",
+    "PERMISSION_GROUP_TOGGLE_OFF",
     "VALIDATION_ERROR",
     "INTERNAL_ERROR",
     "NOT_FOUND",

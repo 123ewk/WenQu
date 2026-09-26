@@ -726,3 +726,47 @@ export interface MemoryProposalEvent {
   content_hash: string
   source: { conversation_id: string | null; message_id: string | null }
 }
+
+/**
+ * OPT-46 演示模式状态(GET /demo/status,免登录)。
+ * enabled=false 时其余字段全为空/0;password 不在此接口(任何情况下都不会返回)。
+ * ready=演示空间的文档已全部入库完成,自动演示脚本据此决定能不能开始。
+ */
+export interface DemoStatusOut {
+  enabled: boolean
+  username: string
+  space_name: string
+  kb_name: string
+  document_total: number
+  document_ready: number
+  ready: boolean
+}
+
+/**
+ * OPT-48 v2 空间级权限挡位功能开关(GET/PUT /spaces/{space_id}/permission-group-toggle)。
+ * 打开 = 本空间核心功能(问答/检索/文档)需要生效挡位;管理页只看角色。
+ * 谁能拨:本空间 Admin+(role≥30),superuser 兜底。
+ */
+export interface SpaceToggleImpactOut {
+  /** 本空间成员关系总数 */
+  members_total: number
+  /** 其中没有生效挡的数量(打开后会立即被拦的人次口径,只展示不拦) */
+  members_without_active_group: number
+  /** 操作者本人是否有生效挡(打开前自查;false 时页面提示可自救) */
+  actor_has_active_group: boolean
+}
+
+export interface SpaceToggleStatusOut {
+  /** 当前是否打开(表无行 = 从未拨过 = 关) */
+  enabled: boolean
+  /** 最后拨动时间;表无行恒 null */
+  updated_at: string | null
+  /** 最后拨动人用户名(展示用);表无行恒 null */
+  updated_by_hint: string | null
+  impact: SpaceToggleImpactOut
+}
+
+/** PUT /spaces/{space_id}/permission-group-toggle 请求体 */
+export interface SpaceToggleRequest {
+  enabled: boolean
+}

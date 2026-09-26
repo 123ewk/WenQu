@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { FormInstance, FormRules } from 'element-plus'
 
+import type { DemoStatusOut } from '@/api/types'
+import { apiDemoStatus } from '@/api/demo'
 import { errMessage, fieldErrors, ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -103,6 +105,34 @@ async function onRegister() {
     submitting.value = false
   }
 }
+
+/**
+ * OPT-46 演示入口。状态接口免登录;拿不到就当没有(旧版本服务没有这个端点会 404)。
+ * 密码不在这里:接口不返回密码,前端也填不了,只把账号名填上去。
+ */
+const demo = ref<DemoStatusOut>({
+  enabled: false,
+  username: '',
+  space_name: '',
+  kb_name: '',
+  document_total: 0,
+  document_ready: 0,
+  ready: false,
+})
+
+onMounted(async () => {
+  try {
+    demo.value = await apiDemoStatus()
+  } catch {
+    /* 演示模式关闭或服务不支持:什么都不显示 */
+  }
+})
+
+function fillDemoAccount() {
+  tab.value = 'login'
+  loginForm.username = demo.value.username
+  loginServerError.value = ''
+}
 </script>
 
 <template>
@@ -142,7 +172,7 @@ async function onRegister() {
           @submit.prevent="onLogin"
         >
           <el-form-item label="账号" prop="username">
-            <el-input v-model="loginForm.username" placeholder="用户名" @input="loginServerError = ''" />
+            <el-input v-model="loginForm.username" placeholder="用户名" data-testid="login-username" @input="loginServerError = ''" />
           </el-form-item>
           <el-form-item label="密码" prop="password" :error="loginServerError || undefined">
             <el-input
@@ -150,10 +180,17 @@ async function onRegister() {
               type="password"
               show-password
               placeholder="请输入密码"
+              data-testid="login-password"
               @input="loginServerError = ''"
             />
           </el-form-item>
-          <el-button type="primary" class="w-full" :loading="submitting" native-type="submit">
+          <el-button
+            type="primary"
+            class="w-full"
+            :loading="submitting"
+            native-type="submit"
+            data-testid="login-submit"
+          >
             登 录
           </el-button>
         </el-form>
@@ -184,6 +221,27 @@ async function onRegister() {
             注 册
           </el-button>
         </el-form>
+
+        <!-- 演示入口:后端 APP_DEMO_MODE=1 时才出现,关闭时这里一行 DOM 都没有 -->
+        <div v-if="demo.enabled" class="demo-tip" data-testid="demo-tip">
+          <template v-if="demo.ready">
+            <p class="demo-title">一键体验</p>
+            <p class="demo-desc">
+              演示空间「{{ demo.space_name }}」已备好 {{ demo.document_ready }} 篇文档,登录后可直接问答。
+              密码由讲解人提供。
+            </p>
+            <el-button class="w-full demo-fill-btn" data-testid="demo-fill" @click="fillDemoAccount">
+              填入演示账号
+            </el-button>
+          </template>
+          <template v-else>
+            <p class="demo-title" data-testid="demo-not-ready">演示数据未就绪</p>
+            <p class="demo-desc">
+              演示空间文档入库进度 {{ demo.document_ready }}/{{ demo.document_total }}。
+              需要先在服务端执行 make demo-seed。
+            </p>
+          </template>
+        </div>
       </div>
 
       <p class="terms">登录即代表同意<a>《服务条款》</a>与<a>《隐私政策》</a></p>
@@ -314,6 +372,29 @@ async function onRegister() {
 .w-full {
   width: 100%;
   margin-top: 4px;
+}
+
+.demo-tip {
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px dashed rgba(79, 110, 242, 0.35);
+  border-radius: 10px;
+  background: rgba(79, 110, 242, 0.04);
+}
+.demo-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4f6ef2;
+}
+.demo-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6b7280;
+}
+.demo-fill-btn {
+  margin-top: 12px;
 }
 
 .terms {
