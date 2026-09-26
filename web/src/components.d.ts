@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AppSidebar: typeof import('./components/AppSidebar.vue')['default']
     CreateSpaceDialog: typeof import('./components/CreateSpaceDialog.vue')['default']
+    ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']
