@@ -15,7 +15,6 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
-    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -469,20 +468,20 @@ class PermissionGroupMember(Base):
     )
 
 
-class PermissionEnforcement(Base):
-    """实例级灰度开关单行表(OPT-48):人链路核心接口是否强制"生效档位"。
+class SpacePermissionGroupToggle(Base):
+    """空间级权限挡位功能开关(OPT-48 v2):每空间一行,表无行 = 从未拨过 = 只看角色。
 
-    - 全局单行(CHECK id=1,粒度=整个实例,D1,不做按空间);
-    - **表为空 = 库里没配过**,读值服务回落 env(默认 False)——
-      库里什么都不配 = 行为与今天逐字节一致(fail-closed 底线);
-    - 行上的 updated_at/updated_by 只是最新状态;谁在什么时候从什么拨到什么
-      的完整留痕走 audit_logs(OPT-48 N3),这里不重复记历史。
+    - 打开后,该空间的**人链路核心功能**(问答/检索/会话流/知识库与文档,双凭据清单)
+      要求成员有"生效挡位";成员/模型配置/审计/用量等管理页继续只看角色(2026-09-26 拍板);
+    - **分配/换当前挡位只在开关打开后可用**(没开 → 409 PERMISSION_GROUP_TOGGLE_OFF);
+    - 谁能拨:该空间 Admin+(role≥30),superuser 兜底;拨动历史在 audit_logs(含新旧值)。
     """
 
-    __tablename__ = "permission_enforcement"
-    __table_args__ = (CheckConstraint("id = 1", name="ck_permission_enforcement_singleton"),)
+    __tablename__ = "space_permission_group_toggles"
 
-    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
+    )
     enabled: Mapped[bool] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

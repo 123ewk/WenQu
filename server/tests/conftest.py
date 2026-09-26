@@ -32,16 +32,16 @@ def client():
         from alembic import command
         from alembic.config import Config
 
-        from app.application.service.permission_enforcement import clear_enforcement_cache
+        from app.application.service.permission_group_toggle import clear_space_toggle_cache
         from app.core.config import get_settings
         from app.core.db import get_engine, get_session_factory
 
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
-        # OPT-48:开关读值是进程级 TTL 缓存,换库(测试容器)后必须一并清掉,
-        # 否则上一个进程状态里缓存的开关值会泄漏进本会话的断言。
-        clear_enforcement_cache()
+        # OPT-48 v2:空间级开关读值是进程级 TTL 缓存(按 space_id 分键),换库(测试容器)
+        # 后必须一并清掉,否则上一进程状态里缓存的开关值会泄漏进本会话的断言。
+        clear_space_toggle_cache()
 
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
@@ -78,6 +78,45 @@ def register(client, username: str) -> dict:
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
+
+
+# ---------------------------- OPT-48 v2:空间级权限挡位功能开关 ----------------------------
+
+
+def enable_space_toggle(space_id: str) -> None:
+    """直接写库打开某空间的权限挡位功能开关(v2:分配/换当前要求开关已打开)。
+
+    走 DB 而不是 API:调用方往往还没有空间 Admin 身份的令牌语境,测试只关心"开关是开的"。
+    """
+    import uuid as _uuid
+
+    from app.application.service.permission_group_toggle import clear_space_toggle_cache
+    from app.core.db import get_session_factory
+    from app.domain.models import SpacePermissionGroupToggle
+
+    with get_session_factory()() as db:
+        sid = _uuid.UUID(space_id)
+        row = db.get(SpacePermissionGroupToggle, sid)
+        if row is None:
+            db.add(SpacePermissionGroupToggle(space_id=sid, enabled=True))
+        else:
+            row.enabled = True
+        db.commit()
+    clear_space_toggle_cache()
+
+
+def wipe_space_toggles() -> None:
+    """清空全部空间开关行 + 读值缓存(用例级隔离用:session 级共用库不能泄漏开关状态)。"""
+    from sqlalchemy import delete
+
+    from app.application.service.permission_group_toggle import clear_space_toggle_cache
+    from app.core.db import get_session_factory
+    from app.domain.models import SpacePermissionGroupToggle
+
+    with get_session_factory()() as db:
+        db.execute(delete(SpacePermissionGroupToggle))
+        db.commit()
+    clear_space_toggle_cache()
 
 
 # ---------------------------- OPT-41 两件套:先档位后凭据 ----------------------------

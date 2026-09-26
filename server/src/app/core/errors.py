@@ -47,12 +47,9 @@ class ErrorCode:
     # OPT-41 N1:核心接口(问答/检索/文档增删)必须有"生效档位"才能调 —— 403 不是 401:
     # 人确实登录了,报 401 会把前端踢成"重新登录",而真正缺的是管理员还没给他配权限。
     PERMISSION_GROUP_REQUIRED = (2014, "PERMISSION_GROUP_REQUIRED")
-    # OPT-48:拨动实例级灰度开关的自锁守卫(D3)——开启者本人必须在自己所在的每个空间
-    # 都有生效档位。409 而非 403:他有资格拨,只是"打开后第一个锁死自己"的动作被服务层挡下。
-    PERMISSION_ENFORCEMENT_ACTOR_HAS_NO_GROUP = (
-        2015,
-        "PERMISSION_ENFORCEMENT_ACTOR_HAS_NO_GROUP",
-    )
+    # OPT-48 v2:配挡时机(2026-09-26 用户拍板,字面口径)——空间开关未打开时,
+    # 给成员分配/换当前挡位的动作被拒。409:不是没资格(角色够),是功能状态没到位。
+    PERMISSION_GROUP_TOGGLE_OFF = (2015, "PERMISSION_GROUP_TOGGLE_OFF")
     # 3xxx 知识库与空间
     SPACE_NOT_FOUND = (3000, "SPACE_NOT_FOUND")
     MEMBER_NOT_FOUND = (3001, "MEMBER_NOT_FOUND")

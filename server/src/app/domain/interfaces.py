@@ -22,11 +22,11 @@ from app.domain.models import (
     Memory,
     MemoryProposal,
     Message,
-    PermissionEnforcement,
     PermissionGroup,
     PermissionGroupMember,
     RefreshToken,
     Space,
+    SpacePermissionGroupToggle,
     Task,
     User,
 )
@@ -244,19 +244,18 @@ class PermissionGroupRepository(Protocol):
     def delete_for_user(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int: ...
 
 
-class PermissionEnforcementRepository(Protocol):
-    """实例级灰度开关持久化(OPT-48):全局单行(CHECK id=1)。
+class SpacePermissionGroupToggleRepository(Protocol):
+    """空间级权限挡位功能开关持久化(OPT-48 v2):每空间一行,表无行 = 未打开。
 
-    表为空 = 库里没配过,读值服务回落 env —— 本协议只管行本身,
-    "有行用行、无行回落"的优先级在读值服务里。
+    本协议只管行本身与本空间的影响面统计;读值缓存/回落口径在服务层。
     """
 
-    def get_row(self) -> PermissionEnforcement | None: ...
-    def upsert(self, *, enabled: bool, updated_by: uuid.UUID) -> PermissionEnforcement: ...
-    def impact_counts(self) -> tuple[int, int, int]: ...
-    def spaces_without_current_group(
-        self, user_id: uuid.UUID
-    ) -> list[tuple[uuid.UUID, str]]: ...
+    def get_row(self, space_id: uuid.UUID) -> SpacePermissionGroupToggle | None: ...
+    def upsert(
+        self, *, space_id: uuid.UUID, enabled: bool, updated_by: uuid.UUID
+    ) -> SpacePermissionGroupToggle: ...
+    def impact(self, space_id: uuid.UUID) -> tuple[int, int]: ...
+    def actor_has_active_group(self, space_id: uuid.UUID, user_id: uuid.UUID) -> bool: ...
 
 
 class ChatGateway(Protocol):

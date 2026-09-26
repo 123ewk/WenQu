@@ -4032,56 +4032,38 @@
         }
       }
     },
-    "/api/v1/admin/permission-enforcement": {
+    "/api/v1/spaces/{space_id}/permission-group-toggle": {
       "get": {
         "tags": [
-          "admin-permission-enforcement"
+          "permission-group-toggle"
         ],
-        "summary": "Get Permission Enforcement",
-        "description": "读当前生效值、来源与影响面统计。同一个人 GET 恒 200(A5),拦人只发生在 PUT。",
-        "operationId": "get_permission_enforcement_api_v1_admin_permission_enforcement_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EnforcementStatusOut"
-                }
-              }
-            }
-          }
-        },
+        "summary": "Get Space Permission Group Toggle",
+        "description": "读本空间开关状态与影响面。有资格的人 GET 恒 200,拦人只发生在写路径。",
+        "operationId": "get_space_permission_group_toggle_api_v1_spaces__space_id__permission_group_toggle_get",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
-      },
-      "put": {
-        "tags": [
-          "admin-permission-enforcement"
         ],
-        "summary": "Put Permission Enforcement",
-        "description": "拨动(全局生效);本进程立刻生效,其它 worker 最多缓存 TTL 秒后跟上。",
-        "operationId": "put_permission_enforcement_api_v1_admin_permission_enforcement_put",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EnforcementToggleIn"
-              }
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
             }
-          },
-          "required": true
-        },
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EnforcementStatusOut"
+                  "$ref": "#/components/schemas/SpaceToggleStatusOut"
                 }
               }
             }
@@ -4096,12 +4078,64 @@
               }
             }
           }
-        },
+        }
+      },
+      "put": {
+        "tags": [
+          "permission-group-toggle"
+        ],
+        "summary": "Put Space Permission Group Toggle",
+        "description": "拨动本空间开关;本进程立刻生效,其它 worker 最多缓存 TTL 秒后跟上。",
+        "operationId": "put_space_permission_group_toggle_api_v1_spaces__space_id__permission_group_toggle_put",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpaceToggleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceToggleStatusOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/spaces/{space_id}/model-config": {
@@ -5434,7 +5468,7 @@
           "permission_group.member_assigned",
           "permission_group.member_unassigned",
           "permission_group.current_set",
-          "permission_enforcement.toggled",
+          "permission_group_toggle.set",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",
@@ -6344,105 +6378,6 @@
         },
         "type": "object",
         "title": "EmbeddingKeyTestIn"
-      },
-      "EnforcementImpactOut": {
-        "properties": {
-          "spaces": {
-            "type": "integer",
-            "title": "Spaces"
-          },
-          "members_total": {
-            "type": "integer",
-            "title": "Members Total"
-          },
-          "members_without_active_group": {
-            "type": "integer",
-            "title": "Members Without Active Group"
-          },
-          "actor_has_active_group": {
-            "type": "boolean",
-            "title": "Actor Has Active Group"
-          },
-          "actor_spaces_without_group": {
-            "items": {
-              "$ref": "#/components/schemas/SpaceGapOut"
-            },
-            "type": "array",
-            "title": "Actor Spaces Without Group"
-          }
-        },
-        "type": "object",
-        "required": [
-          "spaces",
-          "members_total",
-          "members_without_active_group",
-          "actor_has_active_group",
-          "actor_spaces_without_group"
-        ],
-        "title": "EnforcementImpactOut",
-        "description": "影响面统计(打开前的自查与\"会锁多少人\"的预览;缺档只展示不拦,D3)。"
-      },
-      "EnforcementStatusOut": {
-        "properties": {
-          "effective": {
-            "type": "boolean",
-            "title": "Effective"
-          },
-          "source": {
-            "type": "string",
-            "enum": [
-              "db",
-              "env_fallback"
-            ],
-            "title": "Source"
-          },
-          "updated_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated At"
-          },
-          "updated_by_hint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated By Hint"
-          },
-          "impact": {
-            "$ref": "#/components/schemas/EnforcementImpactOut"
-          }
-        },
-        "type": "object",
-        "required": [
-          "effective",
-          "source",
-          "impact"
-        ],
-        "title": "EnforcementStatusOut"
-      },
-      "EnforcementToggleIn": {
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "title": "Enabled"
-          }
-        },
-        "type": "object",
-        "required": [
-          "enabled"
-        ],
-        "title": "EnforcementToggleIn"
       },
       "GroupMemberOut": {
         "properties": {
@@ -8019,25 +7954,6 @@
         ],
         "title": "SpaceBriefOut"
       },
-      "SpaceGapOut": {
-        "properties": {
-          "space_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Space Id"
-          },
-          "space_name": {
-            "type": "string",
-            "title": "Space Name"
-          }
-        },
-        "type": "object",
-        "required": [
-          "space_id",
-          "space_name"
-        ],
-        "title": "SpaceGapOut"
-      },
       "SpaceModelConfigOut": {
         "properties": {
           "embedding": {
@@ -8432,6 +8348,83 @@
         },
         "type": "object",
         "title": "SpaceProviderUpdateIn"
+      },
+      "SpaceToggleImpactOut": {
+        "properties": {
+          "members_total": {
+            "type": "integer",
+            "title": "Members Total"
+          },
+          "members_without_active_group": {
+            "type": "integer",
+            "title": "Members Without Active Group"
+          },
+          "actor_has_active_group": {
+            "type": "boolean",
+            "title": "Actor Has Active Group"
+          }
+        },
+        "type": "object",
+        "required": [
+          "members_total",
+          "members_without_active_group",
+          "actor_has_active_group"
+        ],
+        "title": "SpaceToggleImpactOut",
+        "description": "本空间影响面(打开前的自查;缺挡只展示不拦,没有挡位的成员仍可用管理功能自救)。"
+      },
+      "SpaceToggleRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "SpaceToggleRequest"
+      },
+      "SpaceToggleStatusOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Hint"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/SpaceToggleImpactOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "impact"
+        ],
+        "title": "SpaceToggleStatusOut"
       },
       "SwitchSpaceRequest": {
         "properties": {

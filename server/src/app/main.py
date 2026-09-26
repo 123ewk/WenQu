@@ -15,7 +15,6 @@ from fastapi.responses import Response
 from app.api.denied_audit import record_denied
 from app.api.deps import get_event_log, get_stream_supervisor
 from app.api.routes import admin_models as admin_model_routes
-from app.api.routes import admin_permission_enforcement as admin_permission_enforcement_routes
 from app.api.routes import api_keys as api_key_routes
 from app.api.routes import auth as auth_routes
 from app.api.routes import chunking as chunking_routes
@@ -28,6 +27,7 @@ from app.api.routes import models as model_routes
 from app.api.routes import permission_groups as permission_group_routes
 from app.api.routes import retrieval as retrieval_routes
 from app.api.routes import space_models as space_model_routes
+from app.api.routes import space_permission_toggle as space_permission_toggle_routes
 from app.api.routes import spaces as spaces_routes
 from app.api.routes import token_usage as token_usage_routes
 from app.api.routes import users as users_routes
@@ -128,7 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(api_key_routes.router)
     app.include_router(permission_group_routes.router)
     app.include_router(admin_model_routes.router)
-    app.include_router(admin_permission_enforcement_routes.router)
+    app.include_router(space_permission_toggle_routes.router)
     app.include_router(space_model_routes.router)
     app.include_router(token_usage_routes.router)
     app.include_router(demo_routes.router)
