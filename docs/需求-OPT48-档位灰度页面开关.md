@@ -17,39 +17,74 @@
 
 这一段是给执行 agent 的**事实基线**，不是背景介绍。所有条目都是当场实测或读代码得到的。
 
-### 1.1 两个不同的目录，别搞混
+### 1.1 仓库与分支：六个 worktree 各在干什么，本需求的代码写在哪个
 
-| 目录 | 分支 | HEAD | 在干什么 | 和本需求的关系 |
-|---|---|---|---|---|
-| `G:\my\my_file\my_rag`（当前会话工作目录） | `feat/opt45-memory-compaction` | `596ad2c` | OPT-45 记忆/压缩 + OPT-47 产品导览的前端 | **无关，别在这儿写本需求的代码** |
-| `G:\my\my_file\enforce-backend` | `feat/perm-group-enforcement` | `24bbd3a` | **本需求的家** | `24bbd3a` 就是 `origin/main` -tip（PR #16，v0.2.0 合并点）。除 `docs/优化台账.md` 有未提交改动外，工作区干净 |
+一个仓库（GitHub `123ewk/WenQu`，本地 `G:\my\my_file\my_rag` 是主检出）挂了 6 个 worktree，
+**它们是同一份 git 对象库的 6 个不同目录**，各检出不同分支。实测（2026-09-26；复测命令见本表下方）：
 
-`enforce-backend` 里未提交的那处改动就是本需求在台账里的登记（OPT-42 行加交叉引用 + 新增 OPT-48 行），
-N0 片应该把它和本需求文档一起提交。
+| 目录（worktree） | 检出的分支 | HEAD | 相对 `origin/main`(`24bbd3a`) | 远端有没有这条分支 | 未提交改动 | 这条线在干什么 |
+|---|---|---|---|---|---|---|
+| `G:\my\my_file\my_rag` | `feat/opt45-memory-compaction` | `596ad2c` | 落后 **23**，领先 **16** | **有**（且与本地同点，已推送） | 有：`M .dockerignore`、`M .gitignore`、未跟踪 `docs/api/给后端的需求单-OPT41双凭据与ApiKey权限合并.md`、`docs/isolation-diagram.html` | OPT-45 记忆/压缩 + OPT-47 导览的**前端**线；**当前会话的工作目录就在这里** |
+| `G:\my\my_file\enforce-backend` | `feat/perm-group-enforcement` | `bb66f90` | 落后 **0**，领先 **1** | **没有**（未推送、无 PR） | 无（本需求文档就是那 1 个提交） | **本需求唯一该写代码的地方** |
+| `G:\my\my_file\demo-backend` | `feat/opt47-demo-tour` | `18398f6` | 落后 **0**，领先 **10** | **没有**（未推送、无 PR） | 干净 | OPT-47 产品导览（8 步）前端；**本地整套服务都跑在这个目录上**（见 §1.2） |
+| `G:\my\my_file\wenqu-backend` | `main` | `e04dcfc` | 落后 **16**，领先 0 | — | 干净 | 本地 `main` 的检出，**故意没同步**，别拿它当 main 用 |
+| `G:\my\my_file\opt41-backend` | `feat/api-key-permission-groups` | `aa45eb4` | 落后 45，领先 **0** | 有（已合并） | 干净 | OPT-41/44，已随 PR #9 进 main，**遗留目录** |
+| `G:\my\my_file\apikeys-backend` | `feat/api-keys-active` | `f550d7d` | 落后 125，领先 **0** | 有（已合并） | 干净 | OPT-31，已并 main，**遗留目录** |
 
-worktree 全景（都指向同一个仓库，互不干扰）：`my_rag` / `apikeys-backend` / `demo-backend` / `opt41-backend` /
-`wenqu-backend`（检出 `main`，**比 origin/main 落后 17 个 commit，刻意没动**）/ `enforce-backend`。
+**结论三条，执行 agent 必须照此办：**
 
-### 1.2 此刻在跑的服务
+1. **本需求的代码只写在 `G:\my\my_file\enforce-backend`（分支 `feat/perm-group-enforcement`）**。
+   它基于 `24bbd3a`，而 `24bbd3a` **就是 `origin/main` 的 tip**（PR #16 = v0.2.0 发布合并点），
+   所以这条分支是"干净的最新 main + 本需求自己的提交"，没有任何别人的在途改动混在里面。
+2. **分支目前只有 1 个提交 `bb66f90`，内容是两份文档**（`docs/需求-OPT48-档位灰度页面开关.md` 269 行 + `docs/优化台账.md` 的 OPT-42/OPT-48 行）。
+   `git show --stat bb66f90` 可自证：`server/`、`web/` **零改动**。**代码一行都没写。**
+3. 在 `my_rag`、`demo-backend` 里看到的东西（OPT-45 悬浮窗、OPT-47 导览、`.gitignore` 的未提交改动）**都不是本需求的产物，也不要碰**；
+   那两个目录里各有 16 个、10 个未并 main 的领先提交，属另两条线，push 与 PR 由用户另行决定。
 
-| 端口 | 是什么 | 口径 |
-|---|---|---|
-| `:5173` | Vite dev server，正在服务 **`demo-backend` worktree**（OPT-47 前端分支），HMR 活跃 | **绝不动**，用户在这里手点 |
-| `:8000` | 后端，从 `my_rag` worktree 起，带 `APP_DEMO_MODE=1` | **共享调试后端**，重启前必须先告知用户 |
-| `:50051` | parser gRPC | 无关 |
-| `5432` | `my_rag-postgres-1` 容器里的 dev 库 `wenqu` | alembic head **0021**，和 prod 不是同一套 |
+复测命令（整段可复制）：
+
+```bash
+cd /g/my/my_file/enforce-backend
+git worktree list                                   # 六个工作区与各自 HEAD
+git rev-parse --short origin/main                   # 应为 24bbd3a(会随合并变)
+git log --oneline origin/main..HEAD                 # 本分支独有的提交
+git rev-list --left-right --count origin/main...HEAD # 左=落后 右=领先
+git ls-remote --heads origin feat/perm-group-enforcement  # 空输出 = 未推送
+```
+
+### 1.2 此刻在跑的进程：端口 → PID → 是哪个目录起的（实测，别猜）
+
+用 `netstat -ano | grep LISTEN` 拿 PID，再用 `Get-CimInstance Win32_Process` 拿命令行，实测结果：
+
+| 端口 | 进程 | 真实来源目录 | 口径 |
+|---|---|---|---|
+| `:8000` | `uvicorn app.main:app --host 127.0.0.1 --port 8000`（PID 16308，经 `uv.exe run` 10348 → `.venv` 10572/18212 层层起的同一个服务） | **`G:\my\my_file\demo-backend\server`** | **更正：它不是从 `my_rag` 起的**（本会话先前口述有误，以本表为准）。它服务的是 OPT-47 分支，但那条分支的 `src/` **与 main 逐字节相同**（相对 `origin/main` 只改了 `server/scripts/demo_run.py` + `web/`），所以 `:8000` 跑的后端代码 = **最新 main 的代码**。它同时是**共享调试后端**，**重启前必须先告知用户** |
+| `:5173` | `vite`（PID 21096，父 `cmd /c vite` 23400） | `G:\my\my_file\demo-backend\web` | 用户在浏览器里手点的就是这个，HMR 活跃，**绝不动** |
+| `:50051` | `python -m parser_service.server`（PID 18156 ← `.venv` 8232 ← `uv.exe` 11192） | `G:\my\my_file\demo-backend\parser` | 解析服务，与本需求无关 |
+| （无端口） | `python -m app.worker`（PID 25532 ← `.venv` 23072 ← `uv.exe` 18148） | `G:\my\my_file\demo-backend\server` | 入库 worker，在跑 |
+| `:5432` / `:9000-9001` | docker（PID 7192）→ 容器 `my_rag-postgres-1` / `my_rag-minio-1` | — | dev 库 `wenqu`，alembic head **0021**；**容器名带 `my_rag` 前缀但和 `my_rag` 那个 worktree 的代码无关**，它是 compose project 名，三个 worktree 共用这一个库 |
+
+也就是说：**四个进程（server/worker/parser/web）全部从 `demo-backend` 起，数据库是三个 worktree 共用的 dev 库。**
+
+**这条对本需求的直接影响**：你在 `enforce-backend` 写完 N1–N6 之后，`:8000` 上**不会自动出现你的改动**（它跑的是另一个目录的代码）。
+要真机验收 A2/A5/A7，必须**先告知用户并得到确认**，再选择"把 :8000 切到 enforce-backend 重启"或"另起一个端口跑本分支"；
+**不要在用户不知情的情况下重启 :8000**（它正被人用来点导览）。
 
 **`APP_DEMO_PASSWORD` 只存在于 `:8000` 那个进程的环境里，任何 `.env` 文件都没有。**
 所以要跑 `make demo-run` / `demo-seed` 得向用户要密码；本需求不需要它。
 
-dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql -U wenqu -d wenqu -c "..."`，
-**`docker exec` 一律不带 `-t`**，带 `-t` 会把 `pg_dump` 类命令的输出流搞坏）：
+### 1.3 dev 库 `wenqu` 的数据量（决定"打开会锁多少人"）
+
+连接方式：`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql -U wenqu -d wenqu -c "..."`
+（**`docker exec` 一律不带 `-t`**，带 `-t` 会把 `pg_dump` 类命令的输出流搞坏；dev 库的用户名=库名都是 `wenqu`，
+**prod 用的是 `postgres` 用户 + compose 里 `${POSTGRES_USER}`，两别再混**）。
 
 - `users` 101 行，其中 `is_superuser=true` **只有 1 行**：`dev_admin_a3236`（测试夹具账号）；
 - `spaces` 62 个；`permission_groups` 23 个；`permission_group_members` 20 行。
   → 也就是说**dev 库里大部分成员根本没挂档位**，这正是"打开那一刻会锁人"的现实规模。
+- alembic head 实测 **0021**（`server/alembic/versions/` 最新文件是 `0021_message_context_cache.py`）⇒ 本需求的迁移号是 **0022**。
 
-### 1.3 已实测的关键代码事实（带行号，执行时先自己复核一遍）
+### 1.4 已实测的关键代码事实（带行号，执行时先自己复核一遍）
 
 | 事实 | 位置 | 为什么重要 |
 |---|---|---|
@@ -60,13 +95,13 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 | `route_in_dual_list(path, method)` = `resolve_route_capability(...) is not None` | `server/src/app/api/api_key_auth.py:129`、`:139`，表 `_ROUTE_CAPABILITIES`（`:61`） | 决定哪些路由真的会被这个开关影响 |
 | superuser 守卫：`get_current_superuser`，403 文案是「仅平台管理员可管理模型」 | `server/src/app/api/deps.py:111-115` | 文案是**模型管理专用**；复用守卫可以，**复用文案会给出一条误导信息**（见 §5 阻塞项 B2） |
 | `is_superuser` 列 `default=False, server_default="false"` | `server/src/app/domain/models.py:48` | 代码里**没有任何自助提升入口**（无端点、无脚本） |
-| superuser 引导**有**文档化的运维动作 | `docs/上线手册.md:38`：`docker compose exec -T postgres psql -U postgres -d wenqu -c "UPDATE users SET is_superuser=true WHERE username='<运维账号>';"` | prod 走这条；**dev/本地没有对应命令**（库名/用户/容器名都不同），见 §5 阻塞项 B1 |
+| superuser 引导**有**文档化的运维动作 | `docs/上线手册.md` §2 第 3a 步：`docker compose exec -T postgres psql -U postgres -d wenqu -c "UPDATE users SET is_superuser=true WHERE username='<运维账号>';"`（文档标题「配置模型（OPT-25 新增硬前置…）」下面第一行） | prod 走这条；**dev/本地没有对应命令**（库名/用户/容器名都不同），见 §5 阻塞项 B1 |
 | 迁移门禁硬断言 `get_heads() == ["0021"]` | `server/tests/test_migration_gate.py:18-21` | 新增 0022 **必须同片改这个断言**，否则整条测试红 |
 | 契约清单 `REQUIRED_PATHS` | `server/tests/test_openapi_contract.py:19`（双向一致性断言在 `:151`、`:226`） | 新端点必须登记 + `make server-openapi` 重导 |
 | 错误码集中注册 | `server/src/app/core/errors.py` | 新错误码要进这里 |
 | 门禁命令 | `Makefile:34` `server-test`、`:37` `server-lint`(ruff+mypy)、`:40` `server-openapi`、`:64` `web-build` | 每片必跑 |
 
-### 1.4 顺手实测到的、会影响决策的一条
+### 1.5 顺手实测到的、会影响决策的一条
 
 用浏览器以演示账号 `demo`（在演示空间）真实调用 `GET /api/v1/admin/model-providers` → **403**。
 即：演示账号不是 superuser，页面上一旦把入口挂在 superuser 守卫后面，**演示现场就看不到这个开关**。
@@ -85,7 +120,7 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 **权限档位（permission group）** 是 OPT-41 引入的"能力的唯一真相"：一个档位 = 一组能力（能问答/能检索/能改文档…）
 + 一组可见的知识库范围。OPT-31 时代的 `api_keys.is_active` 那套语义已被 0018 删列取代。
 
-真人这一侧要不要也按档位收口，由 §1.3 那个灰度开关决定：
+真人这一侧要不要也按档位收口，由那个灰度开关决定（代码事实见 §1.4）：
 
 - **关（今天、默认、prod 现状）**：人只看角色。所以"没配档位照样能问答"是**设计如此**，不是漏洞。
 - **开**：人在"双凭据强制清单"内的路由（问答、检索、文档增删）上也要有**生效档位**，没有就 403
@@ -101,7 +136,7 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 | # | 决策 | 原话/依据 | 含义与代价 |
 |---|---|---|---|
 | D1 | **粒度 = 全局**，env 仍是兜底 | 用户选「做，全局粒度 + 前置校验（推荐）」 | 打开就是**整个实例所有空间**的人都开始被校验。页面措辞**必须写明"影响整个实例"**，否则用户会以为只影响当前空间 |
-| D2 | **只有 superuser 能拨** | 同上，我在方案里写明、用户未反对；依据是 `get_current_superuser`（`deps.py:111`） | 不给普通空间 Admin：任何空间的 Admin 都能一键把全实例真人锁在外面，这不对等。代价是演示账号看不到入口（§1.4） |
+| D2 | **只有 superuser 能拨** | 同上，我在方案里写明、用户未反对；依据是 `get_current_superuser`（`deps.py:111`） | 不给普通空间 Admin：任何空间的 Admin 都能一键把全实例真人锁在外面，这不对等。代价是演示账号看不到入口（§1.5） |
 | D3 | **前置校验只硬校验拨开关的人自己** | 用户原话「不不不，是正在使用的人必需要有挡位(就校验他自己)」 | 我一度设计成"全实例所有真人都得有档位才允许打开"，**被否掉**。改成：拨开关时**硬校验操作者本人**在所操作空间有没有生效档位，没有就 409 拒绝（防"一开第一个被锁死的是自己"）；**其他人缺档位只做统计展示，不拦**。运行时语义完全不变——打开后每人各自被服务端校验 |
 
 **未拍板、需要用户回答的一项**：页面 UI 由谁实现（后端只出契约工单，还是这条线也顺手做前端）。
@@ -133,7 +168,7 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 - **不做"关掉时自动帮人补档位"**之类的便利写库。
 - **不改 env 变量的名字或语义**，它仍是兜底来源。
 - **不做多 worker 强一致（Redis pub/sub 之类）**，60s TTL 已足够（见 §4.1-3）。
-- **不在导览/演示模式里露出这个开关**（演示账号非 superuser，§1.4）。
+- **不在导览/演示模式里露出这个开关**（演示账号非 superuser，§1.5）。
 
 ---
 
@@ -143,7 +178,7 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 
 - 事实：dev 库只有 `dev_admin_a3236` 一个 superuser（测试夹具），演示账号 `demo` 打 `GET /api/v1/admin/model-providers` **实测 403**。
 - `is_superuser` **没有任何自助提升入口**（`models.py:48` 默认 false，代码里无端点、无脚本）；唯一文档化的引导是
-  `docs/上线手册.md:38` 的 **prod** compose 命令，dev 环境的容器名/库名/用户都不同，那条**照抄不能跑**。
+  `docs/上线手册.md` §2 第 3a 步的 **prod** compose 命令，dev 环境的容器名/库名/用户都不同，那条**照抄不能跑**。
 - 两个选项（**执行 agent 不要自己选，交用户拍**）：
   - **B1-a 补一条 dev 手册命令**（推荐，不动代码）：在本需求文档/上线手册里给出 dev 版
     `docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql -U wenqu -d wenqu -c "UPDATE users SET is_superuser=true WHERE username='demo';"`
@@ -177,7 +212,7 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 
 | 片 | 内容 | 触碰 | 门禁 |
 |---|---|---|---|
-| **N0** | 台账（已改，未提交）+ 本需求文档提交 | `docs/` | 文档片，无需跑测试 |
+| **N0** | ~~台账 + 本需求文档~~ **已完成**（`bb66f90`，2026-09-26） | `docs/` | 文档片，无门禁 |
 | **N1** | 迁移 **0022**：全局单行开关表（`enabled`、`updated_at`、`updated_by`） | `alembic/versions/0022_*.py` | **同片改** `tests/test_migration_gate.py:18-21` 断言为 `["0022"]` |
 | **N2** | 仓储 + 读值服务：DB 优先 → env 回落 → 进程内缓存（TTL 60s + 显式失效） | `domain/`、`repositories/`、`services/` | lint + test |
 | **N3** | 服务层：拨动前置校验（D3，只硬校验操作者）+ 影响面统计 + 审计 | `services/` | lint + test |
@@ -212,15 +247,34 @@ dev 库 `wenqu` 实测（`docker exec -e PGPASSWORD=wenqu my_rag-postgres-1 psql
 【先读，别急着写代码】
 1. 需求与已实测环境：G:\my\my_file\enforce-backend\docs\需求-OPT48-档位灰度页面开关.md（§1 环境事实、§3 三条已拍板决策、§4 边界、§5 两个阻塞项、§7 切片表、§8 验收）。
 2. 台账：docs\优化台账.md 的 OPT-48 行与 OPT-42 行。
-3. 设计文档：docs\设计-OPT41*.md 与 docs\架构设计.md 相关章节（权限档位是唯一真相、双凭据清单、_member_perm_for 的两条刻意返回 None 分支）。
+3. 档位这条线的既有文档（没有"设计-OPT41"这个文件，别再找）：docs\架构设计.md 的权限/隔离章节、
+   docs\api\给前端的契约变更说明-OPT41权限档位.md、docs\api\前端实现工单-OPT41权限档位.md、
+   docs\api\给前端的回复-OPT41前端落地与F6实测.md；最权威的语义在代码注释里
+   （server\src\app\api\deps.py 的 Caller/_member_perm_for，api_key_auth.py 的 _ROUTE_CAPABILITIES）。
 
-【工作位置】只在 G:\my\my_file\enforce-backend（分支 feat/perm-group-enforcement，基于 24bbd3a = origin/main tip）里改。
-不要在 G:\my\my_file\my_rag（OPT-45 前端线）或 demo-backend（OPT-47 导览线）里动任何东西。
-开工前 git status 确认干净（除 N0 的未提交 docs 改动），先跑一遍读代码核对 §1.3 的行号是否仍成立——行号会漂。
+【工作位置 —— 分支状态已实测，照此办事】
+只在 G:\my\my_file\enforce-backend 里改。这条线的所有事实：
+- 目录 G:\my\my_file\enforce-backend；分支 feat/perm-group-enforcement；当前 HEAD bb66f90；
+- 基于 24bbd3a，而 24bbd3a 就是 origin/main 的 tip（PR #16 = v0.2.0），所以分支相对 main 落后 0、领先 1；
+- 那 1 个领先提交（bb66f90）只有两份文档（本需求单 + 台账 OPT-42/OPT-48 行），server/ 与 web/ 零改动 —— 即 N0 已完成；
+- 远端没有这条分支（未 push、无 PR）；要不要 push、什么时候开 PR 由用户决定，你不要擅自 push。
+N0 已交付，**你从 N1 开始**。开工前跑：
+  cd /g/my/my_file/enforce-backend && git status --short && git log --oneline origin/main..HEAD && git rev-parse --short origin/main
+预期：status 干净、log 只列出文档提交、origin/main tip 就是 24bbd3a（若已前进，先读前进的内容再动手）。
+再读代码核对 §1.4 表格里的行号是否仍成立 —— 行号会漂，以你读到的为准，别照抄进代码注释。
+其它 worktree（my_rag = OPT-45 前端线，demo-backend = OPT-47 导览线，两者各有十几个未并 main 的领先提交）一律不碰。
+
+【本地服务在跑什么 —— 决定你怎么验收】
+实测：:8000 uvicorn、app.worker、:50051 parser、:5173 vite **四个进程全部从 G:\my\my_file\demo-backend 起**（不是 my_rag，也不是本分支）。
+后果：你在 enforce-backend 写完代码，:8000 上不会出现任何变化。要真机验收 A2/A5/A7，必须先告知用户并等确认，
+再选"把 :8000 切到 enforce-backend 重启"或"另起一个端口（如 :8010）跑本分支"；
+更稳的做法是优先用测试（真 Postgres 的集成测）覆盖，把需要重启共享后端的项目留给用户点头后的专门一轮。
+:5173 绝对不动（用户正在浏览器里点导览）。dev 库 wenqu 是三个 worktree 共用的（容器名 my_rag-postgres-1 只是 compose project 名），
+迁移 0022 **不要在共享 dev 库上随手 upgrade**，先备份、先问用户。
 
 【目标】把 APP_REQUIRE_PERMISSION_GROUP_FOR_CORE 从"只能改环境变量+重启"升级成 superuser 页面可拨的运行时开关。
 开关语义一个字都不改，只改取值来源：DB 有行用 DB → 无行回落 env → env 默认 False（库里什么都不配 = 行为与今天逐字节一致）。
-切片按 §7 的 N0→N6（N7 是前端工单）顺序做。
+切片按 §7 的 N1→N6 顺序做（N7 是前端接入工单；UI 由谁实现要先问用户）。
 
 【三条已拍板决策，不得自行改动】
 D1 粒度=全局，页面与契约里必须写明"影响整个实例所有空间"。
@@ -230,7 +284,7 @@ D3 前置校验只硬校验拨开关的人自己（他在所操作空间有无�
 
 【两个阻塞项先停手问用户】
 B1 dev/本地没有可用 superuser（dev 库 101 用户里只有测试夹具 dev_admin_a3236 一个；demo 账号实测 403；
-   is_superuser 无自助入口，上线手册 :38 那条是 prod compose 专用）。要么补一条 dev 提权 SQL 命令（改共享 dev 库要用户点头），
+   is_superuser 无自助入口，上线手册 §2-3a 那条提权 SQL 是 prod compose 专用，dev 的容器/库/用户都不同，照抄跑不通）。要么补一条 dev 提权 SQL 命令（改共享 dev 库要用户点头），
    要么放宽守卫（与 D2 冲突）。选哪个由用户定，你不要自己改守卫。
 B2 get_current_superuser 的 403 文案「仅平台管理员可管理模型」是模型专用，复用守卫但要给档位开关一条不误导的新文案；
    不要改既有守卫的文案。
