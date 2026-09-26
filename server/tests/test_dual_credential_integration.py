@@ -18,10 +18,19 @@ import uuid
 
 import pytest
 
+from app.application.service.permission_enforcement import clear_enforcement_cache
 from tests.conftest import create_group
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _isolated_enforcement_cache():
+    """OPT-48:开关读值缓存是进程级的,每个用例前后都清,双向防跨用例泄漏。"""
+    clear_enforcement_cache()
+    yield
+    clear_enforcement_cache()
 
 
 def _uname(prefix: str) -> str:
@@ -29,15 +38,21 @@ def _uname(prefix: str) -> str:
 
 
 def _gate_on(monkeypatch) -> None:
-    """只替换 deps 里的 get_settings:环境变量照旧生效,只翻这一个开关。"""
-    from app.api import deps as deps_module
+    """把开关置为"打开"(模拟 env 回落路径:库里无行 + env=1)。
+
+    OPT-48 起读点改走"DB 优先 → env 回落"的读值服务,deps 不再直接调 get_settings,
+    接缝随之换到服务模块;进程内 TTL 缓存是跨请求的,翻转后必须清一次,
+    否则 setup 阶段缓存住的"关"会盖过这里的环境变量。
+    """
+    from app.application.service import permission_enforcement as pe_module
     from app.core.config import Settings
 
     monkeypatch.setattr(
-        deps_module,
+        pe_module,
         "get_settings",
         lambda: Settings(require_permission_group_for_core=True),
     )
+    pe_module.clear_enforcement_cache()
 
 
 def _scene(client) -> tuple[dict, dict, str, str, str]:

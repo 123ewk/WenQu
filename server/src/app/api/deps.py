@@ -51,7 +51,10 @@ from app.application.service.effective_permission import (
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.memory import MemoryService
 from app.application.service.model_admin import ModelAdminService
-from app.application.service.permission_enforcement import PermissionEnforcementService
+from app.application.service.permission_enforcement import (
+    PermissionEnforcementService,
+    permission_enforcement_enabled,
+)
 from app.application.service.permission_groups import PermissionGroupService
 from app.application.service.profile import ProfileService
 from app.application.service.qa import BackgroundDb, QAService
@@ -200,7 +203,7 @@ def _member_perm_for(
     - 路由不在「双凭据强制清单」内 —— 空间/成员/档位/Key/模型配置和 `/admin/*` 只看角色,
       否则 Admin 在还没配档位时会连建档位的入口都没有,空间失去管理。
     """
-    if not get_settings().require_permission_group_for_core:
+    if not permission_enforcement_enabled(db):
         return None
     if not route_in_dual_list(request.url.path, request.method):
         return None
