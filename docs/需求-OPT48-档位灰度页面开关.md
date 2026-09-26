@@ -253,14 +253,14 @@ git ls-remote --heads origin feat/perm-group-enforcement  # 空输出 = 未推�
    （server\src\app\api\deps.py 的 Caller/_member_perm_for，api_key_auth.py 的 _ROUTE_CAPABILITIES）。
 
 【工作位置 —— 分支状态已实测，照此办事】
-只在 G:\my\my_file\enforce-backend 里改。这条线的所有事实：
-- 目录 G:\my\my_file\enforce-backend；分支 feat/perm-group-enforcement；当前 HEAD bb66f90；
-- 基于 24bbd3a，而 24bbd3a 就是 origin/main 的 tip（PR #16 = v0.2.0），所以分支相对 main 落后 0、领先 1；
-- 那 1 个领先提交（bb66f90）只有两份文档（本需求单 + 台账 OPT-42/OPT-48 行），server/ 与 web/ 零改动 —— 即 N0 已完成；
-- 远端没有这条分支（未 push、无 PR）；要不要 push、什么时候开 PR 由用户决定，你不要擅自 push。
+只在 G:\my\my_file\enforce-backend 里改。这条线的事实（以你跑出来的为准，别信这里写的哈希）：
+- 目录 G:\my\my_file\enforce-backend；分支 feat/perm-group-enforcement；
+- 基点 24bbd3a，而 24bbd3a 就是 origin/main 的 tip（PR #16 = v0.2.0），所以这条分支 = 最新 main + 本需求自己的提交，没有别人的在途改动；
+- 领先 main 的那几个提交**全是文档**（需求单 + 台账），server/ 与 web/ 零改动 —— 即 N0 已完成、**代码一行没写**；
+- 远端有没有这条分支要自己查（git ls-remote --heads origin feat/perm-group-enforcement）；写文档时是**没有**（未 push、无 PR）。要不要 push、何时开 PR 由用户决定，你不要擅自 push。
 N0 已交付，**你从 N1 开始**。开工前跑：
   cd /g/my/my_file/enforce-backend && git status --short && git log --oneline origin/main..HEAD && git rev-parse --short origin/main
-预期：status 干净、log 只列出文档提交、origin/main tip 就是 24bbd3a（若已前进，先读前进的内容再动手）。
+预期：status 干净、log 只列出文档提交、origin/main tip 若已前进则先读前进的内容再动手。
 再读代码核对 §1.4 表格里的行号是否仍成立 —— 行号会漂，以你读到的为准，别照抄进代码注释。
 其它 worktree（my_rag = OPT-45 前端线，demo-backend = OPT-47 导览线，两者各有十几个未并 main 的领先提交）一律不碰。
 
@@ -274,7 +274,38 @@ N0 已交付，**你从 N1 开始**。开工前跑：
 
 【目标】把 APP_REQUIRE_PERMISSION_GROUP_FOR_CORE 从"只能改环境变量+重启"升级成 superuser 页面可拨的运行时开关。
 开关语义一个字都不改，只改取值来源：DB 有行用 DB → 无行回落 env → env 默认 False（库里什么都不配 = 行为与今天逐字节一致）。
-切片按 §7 的 N1→N6 顺序做（N7 是前端接入工单；UI 由谁实现要先问用户）。
+切片顺序（每片一个提交，逐文件 git add）：
+- N1 迁移 0022：全局单行开关表（enabled + updated_at + updated_by），只加不删；同片改 test_migration_gate.py 的 head 断言为 ["0022"]。
+- N2 仓储 + 读值服务：DB 有行→用 DB；无行→回落 env；进程内缓存（TTL 默认 60s，可配）+ 写时主动失效本进程，注释里写清"其它 worker ≤60s 跟上；开关不是权限本身，晚 60s 只是晚 60s 开始拒绝，不造成越权"。
+- N3 服务层：拨动前置校验（只硬校验操作者本人）+ 影响面统计（成员总数/无生效档人数/本人在哪些空间无档）+ 写 audit_logs。
+- N4 路由与契约：GET/PUT 两个端点（路径前缀照 server/src/app/api/routes/admin_models.py 的既有注册风格定）+ 新错误码进 errors.py + REQUIRED_PATHS + make server-openapi。
+- N5 deps.py:171 改读新服务，跑双凭据相关既有测试回归（Key 链路必须完全不受影响）。
+- N6 测试补全：回落优先级、打开态 403、自锁守卫 409、缓存失效、审计留痕。
+- N7 前端接入工单写进 docs/api/（字段、"影响整个实例"的措辞要求、409/403 分别怎么提示、非 superuser 时不显示入口）；
+  **UI 由谁实现要先问用户**，默认只出工单不改 web 页面。
+
+【必读的实现事实（2026-09-26 实测；行号会漂，动手前自己复核，别照抄进代码注释）】
+- 开关定义 server/src/app/core/config.py:113-119；get_settings() 带 @lru_cache（config.py:148-150）
+  ⇒ env 值在进程内是固化的，改 env 必须重启；单测要换值就用 get_settings.cache_clear()（server/tests/conftest.py:35-37 就是这个写法）。
+- 全库唯一读点 server/src/app/api/deps.py:171（函数 _member_perm_for 从 :159 起）；同函数注释（:159-185）写明
+  "返回 None 的两种情况都是刻意为之"，不要顺手把清单外路由也带上档位。
+- superuser 守卫 deps.py:111-115；双凭据清单在 api_key_auth.py:61(_ROUTE_CAPABILITIES)、:129(resolve_route_capability)、:139(route_in_dual_list)。
+- 表名：档位是 permission_groups / permission_group_members（domain/models.py:416、:449）；
+  成员关系表叫 **memberships**（models.py:109），**没有 space_members 这张表**（写统计 SQL 时踩过）。
+- 迁移：当前 head=0021（server/alembic/versions/0021_message_context_cache.py），本需求用 0022；
+  server/tests/test_migration_gate.py:18-21 硬断言 get_heads()==["0021"]，必须同片改成 ["0022"]。
+- 契约：新端点登记 server/tests/test_openapi_contract.py:19 的 REQUIRED_PATHS（双向一致性断言在 :151、:226）+ make server-openapi 重导；
+  新错误码进 server/src/app/core/errors.py。
+- 门禁：make server-lint（ruff+mypy）、make server-test、make server-openapi、make web-build（前端片才用）；
+  ruff line-length=100 且 E501 把中文按 2 列宽计，中文注释/长断言最容易超标。
+
+【测试怎么连数据库 —— 决定你敢不敢碰共享库】
+- 集成测试用 **testcontainers 起临时真 Postgres**（镜像 pgvector/pgvector:pg16），见 server/tests/conftest.py:15-40：
+  docker 不可用就 skip 而非失败；夹具内部自己 alembic upgrade head。
+  ⇒ **N1 的 0022 会被测试自己跑起来，完全不需要升共享 dev 库**；不要在 dev 库上 alembic upgrade，除非用户明确点头并先备份。
+- enforce-backend 这个 worktree **没有 server/.env**（新目录；.env 不入库）。这是正常状态，CI 同样没有 .env。
+  ⇒ 禁止从别的 worktree 复制 .env 过来；门禁与测试都不依赖它。只有要真链路连 dev 库时，才把变量显式注入那一个进程的环境。
+- 需要读 prod/dev 真实数据做统计口径核对时，用只读 SELECT；任何 UPDATE/DELETE 都要先问用户。
 
 【三条已拍板决策，不得自行改动】
 D1 粒度=全局，页面与契约里必须写明"影响整个实例所有空间"。
@@ -291,7 +322,8 @@ B2 get_current_superuser 的 403 文案「仅平台管理员可管理模型」�
 
 【铁律，违反即返工】
 - 一片一提交、逐文件 git add（禁 git add -A / git add .）、每片跑门禁、不动别人的改动、绝不擅自 push 或并 main。
-- 每片门禁：cd G:\my\my_file\enforce-backend && make server-lint && make server-test。基线 569 passed，只许增不许减。
+- 每片门禁：cd G:\my\my_file\enforce-backend && make server-lint && make server-test。
+  历史基线 569 passed；**以你 N1 之前先跑一次得到的数字为新基线**（main 前进过就会变），只许增不许减。
 - 新迁移从 0022 起（0016/0017/0018 已用，0021 是当前 alembic head），且必须同片把
   server/tests/test_migration_gate.py:18-21 的 get_heads() 断言改成 ["0022"]。
 - 新端点：登记 server/tests/test_openapi_contract.py:19 的 REQUIRED_PATHS，并跑 make server-openapi 重导 docs/api/openapi.json（契约不一致 CI 会红）。
@@ -310,8 +342,20 @@ B2 get_current_superuser 的 403 文案「仅平台管理员可管理模型」�
 【不确定性处理】决策点没写清、契约命名拿不准、要改共享环境、要碰守卫语义 —— 停下来问，不要猜着往下做。
 先复述你理解的状态与要动的清单，得到确认再写代码。
 
-【交付】跑完 §8 验收清单（A1–A9），给出每片的提交号、门禁输出结论（测试数、lint、契约 diff），
-并说明 A2/A4 是怎么实测/单测钉住的。无法验证的项要直说"未验证"，不要写"应该没问题"。
+【验收清单（§8 的压缩版，逐条给证据）】
+A1 库里无行时行为与今天逐字节一致（空库跑测试全绿；核心路由不新增打库）。
+A2 PUT 之后本进程立刻生效，不用重启。
+A3 env 兜底仍生效（无库行 + APP_REQUIRE_PERMISSION_GROUP_FOR_CORE=1 ⇒ 打开态；有库行以库为准）。
+A4 缓存口径按 §4.1-3 用单测钉住（TTL 内不打库、显式失效立刻打库）。
+A5 操作者本人在所操作空间无生效档位 ⇒ PUT 返回 409，而同一人 GET 正常。
+A6 别人缺档位不拦：PUT 仍成功，且 impact.members_without_active_group 与库里 SELECT 数字一致。
+A7 非 superuser ⇒ 403 且文案不误导；X-API-Key 打 /admin/* ⇒ 既有 fail-closed 命中（不许出现 Key 能拨的情况）。
+A8 拨动一次在 audit_logs 留一条，含新旧值。
+A9 门禁：make server-test ≥ 基线（只增不减）、make server-lint 绿、make server-openapi 有 diff 且契约一致。
+
+【交付】跑完 A1–A9，逐片给出提交号 + 门禁输出结论（测试数、lint 结果、契约 diff 概要），
+并说明 A2/A4 是被哪条测试或哪次实测钉住的。跑不了的项直说"未验证 + 为什么"，不要写"应该没问题"。
+最后更新 docs/优化台账.md 的 OPT-48 行（状态从"未写代码"改成实际进度）。
 ```
 
 ---
