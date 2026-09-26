@@ -89,10 +89,35 @@ function onScrollOrResize() {
   if (tour.running) void locate(0)
 }
 
+let mo: MutationObserver | null = null
+let moTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 页面内容会在导览途中自己变化:接口回来后 loading 卡换空态/列表、流式消息逐条追加。
+ *  高亮框只在换步/滚动时重量的话,就会照在旧位置的空白上(OPT-47 实测第三步踩中),
+ *  所以导览运行期间监听 DOM 子树变化,防抖后重新定位。只监听 childList:卡片自身
+ *  改的是 style,不会再触发本观察者,无回环。 */
+function watchDomChanges() {
+  if (mo) return
+  mo = new MutationObserver(() => {
+    if (!tour.running) return
+    if (moTimer) clearTimeout(moTimer)
+    moTimer = setTimeout(() => void locate(0), 120)
+  })
+  mo.observe(document.body, { childList: true, subtree: true })
+}
+
+function unwatchDomChanges() {
+  mo?.disconnect()
+  mo = null
+  if (moTimer) clearTimeout(moTimer)
+}
+
 watch(
   () => [tour.running, tour.index, tour.step?.key],
   () => {
     if (retryTimer) clearTimeout(retryTimer)
+    if (tour.running) watchDomChanges()
+    else unwatchDomChanges()
     void locate()
   },
 )
@@ -105,6 +130,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onScrollOrResize)
   window.removeEventListener('scroll', onScrollOrResize, true)
   if (retryTimer) clearTimeout(retryTimer)
+  unwatchDomChanges()
 })
 
 const nextLabel = computed(() => {

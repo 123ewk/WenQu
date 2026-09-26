@@ -492,8 +492,9 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
         </el-button>
       </div>
 
-      <!-- 空态:没档位时,灰度开关一开全员都不可用,所以这里给足提示 -->
-      <div v-else-if="!loading && !groups.length" class="state-wrap">
+      <!-- 空态:没档位时,灰度开关一开全员都不可用,所以这里给足提示。
+           data-tour 与表格分支同名:导览第三步在"还没有档位"的空间里也要有东西可照(OPT-47) -->
+      <div v-else-if="!loading && !groups.length" class="state-wrap" data-tour="tour-groups">
         <div class="state-title">还没有权限档位</div>
         <div class="state-desc">
           先建一档(例如"对话检索 + 全部知识库"),再把它分配给成员或挂到 API Key 上
