@@ -15,6 +15,7 @@ import {
   OfficeBuilding,
   Plus,
   Setting,
+  Switch,
   SwitchButton,
   User,
 } from '@element-plus/icons-vue'
@@ -22,7 +23,7 @@ import {
 import CreateSpaceDialog from '@/components/CreateSpaceDialog.vue'
 import { errMessage } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
-import { roleLabel } from '@/utils/roles'
+import { isAtLeast, ROLE, roleLabel } from '@/utils/roles'
 
 const collapsed = defineModel<boolean>('collapsed', { default: false })
 const route = useRoute()
@@ -34,6 +35,9 @@ const userPop = ref<PopoverInstance>()
 const createOpen = ref(false)
 
 const avatarChar = computed(() => (auth.user?.nickname || auth.user?.username || '?').slice(0, 1))
+
+/** OPT-48:实例级灰度开关入口 —— 任意空间 Admin+(role≥30)或 superuser;与后端守卫同口径 */
+const canManageEnforcement = computed(() => auth.spaces.some((s) => isAtLeast(s.role, ROLE.ADMIN)))
 
 function toggleCollapse() {
   collapsed.value = !collapsed.value
@@ -135,6 +139,16 @@ async function onLogout() {
       </router-link>
       <router-link to="/permission-groups" class="nav-item" active-class="nav-active" data-testid="nav-permission-groups">
         <el-icon><Lock /></el-icon><span class="sb-text">权限档位</span>
+      </router-link>
+      <!-- OPT-48:实例级灰度开关,任意空间 Admin+(role≥30)才显示;效果是全局的 -->
+      <router-link
+        v-if="canManageEnforcement"
+        to="/settings/permission-enforcement"
+        class="nav-item"
+        active-class="nav-active"
+        data-testid="nav-permission-enforcement"
+      >
+        <el-icon><Switch /></el-icon><span class="sb-text">档位灰度开关</span>
       </router-link>
       <router-link to="/settings/models" class="nav-item" active-class="nav-active">
         <el-icon><Cpu /></el-icon><span class="sb-text">模型配置</span>
