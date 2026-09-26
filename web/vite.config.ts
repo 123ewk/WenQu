@@ -31,7 +31,9 @@ export default defineConfig({
     // 导致直接打开或刷新该页时拿到后端的 404 JSON 而不是 SPA)。
     proxy: {
       '^/api/': {
-        target: 'http://localhost:8000',
+        // OPT-48 真机验收:另起端口跑本分支后端(如 :8010)时用 VITE_PROXY_TARGET 覆盖;
+        // 缺省仍打 :8000,不影响任何人。
+        target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000',
         changeOrigin: true,
       },
     },

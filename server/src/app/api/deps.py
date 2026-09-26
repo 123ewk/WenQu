@@ -8,6 +8,7 @@ from functools import lru_cache
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.api_key_auth import (
@@ -32,6 +33,9 @@ from app.application.repository.knowledge import (
 )
 from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
+from app.application.repository.permission_group_toggle import (
+    SpacePermissionGroupToggleRepositoryImpl,
+)
 from app.application.repository.permission_groups import PermissionGroupRepositoryImpl
 from app.application.repository.retrieval import RetrievalRepositoryImpl
 from app.application.repository.spaces import SpaceRepositoryImpl
@@ -47,6 +51,10 @@ from app.application.service.effective_permission import (
 from app.application.service.knowledge import KnowledgeService
 from app.application.service.memory import MemoryService
 from app.application.service.model_admin import ModelAdminService
+from app.application.service.permission_group_toggle import (
+    PermissionGroupToggleService,
+    space_toggle_enabled,
+)
 from app.application.service.permission_groups import PermissionGroupService
 from app.application.service.profile import ProfileService
 from app.application.service.qa import BackgroundDb, QAService
@@ -66,6 +74,7 @@ from app.core.model_client import ChatClient, EmbeddingClient, RerankClient
 from app.core.model_usage import ChatTurnUsage
 from app.core.security import decode_access_token
 from app.core.storage import MemoryStorage, MinioStorage, ObjectStorage
+from app.domain.enums import Role
 from app.domain.interfaces import (
     AuditRepository,
     ChunkQueryRepository,
@@ -86,7 +95,7 @@ from app.domain.interfaces import (
     TaskRepository,
     UserRepository,
 )
-from app.domain.models import ApiKey, User
+from app.domain.models import ApiKey, Membership, User
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -113,6 +122,50 @@ def get_current_superuser(user: User = Depends(get_current_user)) -> User:
     if not user.is_superuser:
         raise AppError(ErrorCode.FORBIDDEN, "仅平台管理员可管理模型", http_status=403)
     return user
+
+
+def get_space_toggle_manager(
+    space_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """空间级权限挡位功能开关的管理者守卫(OPT-48 v2):该空间 Admin+(role≥30)或 superuser。
+
+    不复用 get_current_superuser 的文案:那条「仅平台管理员可管理模型」是模型管理专用,
+    拨档位开关被拒时显示它会误导。粒度是本空间 —— 管谁的空间拨谁的开关(2026-09-26 拍板)。
+    """
+    if user.is_superuser:
+        return user
+    membership = db.scalar(
+        select(Membership).where(
+            Membership.space_id == space_id, Membership.user_id == user.id
+        )
+    )
+    if membership is None or membership.role < Role.ADMIN.value:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "仅空间管理员(Admin)及以上可拨动本空间的权限挡位功能开关",
+            http_status=403,
+        )
+    return user
+
+
+def ensure_space_toggle_on(
+    space_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    """配挡时机(OPT-48 v2,2026-09-26 用户拍板,字面口径):开关打开后才能分配/换当前。
+
+    挂在 permission-groups 的 分配/换当前 两个写路由上;没开 → 409(角色够,是功能状态没到位)。
+    解除分配不拦:清理动作永远放行(逃生口)。
+    """
+    row = SpacePermissionGroupToggleRepositoryImpl(db).get_row(space_id)
+    if row is None or not row.enabled:
+        raise AppError(
+            ErrorCode.PERMISSION_GROUP_TOGGLE_OFF,
+            "本空间的权限挡位功能开关未打开:请先在权限档位页打开开关,再给成员分配挡位",
+            http_status=409,
+        )
 
 
 @dataclass(frozen=True)
@@ -163,17 +216,18 @@ def _member_perm_for(
 ) -> EffectivePermission | None:
     """人这条链路的生效档位:服务端按 JWT 成员解析,明文永不进浏览器(N1)。
 
-    返回 None 的两种情况都刻意为之(§4.2 边界):
-    - 灰度开关未打开 —— 上线那一刻若全员没配好档位,真人用户会集体掉进禁用态;
-    - 路由不在「双凭据强制清单」内 —— 空间/成员/档位/Key/模型配置和 `/admin/*` 只看角色,
-      否则 Admin 在还没配档位时会连建档位的入口都没有,空间失去管理。
+    返回 None 的情况都刻意而为(OPT-48 v2 口径,2026-09-26 用户拍板):
+    - 非空间路由 —— 开关只作用于空间内路由;
+    - 该空间的「权限挡位功能开关」未打开(表无行 = 从未拨过 = 关)—— 全空间只看角色;
+    - 路由不在「双凭据强制清单」内 —— 核心功能清单口径:成员/模型配置/审计/用量等
+      管理页只看角色,否则 Admin 在还没配档时会连建档位的入口都没有,空间失去管理。
     """
-    if not get_settings().require_permission_group_for_core:
+    space_id = _path_space_id(request)
+    if space_id is None:
+        return None
+    if not space_toggle_enabled(db, space_id):
         return None
     if not route_in_dual_list(request.url.path, request.method):
-        return None
-    space_id = _path_space_id(request)
-    if space_id is None:  # 清单内路由恒带 {space_id};真取不到就退回"只看角色"
         return None
     user = get_current_user(credentials, db)
     perm = permission_of_member(
@@ -432,6 +486,17 @@ def get_permission_group_service(
     """
     return PermissionGroupService(
         groups, spaces, kbs, audit, ApiKeyRepositoryImpl(db), users
+    )
+
+
+def get_permission_group_toggle_service(
+    db: Session = Depends(get_db),
+    audit: AuditRepository = Depends(get_audit_repository),
+    users: UserRepository = Depends(get_user_repository),
+) -> PermissionGroupToggleService:
+    """空间级权限挡位功能开关服务(OPT-48 v2):db 只喂缓存读值路径,行与统计走仓储。"""
+    return PermissionGroupToggleService(
+        db, SpacePermissionGroupToggleRepositoryImpl(db), users, audit
     )
 
 

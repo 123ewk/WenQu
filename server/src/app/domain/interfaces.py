@@ -26,6 +26,7 @@ from app.domain.models import (
     PermissionGroupMember,
     RefreshToken,
     Space,
+    SpacePermissionGroupToggle,
     Task,
     User,
 )
@@ -241,6 +242,20 @@ class PermissionGroupRepository(Protocol):
     ) -> PermissionGroupMember | None: ...
     def delete_member(self, member_id: uuid.UUID) -> None: ...
     def delete_for_user(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int: ...
+
+
+class SpacePermissionGroupToggleRepository(Protocol):
+    """空间级权限挡位功能开关持久化(OPT-48 v2):每空间一行,表无行 = 未打开。
+
+    本协议只管行本身与本空间的影响面统计;读值缓存/回落口径在服务层。
+    """
+
+    def get_row(self, space_id: uuid.UUID) -> SpacePermissionGroupToggle | None: ...
+    def upsert(
+        self, *, space_id: uuid.UUID, enabled: bool, updated_by: uuid.UUID
+    ) -> SpacePermissionGroupToggle: ...
+    def impact(self, space_id: uuid.UUID) -> tuple[int, int]: ...
+    def actor_has_active_group(self, space_id: uuid.UUID, user_id: uuid.UUID) -> bool: ...
 
 
 class ChatGateway(Protocol):

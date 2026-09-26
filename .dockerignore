@@ -1,4 +1,5 @@
-# server/parser 镜像共享仓库根上下文:排除本地虚绿与密钥,防止污染镜像层。
+# server 的上下文 = 仓库根(parser 用 parser/、web 用 web/,三者各有自己的 .dockerignore):
+# 排除本地虚绿与密钥,防止污染镜像层。
 # .env 必须排除 —— compose env_file 在运行期注入,构建期不需要也不允许。
 .git
 **/.venv

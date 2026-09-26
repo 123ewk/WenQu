@@ -14,10 +14,18 @@ import uuid
 
 import pytest
 
-from tests.conftest import create_group, create_key
+from tests.conftest import create_group, create_key, enable_space_toggle, wipe_space_toggles
 from tests.conftest import register as _register
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _isolated_space_toggles():
+    """OPT-48 v2:本文件大量做 分配/换当前(要求空间开关已打开),用例级清理开关行。"""
+    wipe_space_toggles()
+    yield
+    wipe_space_toggles()
 
 
 def _uname(prefix: str) -> str:
@@ -25,12 +33,16 @@ def _uname(prefix: str) -> str:
 
 
 def _space(client) -> tuple[dict, dict, str]:
-    """owner + 两个 KB 的空间;返回 (owner, auth, space_id)。"""
+    """owner + 两个 KB 的空间;返回 (owner, auth, space_id)。
+
+    OPT-48 v2:分配/换当前要求本空间开关已打开,本文件测的就是配挡语义本身,统一打开。
+    """
     owner = _register(client, _uname("grpowner"))
     auth = {"Authorization": f"Bearer {owner['access_token']}"}
     space_id = client.post("/api/v1/spaces", json={"name": "档位空间"}, headers=auth).json()[
         "id"
     ]
+    enable_space_toggle(space_id)
     return owner, auth, space_id
 
 

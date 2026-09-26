@@ -81,6 +81,8 @@ class AuditAction(StrEnum):
     PERMISSION_GROUP_MEMBER_ASSIGNED = "permission_group.member_assigned"
     PERMISSION_GROUP_MEMBER_UNASSIGNED = "permission_group.member_unassigned"
     PERMISSION_GROUP_CURRENT_SET = "permission_group.current_set"  # 换档 = 权限开关,不是台账标记
+    # OPT-48 v2:空间级「权限挡位功能开关」的拨动(归因到空间;detail 带新旧值)
+    PERMISSION_GROUP_TOGGLE_SET = "permission_group_toggle.set"
     # OPT-25 自定义模型管理(superuser 操作,全部留痕)
     MODEL_PROVIDER_CREATED = "model_provider.created"
     MODEL_PROVIDER_UPDATED = "model_provider.updated"

@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.api.deps import (
+    ensure_space_toggle_on,
     get_client_ip,
     get_current_user,
     get_permission_group_service,
@@ -204,6 +205,8 @@ def assign_group_member(
     group_id: uuid.UUID,
     body: GroupMemberRequest,
     user: User = Depends(get_current_user),
+    # OPT-48 v2(2026-09-26 拍板,字面口径):开关打开后才能给成员分配挡位
+    _toggle_on: None = Depends(ensure_space_toggle_on),
     service: PermissionGroupService = Depends(get_permission_group_service),
     ip: str = Depends(get_client_ip),
 ) -> PermissionGroupOut:
@@ -230,6 +233,8 @@ def set_current_group(
     group_id: uuid.UUID,
     body: GroupMemberRequest,
     user: User = Depends(get_current_user),
+    # OPT-48 v2:同上,换当前(生效挡)同样要求本空间开关已打开
+    _toggle_on: None = Depends(ensure_space_toggle_on),
     service: PermissionGroupService = Depends(get_permission_group_service),
     ip: str = Depends(get_client_ip),
 ) -> PermissionGroupOut:

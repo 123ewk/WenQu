@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     require_permission_group_for_core: bool = Field(
         False, validation_alias="APP_REQUIRE_PERMISSION_GROUP_FOR_CORE"
     )
+    # OPT-48 v2:上述开关落库(每空间一行)后,DB 值的进程内缓存 TTL(秒),按 space_id 分键。
+    # 本进程写后立即失效;其它 worker 最多 TTL 秒后跟上——晚跟上只是晚开始拒绝,不会越权。
+    permission_group_toggle_cache_ttl_seconds: int = Field(
+        60, validation_alias="APP_PERMISSION_GROUP_TOGGLE_CACHE_TTL_SECONDS"
+    )
 
     # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
     otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")
