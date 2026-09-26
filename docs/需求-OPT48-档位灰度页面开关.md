@@ -410,6 +410,21 @@ A9 门禁：make server-test ≥ 基线（只增不减）、make server-lint 绿
 | U7 | 切 `viewercx01eg` 开知识库页 | 403「本空间还没有为你分配权限档位…」（A2 开方向真机） |
 | U8 | uitester01 拨关 → viewercx01eg 刷新 | 恢复可见（A2 关方向真机） |
 
-### 11.3 结果（执行后填写）
+### 11.3 结果（2026-09-26 执行完毕,U1–U8 全部通过）
 
-- 待执行。
+| # | 结果 | 证据(DOM innerText / 接口状态) |
+|---|---|---|
+| U1 | ✅ | 直开 `/settings/permission-enforcement` → 跳 `/login?redirect=/settings/permission-enforcement` |
+| U2 | ✅ | viewercx01eg(Viewer):`nav-permission-enforcement` 不存在;直开路由显示「仅空间管理员(Admin)及以上可以查看和拨动这个实例级开关。」 |
+| U3 | ✅ | uitester01:入口可见;「已关闭:人只看空间角色」「当前值来源:环境变量兜底(页面从未拨过…)」;影响面 62 空间 / 70 成员关系 / 64 没有生效档,与 psql 基线逐字一致;自查行只列「第二空间」 |
+| U4 | ✅ | 确认弹窗标题「打开档位强制 · 影响整个实例」,正文含「70 条成员关系中有 64 条没有生效档」;确认后 409 提示「打开前先给自己配好生效档位:…—— 第二空间」;开关保持关;页面仍可读(A5) |
+| U5 | ✅ | UI 走完 建档「对话检索-全部库」→ 分配 → 确认换档(第二空间);回开关页:无档数 64→**63** 实时一致,自查行变「你所在的空间都已配置生效档位,可以安全打开。」 |
+| U6 | ✅ | 打开成功:「已打开:本进程已生效,其它实例进程最多 60 秒后跟上」;「当前值来源:页面配置(库里已保存) · 由 uitester01 于 09-26 14:08:03 拨动」 |
+| U7 | ✅ | viewercx01eg 开知识库页 → 「加载失败 | 本空间还没有为你分配权限档位,请联系管理员」(A2 开方向,不重启即时生效) |
+| U8 | ✅ | uitester01 拨关(「已关闭:人链路恢复只看角色」)→ viewercx01eg 刷新知识库页恢复显示「UI 验证库 · 文档 8 · 分块 19」 |
+
+**收尾(按 §11.1)**:两个测试进程已停(:8000/:5173 原样未动);`alembic downgrade 0021` 已执行,
+`alembic_version=0021`、`permission_enforcement` 表已删除 —— 其它 worktree 的 alembic 不受影响。
+**残留(均为真实操作留痕,非垃圾数据)**:① `audit_logs` 留 2 条 `permission_enforcement.toggled`
+(uitester01 开/关各一条,含新旧值);② 第二空间新增档位「对话检索-全部库」并挂 uitester01 为当前
+(真实 UI 操作产物,保留)。备份文件:`C:\Users\ewk15\wenqu-backup-pre-opt48-live-20260926.sql`(3.4MB,去留由用户定)。
