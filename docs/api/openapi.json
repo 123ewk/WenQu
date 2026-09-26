@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WenQu API",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/health": {
@@ -5362,6 +5362,7 @@
           "permission_group.member_assigned",
           "permission_group.member_unassigned",
           "permission_group.current_set",
+          "permission_enforcement.toggled",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",
