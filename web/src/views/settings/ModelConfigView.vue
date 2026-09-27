@@ -7,9 +7,10 @@
  */
 import { Link, WarningFilled } from '@element-plus/icons-vue'
 
+import { apiGetLangfuseConfig, apiPutLangfuseConfig } from '@/api/langfuseConfig'
 import { apiGetModelConfig, apiGetProviderTypes, apiPutEmbeddingKey, apiPutRerankSwitch, apiTestEmbeddingKey, modelConfigErrorHint } from '@/api/modelConfig'
 import { errMessage } from '@/api/http'
-import type { ProviderTypeOut, SpaceModelConfigOut } from '@/api/types'
+import type { LangfuseConfigOut, ProviderTypeOut, SpaceModelConfigOut } from '@/api/types'
 import ProvidersModelsBlock from './ProvidersModelsBlock.vue'
 import { useAuthStore } from '@/stores/auth'
 import { isAtLeast, ROLE } from '@/utils/roles'
@@ -47,6 +48,87 @@ async function load() {
 }
 
 watch(() => auth.currentSpaceId, load, { immediate: true })
+
+/* ───── OPT-49:Langfuse 可观测配置(全局 superuser 专属;探测 403 则整卡不渲染) ───── */
+
+const langfuse = ref<LangfuseConfigOut | null>(null)
+const lfHost = ref('')
+const lfPublicKey = ref('')
+const lfSecretInput = ref('')
+const lfClearSecret = ref(false)
+const lfSaving = ref(false)
+
+async function loadLangfuse() {
+  try {
+    langfuse.value = await apiGetLangfuseConfig()
+    lfHost.value = langfuse.value.host
+    lfPublicKey.value = langfuse.value.public_key
+    lfSecretInput.value = ''
+    lfClearSecret.value = false
+  } catch {
+    langfuse.value = null // 403(非 superuser)等 → 整卡隐藏,不影响本页空间配置
+  }
+}
+
+async function onSaveLangfuse() {
+  if (!langfuse.value || lfSaving.value) return
+  // 密钥三态:勾了清除 → 空串;输入了新值 → 替换;否则 → null(不改动)
+  const secret = lfClearSecret.value ? '' : lfSecretInput.value || null
+  try {
+    lfSaving.value = true
+    langfuse.value = await apiPutLangfuseConfig({
+      host: lfHost.value,
+      public_key: lfPublicKey.value,
+      secret_key: secret,
+      enabled: langfuse.value.enabled,
+    })
+    lfSecretInput.value = ''
+    lfClearSecret.value = false
+    ElMessage.success('Langfuse 配置已保存')
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+  } finally {
+    lfSaving.value = false
+  }
+}
+
+async function onToggleLangfuse(): Promise<boolean> {
+  const current = langfuse.value
+  if (!current || lfSaving.value || !auth.currentSpaceId) return false
+  const opening = !current.enabled
+  if (opening && !current.key_hint) {
+    ElMessage.warning('先保存 Secret Key,再开启上送')
+    return false
+  }
+  try {
+    await ElMessageBox.confirm(
+      opening
+        ? '开启后,本实例所有问答的 trace(含问题与答案原文)将上送到 Langfuse。确认开启?'
+        : '关闭后停止上送 trace(已存数据保留在 Langfuse)。确认关闭?',
+      opening ? '开启 Langfuse 上送' : '关闭 Langfuse 上送',
+      { confirmButtonText: opening ? '确认开启' : '确认关闭', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return false
+  }
+  try {
+    lfSaving.value = true
+    langfuse.value = await apiPutLangfuseConfig({
+      host: lfHost.value,
+      public_key: lfPublicKey.value,
+      secret_key: null, // 开关切换不动密钥
+      enabled: opening,
+    })
+    return true
+  } catch (e) {
+    ElMessage.error(errMessage(e))
+    return false
+  } finally {
+    lfSaving.value = false
+  }
+}
+
+onMounted(loadLangfuse)
 
 /* ───── 区块①:Embedding Key ───── */
 
@@ -227,6 +309,58 @@ async function onRerankSwitch(v: boolean) {
         :types="types"
         @changed="load"
       />
+
+      <!-- OPT-49:Langfuse 可观测(全局 superuser 专属;探测 403 自动隐藏) -->
+      <div v-if="langfuse" class="card mc-emb" data-testid="langfuse-card">
+        <div class="mc-title">Langfuse 可观测</div>
+        <div class="mc-sub">全链路 trace 上送(问题/答案/检索片段,数据存自托管 Langfuse);未开启时零开销</div>
+
+        <div class="lf-ops">
+          <el-input v-model="lfHost" class="lf-input" placeholder="Langfuse 地址,如 https://langfuse.internal.example">
+            <template #prepend>地址</template>
+          </el-input>
+          <el-input v-model="lfPublicKey" class="lf-input" placeholder="Public Key(pk-lf-...)">
+            <template #prepend>公钥</template>
+          </el-input>
+          <el-input
+            v-model="lfSecretInput"
+            type="password"
+            show-password
+            class="lf-input"
+            :placeholder="langfuse.key_hint ? `已配置 ${langfuse.key_hint} · 留空 = 不改动` : 'Secret Key(sk-lf-...)'"
+          >
+            <template #prepend>私钥</template>
+          </el-input>
+        </div>
+        <div v-if="langfuse.key_hint" class="lf-clear">
+          <el-checkbox v-model="lfClearSecret">清除已存密钥</el-checkbox>
+        </div>
+
+        <div class="lf-ops lf-switch-row">
+          <div class="lf-switch-text">
+            <span>上送开关</span>
+            <span class="lf-hint">
+              {{ langfuse.enabled ? '已开启' : '已关闭' }}
+              <template v-if="langfuse.updated_at && langfuse.updated_by_hint">
+                · 由 {{ langfuse.updated_by_hint }} 于 {{ langfuse.updated_at }} 变更
+              </template>
+            </span>
+          </div>
+          <el-switch
+            :model-value="langfuse.enabled"
+            :before-change="onToggleLangfuse"
+            :loading="lfSaving"
+            data-testid="langfuse-switch"
+          />
+        </div>
+
+        <div class="lf-save">
+          <el-button type="primary" :loading="lfSaving" @click="onSaveLangfuse">保存配置</el-button>
+          <a class="lf-link" href="https://cloud.langfuse.com" target="_blank" rel="noopener">
+            <el-icon class="btn-ic"><Link /></el-icon>没有 Key?去 Langfuse 注册申请
+          </a>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -295,6 +429,45 @@ async function onRerankSwitch(v: boolean) {
 .mc-link {
   display: inline-flex;
   align-items: center;
+  color: #4f6ef2;
+  text-decoration: none;
+}
+.lf-ops {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.lf-input {
+  max-width: 560px;
+}
+.lf-clear {
+  margin-top: 6px;
+}
+.lf-switch-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 560px;
+}
+.lf-switch-text {
+  display: flex;
+  flex-direction: column;
+}
+.lf-hint {
+  font-size: 12px;
+  color: #9ca3af;
+}
+.lf-save {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.lf-link {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
   color: #4f6ef2;
   text-decoration: none;
 }

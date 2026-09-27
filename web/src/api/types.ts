@@ -770,3 +770,25 @@ export interface SpaceToggleStatusOut {
 export interface SpaceToggleRequest {
   enabled: boolean
 }
+
+/**
+ * OPT-49 Langfuse 可观测配置(GET/PUT /admin/langfuse-config,superuser 专属)。
+ * 全局单行;Secret Key 写入即加密,接口只回 key_hint 掩码。
+ */
+export interface LangfuseConfigOut {
+  enabled: boolean
+  host: string
+  public_key: string
+  /** Secret Key 掩码(如 "sk-l****ef");未配置为空串 */
+  key_hint: string
+  updated_at: string | null
+  updated_by_hint: string | null
+}
+
+export interface LangfuseConfigPut {
+  host: string
+  public_key: string
+  /** null = 不改动;"" = 清除;非空 = 替换(与模型供应商 api_key 同语义) */
+  secret_key: string | null
+  enabled: boolean
+}
