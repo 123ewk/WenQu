@@ -21,6 +21,7 @@ class SpaceLangfuseConfigRepositoryImpl:
         *,
         space_id: uuid.UUID,
         host: str,
+        console_url: str,
         public_key: str,
         secret_key_encrypted: str,
         key_hint: str,
@@ -32,6 +33,7 @@ class SpaceLangfuseConfigRepositoryImpl:
             row = SpaceLangfuseConfig(
                 space_id=space_id,
                 host=host,
+                console_url=console_url,
                 public_key=public_key,
                 secret_key_encrypted=secret_key_encrypted,
                 key_hint=key_hint,
@@ -41,6 +43,7 @@ class SpaceLangfuseConfigRepositoryImpl:
             self._db.add(row)
         else:
             row.host = host
+            row.console_url = console_url
             row.public_key = public_key
             row.secret_key_encrypted = secret_key_encrypted
             row.key_hint = key_hint

@@ -50,6 +50,8 @@ class LangfuseConfigStatus:
     key_hint: str
     updated_at: datetime | None
     updated_by_hint: str | None
+    console_url: str = ""
+    project_id: str | None = None
 
 
 class _Missing:
@@ -119,6 +121,40 @@ def _hint(key: str) -> str:
     return f"{key[:4]}****{key[-4:]}" if len(key) > 8 else "****"
 
 
+_project_cache: dict[tuple[str, str, str], tuple[str | None, float]] = {}
+
+
+def clear_project_id_cache() -> None:
+    """测试夹具与写侧共用:密钥换掉后旧解析结果必须作废。"""
+    _project_cache.clear()
+
+
+def resolve_project_id(settings: LangfuseSettings) -> str | None:
+    """用 pk/sk 调 Langfuse /api/public/projects 解析所属项目 id(前端直达链接用)。
+
+    按配置指纹缓存(TTL 同配置缓存);不可达/形状不符一律 None,绝不抛 ——
+    解析失败只影响"直达链接"的深度,不影响配置读写本身。
+    """
+    fp = (settings.host, settings.public_key, settings.secret_key)
+    hit = _project_cache.get(fp)
+    ttl = get_settings().langfuse_config_cache_ttl_seconds
+    if hit is not None and time.monotonic() - hit[1] < ttl:
+        return hit[0]
+    try:
+        resp = httpx.get(
+            f"{settings.host}/api/public/projects",
+            auth=(settings.public_key, settings.secret_key),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or []
+        pid = str(data[0]["id"]) if data and data[0].get("id") else None
+    except Exception:  # noqa: BLE001 — 链接解析是锦上添花,失败不外泄
+        pid = None
+    _project_cache[fp] = (pid, time.monotonic())
+    return pid
+
+
 class LangfuseConfigService:
     """配置读取/保存(空间 Admin+ 守卫在路由层)+ trace 查看代理(成员看自己/Admin+ 看全空间)。"""
 
@@ -185,6 +221,9 @@ class LangfuseConfigService:
         if row is not None and row.updated_by is not None:
             updater = self._users.get(row.updated_by)
             updated_by_hint = updater.username if updater is not None else None
+        console_url = row.console_url if row is not None else ""
+        settings = langfuse_settings(self._db, space_id)
+        pid = resolve_project_id(settings) if settings is not None and console_url else None
         return LangfuseConfigStatus(
             enabled=row.enabled if row is not None else False,
             host=row.host if row is not None else "",
@@ -192,6 +231,8 @@ class LangfuseConfigService:
             key_hint=row.key_hint if row is not None else "",
             updated_at=row.updated_at if row is not None else None,
             updated_by_hint=updated_by_hint,
+            console_url=console_url,
+            project_id=pid,
         )
 
     def update(
@@ -200,6 +241,7 @@ class LangfuseConfigService:
         space_id: uuid.UUID,
         *,
         host: str,
+        console_url: str,
         public_key: str,
         secret_key: str | None,
         enabled: bool,
@@ -207,6 +249,7 @@ class LangfuseConfigService:
     ) -> LangfuseConfigStatus:
         """保存本空间配置:secret_key 三态(None=不改/""=清除/非空=替换);启用前置私钥已配置。"""
         host = (host or "").strip().rstrip("/")
+        console_url = (console_url or "").strip().rstrip("/")
         public_key = (public_key or "").strip()
         if not host:
             raise AppError(ErrorCode.VALIDATION, "Langfuse 地址(host)不能为空", http_status=400)
@@ -226,6 +269,7 @@ class LangfuseConfigService:
         self._repo.upsert(
             space_id=space_id,
             host=host,
+            console_url=console_url,
             public_key=public_key,
             secret_key_encrypted=enc,
             key_hint=hint,
@@ -239,7 +283,8 @@ class LangfuseConfigService:
                 space_id=space_id,
                 action=str(AuditAction.LANGFUSE_CONFIG_UPDATED),
                 target="space_langfuse_config",
-                detail={"host": host, "enabled": enabled, "key_hint": hint},
+                detail={"host": host, "console_url": console_url, "enabled": enabled,
+                        "key_hint": hint},
                 ip=ip,
             )
         )

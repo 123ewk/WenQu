@@ -17,6 +17,7 @@ import pytest
 import app.application.service.langfuse_config as lf_module
 from app.application.service.langfuse_config import (
     clear_langfuse_config_cache,
+    clear_project_id_cache,
     langfuse_settings,
 )
 from app.core.crypto import CredentialCipher
@@ -38,6 +39,7 @@ def _cipher_and_isolated(client, monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: CredentialCipher("langfuse-config-test-key"),
     )
     clear_langfuse_config_cache()
+    clear_project_id_cache()
     yield
     with get_session_factory()() as db:
         for row in db.query(SpaceLangfuseConfig).all():
@@ -153,6 +155,39 @@ def test_config_audit_attributed_to_space(client) -> None:
     mine = [r for r in rows if str(r.space_id) == space_id]
     assert len(mine) == 1
     assert "sk-lf-secret" not in str(mine[0].detail)  # 密钥本体不落审计
+
+
+def test_config_console_url_and_direct_links(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """控制台地址(浏览器可达)与 pk/sk 解析的项目 id:直达链接的两个原料。"""
+    owner, auth, sid = _space(client, "lfconsole")
+    calls: list = []
+
+    def fake_get(url, params=None, auth=None, timeout=None):
+        calls.append(url)
+        if url.endswith("/projects"):
+            return _FakeResp({"data": [{"id": "proj-1", "name": "p"}]})
+        return _FakeResp({"data": []})
+
+    monkeypatch.setattr(lf_module.httpx, "get", fake_get)
+    put = client.put(
+        CFG.format(sid=sid),
+        json={"host": "http://langfuse-langfuse-1:3000", "console_url": "http://127.0.0.1:3100/",
+              "public_key": "pk-lf-1234567890", "secret_key": "sk-lf-abcdef9012345678",
+              "enabled": True},
+        headers=auth,
+    )
+    assert put.status_code == 200, put.text
+    body = put.json()
+    assert body["console_url"] == "http://127.0.0.1:3100"  # 尾斜杠归一
+    assert body["project_id"] == "proj-1"  # 前端用它拼 /project/{id}/traces 直达链接
+
+    # 未填 console_url:不做 /projects 解析(不空打 Langfuse),project_id=None
+    _o2, auth_b, sid_b = _space(client, "lfconsb")
+    _enable(client, auth_b, sid_b)
+    calls.clear()
+    got = client.get(CFG.format(sid=sid_b), headers=auth_b).json()
+    assert got["project_id"] is None
+    assert not [u for u in calls if u.endswith("/projects")]
 
 
 # ---------------------------- trace 查看(代理) ----------------------------

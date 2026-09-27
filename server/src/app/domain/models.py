@@ -507,6 +507,8 @@ class SpaceLangfuseConfig(Base):
         Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
     )
     host: Mapped[str] = mapped_column(String(255))
+    # 浏览器访问 Langfuse 的地址(可选):与 host 的分工见 0025 迁移 docstring
+    console_url: Mapped[str] = mapped_column(String(255), default="", server_default="")
     public_key: Mapped[str] = mapped_column(String(255))
     secret_key_encrypted: Mapped[str] = mapped_column(String(500), default="", server_default="")
     key_hint: Mapped[str] = mapped_column(String(64), default="", server_default="")

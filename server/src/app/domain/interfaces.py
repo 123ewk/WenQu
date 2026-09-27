@@ -271,6 +271,7 @@ class SpaceLangfuseConfigRepository(Protocol):
         *,
         space_id: uuid.UUID,
         host: str,
+        console_url: str,
         public_key: str,
         secret_key_encrypted: str,
         key_hint: str,

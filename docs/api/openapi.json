@@ -6882,6 +6882,11 @@
             "type": "string",
             "title": "Host"
           },
+          "console_url": {
+            "type": "string",
+            "title": "Console Url",
+            "default": ""
+          },
           "public_key": {
             "type": "string",
             "title": "Public Key"
@@ -6889,6 +6894,17 @@
           "key_hint": {
             "type": "string",
             "title": "Key Hint"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           },
           "updated_at": {
             "anyOf": [
@@ -6930,6 +6946,12 @@
             "maxLength": 255,
             "minLength": 1,
             "title": "Host"
+          },
+          "console_url": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Console Url",
+            "default": ""
           },
           "public_key": {
             "type": "string",

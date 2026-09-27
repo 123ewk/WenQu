@@ -37,6 +37,9 @@ router = APIRouter(
 
 class LangfuseConfigPut(BaseModel):
     host: str = Field(min_length=1, max_length=255)
+    # 浏览器访问 Langfuse 的地址(可选):前端"创建密钥/看 trace"跳转链接的基座;
+    # 与 host 分工:host 须后端可达(容器内网名),console_url 须浏览器可达
+    console_url: str = Field(default="", max_length=255)
     public_key: str = Field(min_length=1, max_length=255)
     # None = 不改动(保留已存密钥);"" = 清除;非空 = 替换(与模型供应商 api_key 同语义)
     secret_key: str | None = Field(default=None, max_length=255)
@@ -46,8 +49,11 @@ class LangfuseConfigPut(BaseModel):
 class LangfuseConfigOut(BaseModel):
     enabled: bool
     host: str
+    console_url: str = ""
     public_key: str  # Langfuse 的 Public Key 设计为可公开标识,非机密
     key_hint: str  # Secret Key 掩码;明文永不回显
+    # 用 pk/sk 向 Langfuse 解析出的项目 id(直达链接用);未填 console_url 或解析失败为 None
+    project_id: str | None = None
     updated_at: datetime | None = None
     updated_by_hint: str | None = None
 
@@ -81,7 +87,9 @@ def _to_out(status: LangfuseConfigStatus) -> LangfuseConfigOut:
     return LangfuseConfigOut(
         enabled=status.enabled,
         host=status.host,
+        console_url=status.console_url,
         public_key=status.public_key,
+        project_id=status.project_id,
         key_hint=status.key_hint,
         updated_at=status.updated_at,
         updated_by_hint=status.updated_by_hint,
@@ -112,6 +120,7 @@ def put_space_langfuse_config(
             actor,
             space_id,
             host=payload.host,
+            console_url=payload.console_url,
             public_key=payload.public_key,
             secret_key=payload.secret_key,
             enabled=payload.enabled,
