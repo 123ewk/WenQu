@@ -137,6 +137,7 @@ Langfuse 容器部署在 N2 联调前完成。
 | S4 收尾 | 本节 + 台账 + 发版 v0.2.4 | `e3b135f`/`b0359e4` |
 | v0.2.5 补丁 | 上线当天用户反馈:跳转链接落到 SaaS/容器内网名(浏览器不可达)、缺"去哪看 trace"入口 → 补 `console_url`(0025,浏览器可达的控制台地址)+ pk/sk 调 /api/public/projects 解析 project_id,前端出「创建/查看 API Keys」「打开 Langfuse 看 trace」直达链接(未填控制台地址只出文字指引);另加实例级默认拓扑 `APP_LANGFUSE_DEFAULT_HOST`/`APP_LANGFUSE_CONSOLE_URL`,未配置空间的表单开箱即填 | `7f55ca3`/`4dcbb40`/`205dda5` |
 | v0.2.6 修复 | 用户配置后 Langfuse 控制台无 trace:根因 = langfuse-python 4.x(v3 线协议)配自托管 v2 服务端不兼容,失败静默;SDK 钉回 2.60.10,烟雾 trace 实证到达 | `43c8827` |
+| v0.2.7 富 span | 用户指出"只 trace 了问答对,没跟踪检索回来的 chunk"→ §3 富 span 设计部分落地:直检链挂 retrieve(命中块内容截 800 字/分数/vector_rank+fulltext_rank 双路名次/文档与库元数据)/cite(编号引用)/recall_memory/compose(prompt 形状)/generate(完整 prompt+流式答案+模型)五 span,Agent 链每工具轮挂 tool.<名>(参数/思考/结果/耗时)+ 作答轮 agent.answer generation;观测句柄扩为 Protocol(span/generation/end),全部旁路隔离;§3 余下项(入库 trace/Agent 引用编号深映射)仍留二期 | `4b2ad91` |
 
 **遗留（二期候选）**：§3 的富 span 设计（七阶段/Agent 工具轮/入库任务 trace）从简为
 "一问一答一个 trace"（input=问题、output=答案、metadata=用户/空间/库/模型/agent 标记），
