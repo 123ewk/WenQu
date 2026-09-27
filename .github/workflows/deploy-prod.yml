@@ -83,41 +83,24 @@ jobs:
       WENQU_WEB_URL: http://127.0.0.1 # runner 与栈同机,门 3 走本机回环查 nginx 入口(变量名须与 deploy.sh 的 WENQU_ 前缀一致,否则覆盖不生效)
     steps:
       # 生产机直连 github.com 的握手快但数据传输被限速且间歇断流,单次 checkout
-      # (内含 git 自身 3 次重试,约 6.5 分钟)经常全灭。这里串 4 次尝试 + 递增间歇,
-      # 总跨度约 25-30 分钟,跨过坏窗口的概率大幅提升(OPT-48 v2.2 发布实测:好坏窗口分钟级轮换)。
-      # 四次全灭才终止,并在日志里给出处置指引;任一次成功则照常继续。
-      - name: Checkout(尝试 1/4)
+      # (内含 git 自身 3 次重试,约 6.5 分钟)经常全灭。按用户要求只保留 1 次重试:
+      # 两次尝试总跨度约 14 分钟,仍能跨过部分坏窗口;再失败按日志指引人工处理。
+      - name: Checkout(尝试 1/2)
         id: co1
         uses: actions/checkout@v4
         continue-on-error: true
-      - name: 失败,歇 30s 再试
+      - name: 失败,歇 60s 再试一次
         if: steps.co1.outcome == 'failure'
-        run: sleep 30
-      - name: Checkout(尝试 2/4)
+        run: sleep 60
+      - name: Checkout(尝试 2/2)
         id: co2
         if: steps.co1.outcome == 'failure'
         uses: actions/checkout@v4
         continue-on-error: true
-      - name: 失败,歇 60s 再试
+      - name: 两次尝试全部失败 → 终止
         if: steps.co2.outcome == 'failure'
-        run: sleep 60
-      - name: Checkout(尝试 3/4)
-        id: co3
-        if: steps.co2.outcome == 'failure'
-        uses: actions/checkout@v4
-        continue-on-error: true
-      - name: 失败,歇 120s 再试
-        if: steps.co3.outcome == 'failure'
-        run: sleep 120
-      - name: Checkout(尝试 4/4)
-        id: co4
-        if: steps.co3.outcome == 'failure'
-        uses: actions/checkout@v4
-        continue-on-error: true
-      - name: 四次尝试全部失败 → 终止
-        if: steps.co4.outcome == 'failure'
         run: |
-          echo "连续 4 次 checkout 失败:生产机直连 github.com 的数据传输被限速且间歇断流。"
+          echo "连续 2 次 checkout 失败:生产机直连 github.com 的数据传输被限速且间歇断流。"
           echo "  1. 稍后在 Actions 页 Re-run failed jobs 即可(好坏窗口分钟级轮换);"
           echo "  2. 治本:为生产机 git 配置代理,或建 Gitee 镜像改从国内拉取。"
           exit 1
