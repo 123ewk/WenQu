@@ -109,3 +109,124 @@ def test_compose_summary_block_and_no_summary_is_identical() -> None:
     msgs = _build_messages(recent, "问题", citations, [])
     assert [m["content"] for m in msgs[1:-1]] == [f"m{i}" for i in range(12)]
 
+
+
+
+# ---------------------------- OPT-50:富 span 观测 ----------------------------
+
+
+class _RecSpan:
+    """记录型 span:开/收口动作都落到共享列表,供断言。"""
+
+    def __init__(self, rec: list, name: str, open_kwargs: dict) -> None:
+        self._rec, self._name = rec, name
+        rec.append(("open", name, open_kwargs))
+
+    def end(self, output: object | None = None, metadata: dict | None = None) -> None:
+        self._rec.append(("end", self._name, {"output": output, "metadata": metadata}))
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> _RecSpan:
+        return _RecSpan(self._rec, name, {"input": input, "metadata": metadata})
+
+    def generation(
+        self, name: str, *, model: object | None = None, input: object | None = None,
+        output: object | None = None, usage: dict | None = None, metadata: dict | None = None,
+    ) -> _RecSpan:
+        return _RecSpan(self._rec, name, {"model": model, "input": input, "metadata": metadata})
+
+
+class _RecTrace:
+    """记录型 trace:阶段 span/generation 全收。"""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def finish(self, answer: str | None = None, error: str | None = None) -> None:
+        self.calls.append(("finish", answer, error))
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> _RecSpan:
+        return _RecSpan(self.calls, name, {"input": input, "metadata": metadata})
+
+    def generation(
+        self, name: str, *, model: object | None = None, input: object | None = None,
+        output: object | None = None, usage: dict | None = None, metadata: dict | None = None,
+    ) -> _RecSpan:
+        return _RecSpan(self.calls, name, {"model": model, "input": input, "metadata": metadata})
+
+
+def test_pipeline_emits_stage_spans_with_chunk_data() -> None:
+    """默认链一跑:retrieve(命中块含内容/双路名次)→ cite → recall_memory → compose → generate。"""
+    import threading
+
+    from app.application.service.qa_pipeline import Pipeline
+    from app.application.service.retrieval import RetrievedChunk
+
+    trace = _RecTrace()
+    hits = [
+        RetrievedChunk(
+            chunk_id=uuid.uuid4(), document_id=uuid.uuid4(), kb_id=uuid.uuid4(),
+            filename="a.pdf", content="块内容" * 200, score=0.01,
+            vector_rank=1, fulltext_rank=2, meta={"breadcrumb": ["第一章"]},
+        ),
+        RetrievedChunk(
+            chunk_id=uuid.uuid4(), document_id=uuid.uuid4(), kb_id=uuid.uuid4(),
+            filename="b.pdf", content="另一块", score=0.02,
+            vector_rank=None, fulltext_rank=1, meta={},
+        ),
+    ]
+
+    def search(ctx: Any) -> list[RetrievedChunk]:
+        return hits
+
+    def persist(
+        ctx: Any, content: str, citations: list, model_id: Any, used: Any, window: Any
+    ) -> Any:
+        return SimpleNamespace(id=uuid.uuid4())
+
+    class _FakeChat:
+        def chat_stream(self, prompt: Any, model_id: Any = None, temperature: float = 0.7) -> Any:
+            yield "答案"
+            yield "正文"
+
+    chat = _FakeChat()
+
+    def recall(ctx: Any) -> list[str]:
+        return ["记忆一"]
+
+    def context(ctx: Any) -> tuple[None, list]:
+        return (None, [])
+
+    stages = build_stages(
+        DEFAULT_PIPELINE, search=search, persist=persist, chat=chat,
+        recall=recall, context=context,
+    )
+    state = GenerationState(
+        ctx=SimpleNamespace(
+            question="什么是RAG", space_id=uuid.uuid4(), user_id=uuid.uuid4(),
+            model_id="qwen-plus", top_k=6, user_message_id=uuid.uuid4(),
+        ),  # type: ignore[arg-type]
+        handle=SimpleNamespace(stop_requested=threading.Event()),  # type: ignore[arg-type]
+        stream_id=uuid.uuid4(),
+        log=SimpleNamespace(append=lambda *a, **k: None),  # type: ignore[arg-type]
+        obs=trace,
+    )
+    Pipeline(stages=stages).run(state)
+
+    opens = [c for c in trace.calls if c[0] == "open"]
+    assert [c[1] for c in opens] == ["retrieve", "cite", "recall_memory", "compose", "generate"]
+    ends = {c[1]: c[2]["output"] for c in trace.calls if c[0] == "end"}
+    chunks = ends["retrieve"]["chunks"]
+    assert ends["retrieve"]["count"] == 2
+    assert chunks[0]["filename"] == "a.pdf" and chunks[0]["vector_rank"] == 1
+    assert chunks[0]["content"].startswith("块内容") and len(chunks[0]["content"]) <= 800
+    assert chunks[1]["fulltext_rank"] == 1
+    assert len(ends["cite"]["citations"]) == 2
+    assert ends["recall_memory"]["memories"] == ["记忆一"]
+    assert ends["compose"]["prompt_messages"] > 0
+    gen_open = opens[-1][2]
+    assert gen_open["model"] == "qwen-plus" and isinstance(gen_open["input"], list)
+    assert ends["generate"] == "答案正文"

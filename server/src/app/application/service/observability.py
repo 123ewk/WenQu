@@ -1,4 +1,4 @@
-"""OPT-49 Langfuse 观测句柄:问答链路的旁路上报(nil-safe + 失败隔离)。
+"""OPT-49/50 Langfuse 观测句柄:问答链路的旁路上报(nil-safe + 失败隔离)。
 
 设计约束(与计划文档 §3/§5 对齐):
 - **nil-safe**:未配置/未启用时客户端为 None,`start_qa_trace` 返回空实现句柄,
@@ -7,13 +7,17 @@
   全部 try/except 吞掉,观测永远不进用户响应;
 - **配置读取**走 `langfuse_settings`(进程内 TTL 缓存 + 写时失效,OPT-49 N1);
 - **指纹缓存客户端**:配置(host/pk/sk)不变则复用同一 Langfuse 实例(自带后台
-  flush 线程),配置变更自动重建;构造失败也缓存,避免每次请求都撞同一堵墙。
+  flush 线程),配置变更自动重建;构造失败也缓存,避免每次请求都撞同一堵墙;
+- **富 span(OPT-50)**:trace 之下按阶段挂 span/generation —— 检索命中块(含
+  内容/分数/双路名次)、引用映射、记忆召回、prompt 组装、生成(模型+完整 I/O)、
+  Agent 工具轮;SDK 用 2.x(与自托管 v2 服务端配对,见台账 v0.2.6)。
 """
 
 from __future__ import annotations
 
 import threading
 import uuid
+from typing import Protocol
 
 from sqlalchemy.orm import Session
 
@@ -49,14 +53,144 @@ def _langfuse_client(db: Session | None, space_id: uuid.UUID):
         return client
 
 
+class QaSpan(Protocol):
+    """阶段句柄:trace 下的一个 span/generation;end() 收口,可再挂子级。"""
+
+    def end(self, output: object | None = None, metadata: dict | None = None) -> None: ...
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan: ...
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan: ...
+
+
+class QaTrace(Protocol):
+    """一次问答的观测句柄(nil-safe):finish 收口,span()/generation() 挂阶段数据。"""
+
+    def finish(self, answer: str | None = None, error: str | None = None) -> None: ...
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan: ...
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan: ...
+
+
+class _NullSpan:
+    """空实现 span:所有方法零操作。"""
+
+    def end(self, output: object | None = None, metadata: dict | None = None) -> None: ...
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan:
+        return self
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan:
+        return self
+
+
 class _NullQaTrace:
     """未接入时的空实现:所有方法零操作(不 import langfuse)。"""
 
     def finish(self, answer: str | None = None, error: str | None = None) -> None: ...
 
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan:
+        return _NullSpan()
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan:
+        return _NullSpan()
+
+
+NULL_QA_TRACE: QaTrace = _NullQaTrace()  # 无状态单例:GenerationState 的缺省句柄
+
+
+class _LangfuseSpan:
+    """SDK Span/Generation 的隔离包装:end/挂子级全部 try/except 静默。"""
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+
+    def end(self, output: object | None = None, metadata: dict | None = None) -> None:
+        try:
+            self._raw.end(output=output, metadata=metadata)
+        except Exception:  # noqa: BLE001 — 上报失败静默丢弃
+            pass
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan:
+        try:
+            return _LangfuseSpan(self._raw.span(name=name, input=input, metadata=metadata))
+        except Exception:  # noqa: BLE001
+            return _NullSpan()
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan:
+        try:
+            return _LangfuseSpan(
+                self._raw.generation(
+                    name=name,
+                    model=model,
+                    input=input,
+                    output=output,
+                    usage=usage,
+                    metadata=metadata,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return _NullSpan()
+
 
 class _LangfuseQaTrace:
-    """一条用户问答 = 一个 trace;input 在创建时写,finish 补 output。"""
+    """一条用户问答 = 一个 trace;input 创建时写,finish 补 output,阶段数据挂 span。"""
 
     def __init__(self, client, *, user_id, space_id, question, kb_ids, model_id, agent) -> None:
         self._trace = client.trace(
@@ -78,6 +212,38 @@ class _LangfuseQaTrace:
         except Exception:  # noqa: BLE001 — 上报失败静默丢弃
             pass
 
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> QaSpan:
+        try:
+            return _LangfuseSpan(self._trace.span(name=name, input=input, metadata=metadata))
+        except Exception:  # noqa: BLE001
+            return _NullSpan()
+
+    def generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        output: object | None = None,
+        usage: dict | None = None,
+        metadata: dict | None = None,
+    ) -> QaSpan:
+        try:
+            return _LangfuseSpan(
+                self._trace.generation(
+                    name=name,
+                    model=model,
+                    input=input,
+                    output=output,
+                    usage=usage,
+                    metadata=metadata,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return _NullSpan()
+
 
 def start_qa_trace(
     db: Session | None,
@@ -88,7 +254,7 @@ def start_qa_trace(
     kb_ids: list[uuid.UUID] | None,
     model_id: str | None,
     agent: bool,
-):
+) -> QaTrace:
     """问答入口调用:已接入返回 Langfuse 句柄,未接入返回零操作句柄。"""
     client = _langfuse_client(db, space_id)
     if client is None:

@@ -26,7 +26,7 @@ import threading
 import time
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.application.agent.tools import (
     CitationLedger,
@@ -38,6 +38,9 @@ from app.application.agent.tools import (
 )
 from app.core.model_client import ToolCallRequest
 from app.domain.models import Message
+
+if TYPE_CHECKING:
+    from app.application.service.observability import QaTrace
 
 logger = logging.getLogger("app.agent")
 
@@ -139,6 +142,7 @@ class AgentRunner:
         history: list[Message],
         memories: list[str] | None = None,
         summary: str | None = None,
+        obs: QaTrace | None = None,
     ) -> AgentOutcome:
         ledger = CitationLedger()
         tools = build_tools(self._search, ledger)
@@ -231,6 +235,14 @@ class AgentRunner:
                 self._emit(
                     "tool_call", {"id": call.id, "name": call.name, "args": _safe_args(call)}
                 )
+                tool_span = (
+                    obs.span(
+                        f"tool.{call.name}",
+                        input={"round": round_index, "args": _safe_args(call), "thought": text},
+                    )
+                    if obs is not None
+                    else None
+                )
                 started = time.monotonic()
                 is_proposal = call.name == "propose_memory"
                 if budget_left <= 0 and not is_proposal:
@@ -245,6 +257,14 @@ class AgentRunner:
                     # 记忆提议无副作用:不占检索输出预算(基准 05 只管真检索)
                     budget_left -= len(content)
                 duration_ms = int((time.monotonic() - started) * 1000)
+                if tool_span is not None:
+                    tool_span.end(
+                        output={
+                            "ok": result.success,
+                            "duration_ms": duration_ms,
+                            "output": result.output[:2000],
+                        }
+                    )
                 self._emit(
                     "tool_result",
                     {
@@ -277,11 +297,23 @@ class AgentRunner:
                 answer="", citations=ledger.citations, steps=steps, interrupted=True
             )
         self._emit("citations", {"citations": ledger.citations})
+        gen = (
+            obs.generation(
+                "agent.answer",
+                model=self._model_id,
+                input={"question": question},
+                metadata={"rounds": len(steps), "citations": len(ledger.citations)},
+            )
+            if obs is not None
+            else None
+        )
         messages.append({"role": "user", "content": _ANSWER_INSTRUCTION})
         pieces: list[str] = []
         try:
             for frame in self._chat.chat_stream(messages, self._model_id):
                 if self._stop_requested.is_set():
+                    if gen is not None:
+                        gen.end(output="".join(pieces), metadata={"interrupted": True})
                     return AgentOutcome(
                         answer="".join(pieces),
                         citations=ledger.citations,
@@ -292,12 +324,16 @@ class AgentRunner:
                 self._emit("delta", {"text": frame})
         except Exception:  # noqa: BLE001 — 作答轮失败同样是不可恢复错误
             logger.exception("agent answer pass failed")
+            if gen is not None:
+                gen.end(metadata={"error": "模型调用失败,请稍后重试"})
             return AgentOutcome(
                 answer="".join(pieces),
                 citations=ledger.citations,
                 steps=steps,
                 error="模型调用失败,请稍后重试",
             )
+        if gen is not None:
+            gen.end(output="".join(pieces))
         return AgentOutcome(answer="".join(pieces), citations=ledger.citations, steps=steps)
 
     # ---------------------------- 内部 ----------------------------

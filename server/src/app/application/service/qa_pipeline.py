@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
+from app.application.service.observability import NULL_QA_TRACE, QaTrace
 from app.application.service.retrieval import RetrievedChunk
 from app.application.streaming import GenerationHandle
 from app.core.errors import AppError
@@ -71,6 +72,8 @@ class GenerationState:
     pieces: list[str] = field(default_factory=list)
     interrupted: bool = False
     stop: bool = False  # 置真 = 错误/兜底分支已收尾,跳过后续阶段
+    # OPT-50 富 span:Langfuse 观测句柄(nil-safe 单例缺省,未接入零开销)
+    obs: QaTrace = NULL_QA_TRACE
 
     def emit(self, event_type: str, **payload: object) -> None:
         self.log.append(self.stream_id, event_type, payload)
@@ -106,16 +109,42 @@ class RetrieveStage:
         self._search = search
 
     def run(self, state: GenerationState) -> None:
+        span = state.obs.span("retrieve", input={"question": state.ctx.question})
         try:
             state.hits = self._search(state.ctx)
         except AppError as exc:
             logger.warning("retrieval failed in ask: %s", exc.message)
             state.emit("error", message=exc.message, code=exc.code_str)
+            span.end(output={"error": exc.message})
             state.stop = True
+            return
         except Exception:  # noqa: BLE001 — 兜底,不让流静默截断
             logger.exception("retrieval crashed in ask")
             state.emit("error", message="检索失败,请稍后重试")
+            span.end(output={"error": "检索失败,请稍后重试"})
             state.stop = True
+            return
+        span.end(
+            output={
+                "count": len(state.hits),
+                "chunks": [_chunk_trace(h) for h in state.hits],
+            }
+        )
+
+def _chunk_trace(hit: RetrievedChunk) -> dict:
+    """检索命中块的 trace 摘要:内容截到 800 字(全文上送口径,防单条过大)。"""
+    return {
+        "chunk_id": hit.chunk_id,
+        "document_id": hit.document_id,
+        "kb_id": hit.kb_id,
+        "filename": hit.filename,
+        "score": hit.score,
+        "vector_rank": hit.vector_rank,
+        "fulltext_rank": hit.fulltext_rank,
+        "breadcrumb": hit.meta.get("breadcrumb", []),
+        "page": hit.meta.get("page"),
+        "content": hit.content[:800],
+    }
 
 
 class CiteStage:
@@ -124,6 +153,7 @@ class CiteStage:
     name = "cite"
 
     def run(self, state: GenerationState) -> None:
+        span = state.obs.span("cite")
         state.citations = [
             {
                 "index": position,
@@ -139,6 +169,7 @@ class CiteStage:
             for position, hit in enumerate(state.hits, start=1)
         ]
         state.emit("citations", citations=state.citations)
+        span.end(output={"citations": state.citations})
 
 
 class FallbackStage:
@@ -152,6 +183,7 @@ class FallbackStage:
     def run(self, state: GenerationState) -> None:
         if state.hits:
             return
+        span = state.obs.span("fallback", metadata={"reason": "no_hits"})
         self._persist(state.ctx, _NO_RESULT_ANSWER, [], None, None, None)
         state.emit("delta", text=_NO_RESULT_ANSWER)
         # 兜底回答没打模型 → 进度条两值显式 null(与"老消息"同口径,前端不必猜键缺失)
@@ -161,6 +193,7 @@ class FallbackStage:
             context_used_tokens=None,
             context_window_tokens=None,
         )
+        span.end(output={"answer": _NO_RESULT_ANSWER})
         state.stop = True
 
 
@@ -177,11 +210,13 @@ class RecallMemoryStage:
         self._recall = recall
 
     def run(self, state: GenerationState) -> None:
+        span = state.obs.span("recall_memory")
         try:
             state.memories = self._recall(state.ctx)
         except Exception:  # noqa: BLE001 — 召回是增益,失败即回退"无记忆"
             logger.exception("memory recall failed in ask, degrade to no-memory")
             state.memories = []
+        span.end(output={"count": len(state.memories), "memories": state.memories})
 
 
 class ComposeStage:
@@ -197,6 +232,13 @@ class ComposeStage:
         state.prompt = _build_messages(
             recent, state.ctx.question, state.citations, state.memories, summary
         )
+        state.obs.span("compose").end(
+            output={
+                "prompt_messages": len(state.prompt),
+                "prompt_chars": sum(len(m["content"]) for m in state.prompt),
+                "has_summary": summary is not None,
+            }
+        )
 
 
 class GenerateStage:
@@ -209,12 +251,17 @@ class GenerateStage:
 
     def run(self, state: GenerationState) -> None:
         assert state.prompt is not None  # 默认链由 compose 保证;乱序配置在此暴露
+        # 全文上送口径:完整 prompt 消息进 generation input(块内容同时在 retrieve span)
+        gen = state.obs.generation(
+            "generate", model=state.ctx.model_id, input=state.prompt, metadata={"agent": False}
+        )
         try:
             upstream = self._chat.chat_stream(state.prompt, state.ctx.model_id)
             try:
                 for frame in upstream:
                     if state.handle.stop_requested.is_set():
                         state.interrupted = True
+                        gen.end(output="".join(state.pieces), metadata={"interrupted": True})
                         return
                     state.pieces.append(frame)
                     state.emit("delta", text=frame)
@@ -226,7 +273,10 @@ class GenerateStage:
         except Exception:  # noqa: BLE001 — 上游失败要作为事件告知而非断流
             logger.warning("chat stream failed")
             state.emit("error", message="模型调用失败,请稍后重试")
+            gen.end(metadata={"error": "模型调用失败,请稍后重试"})
             state.stop = True
+            return
+        gen.end(output="".join(state.pieces), metadata={"interrupted": state.interrupted})
 
 
 class PersistStage:

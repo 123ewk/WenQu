@@ -388,3 +388,66 @@ def test_dismissed_content_hash_is_skipped() -> None:
         chat, _search([]), dismissed_hashes=frozenset({memory_content_hash("别再提这条")})
     )
     assert _proposals(events) == []
+
+
+
+# ---------------------------- OPT-50:富 span 观测 ----------------------------
+
+
+class _RecObsSpan:
+    def __init__(self, rec: list, name: str, open_kwargs: dict) -> None:
+        self._rec, self._name = rec, name
+        rec.append(("open", name, open_kwargs))
+
+    def end(self, output: object | None = None, metadata: dict | None = None) -> None:
+        self._rec.append(("end", self._name, {"output": output, "metadata": metadata}))
+
+
+class _RecObs:
+    """记录型观测句柄:工具 span 与作答 generation 全收。"""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def finish(self, answer: str | None = None, error: str | None = None) -> None:
+        self.calls.append(("finish", answer, error))
+
+    def span(
+        self, name: str, *, input: object | None = None, metadata: dict | None = None
+    ) -> _RecObsSpan:
+        return _RecObsSpan(self.calls, name, {"input": input, "metadata": metadata})
+
+    def generation(
+        self, name: str, *, model: object | None = None, input: object | None = None,
+        output: object | None = None, usage: dict | None = None, metadata: dict | None = None,
+    ) -> _RecObsSpan:
+        return _RecObsSpan(self.calls, name, {"model": model, "input": input, "metadata": metadata})
+
+
+def test_agent_emits_tool_span_and_answer_generation() -> None:
+    """工具轮挂 tool.<名> span(参数/结果/耗时),作答轮挂 agent.answer generation。"""
+    hit = _hit("上限为每月两千元。")
+    chat = ScriptedAgentChat(
+        tool_rounds=[(["让我查一下"], [_call()])],
+        answer_pieces=["报销", "上限为每月两千元。[1]"],
+    )
+    obs = _RecObs()
+    events = Collector()
+    runner = AgentRunner(
+        chat=chat, search=_search([hit]), emit=events,
+        stop_requested=threading.Event(), max_rounds=20,
+    )
+    outcome = runner.run(_ctx(), "报销上限是多少?", [], obs=obs)
+
+    assert outcome.answer == "报销上限为每月两千元。[1]"
+    opens = [c for c in obs.calls if c[0] == "open"]
+    assert [c[1] for c in opens] == ["tool.search_knowledge", "agent.answer"]
+    tool_open = opens[0][2]
+    assert tool_open["input"]["args"] == {"query": "报销上限"}
+    assert tool_open["input"]["thought"] == "让我查一下"
+    ends = {c[1]: c[2]["output"] for c in obs.calls if c[0] == "end"}
+    assert ends["tool.search_knowledge"]["ok"] is True
+    assert "上限为每月两千元" in ends["tool.search_knowledge"]["output"]
+    assert ends["agent.answer"] == outcome.answer
+    gen_meta = [c[2]["metadata"] for c in obs.calls if c[0] == "open" and c[1] == "agent.answer"][0]
+    assert gen_meta["citations"] == 1

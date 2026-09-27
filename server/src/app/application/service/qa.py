@@ -476,6 +476,7 @@ class QAService:
             stream_id=sid,
             log=self._event_log,
             turn_usage=self._turn_usage,
+            obs=obs,
         )
         try:
             state.emit("meta", conversation_id=str(cid))
@@ -533,6 +534,7 @@ class QAService:
             recent_history,
             memories=memories,
             summary=summary,
+            obs=obs,
         )
         obs.finish(answer=outcome.answer, error=outcome.error)
         if outcome.error is not None:
