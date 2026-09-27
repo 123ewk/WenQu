@@ -215,3 +215,25 @@ def test_toggle_writes_audit_without_secret_material(client) -> None:
         assert "enc:v1:" not in str(row.detail)
     assert {row.detail["enabled"] for row in mine} == {True, False}
     assert all(row.space_id is None for row in mine)  # 全局配置不属于任何空间
+
+# ---------------------------- OPT-49 N2:问答观测句柄 nil-safe ----------------------------
+
+
+def test_start_qa_trace_nil_safe_and_no_langfuse_import(
+    client, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from app.application.service.observability import start_qa_trace
+
+    clear_langfuse_config_cache()
+    monkeypatch.delenv("APP_LANGFUSE_CONFIG_CACHE_TTL_SECONDS", raising=False)
+    sid = uuid.uuid4()
+    with get_session_factory()() as db:
+        obs = start_qa_trace(
+            db, user_id=sid, space_id=sid, question="q", kb_ids=None, model_id=None, agent=False
+        )
+    assert type(obs).__name__ == "_NullQaTrace"  # 未接入 → 零操作句柄
+    obs.finish(answer="a")  # 不抛
+    # 懒加载:未配置路径零 import(连 langfuse 包都不进 sys.modules)
+    assert "langfuse" not in sys.modules

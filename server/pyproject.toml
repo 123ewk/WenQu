@@ -22,6 +22,7 @@ dependencies = [
     "wenqu-parser",
     "pillow>=12.3.0",
     "cryptography>=43",
+    "langfuse>=4.15.6",
 ]
 
 [dependency-groups]

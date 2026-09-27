@@ -88,11 +88,16 @@ def clear_langfuse_config_cache() -> None:
     _cache.clear()
 
 
-def langfuse_settings(db: Session) -> LangfuseSettings | None:
-    """运行时读取(N2 的 Langfuse 客户端用):未接入/已停用返回 None;私钥在此解密。"""
+def langfuse_settings(db: Session | None) -> LangfuseSettings | None:
+    """运行时读取(N2 的 Langfuse 客户端用):未接入/已停用返回 None;私钥在此解密。
+
+    `db=None`(如部分测试构造)时:缓存命中仍返回缓存,未命中按未接入处理。
+    """
     cached = _cache.get()
     if not isinstance(cached, _Missing):
         return cached
+    if db is None:
+        return None
     row = LangfuseConfigRepositoryImpl(db).get_row()
     settings = _resolve(row)
     _cache.put(settings)

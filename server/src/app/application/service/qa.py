@@ -44,6 +44,7 @@ from app.application.service.compaction import (
     read_summary,
 )
 from app.application.service.memory import MemoryService
+from app.application.service.observability import start_qa_trace
 from app.application.service.qa_pipeline import (
     DEFAULT_PIPELINE,
     GenerationState,
@@ -419,8 +420,18 @@ class QAService:
         if self._db is not None:
             self._db.commit()
         handle = self._supervisor.start(conversation.id)
+        # OPT-49:旁路观测句柄(nil-safe;未接入 Langfuse 时为零操作实现)
+        obs = start_qa_trace(
+            self._db,
+            user_id=user_id,
+            space_id=space_id,
+            question=question,
+            kb_ids=kb_ids,
+            model_id=model_id,
+            agent=agent,
+        )
         threading.Thread(
-            target=self._generate, args=(handle, ctx), daemon=True, name="qa-generate"
+            target=self._generate, args=(handle, ctx, obs), daemon=True, name="qa-generate"
         ).start()
         return self._reader(handle.stream_id, handle)
 
@@ -453,7 +464,9 @@ class QAService:
 
     # ---------------------------- 后台泵 ----------------------------
 
-    def _generate(self, handle: GenerationHandle, ctx: _AskContext) -> None:
+    def _generate(
+        self, handle: GenerationHandle, ctx: _AskContext, obs
+    ) -> None:
         """后台泵:Agent 模式跑 ReAct 循环,否则跑流水线插件链;收尾固定在此兜底。"""
         cid = ctx.conversation.id
         sid = handle.stream_id  # 事件日志的键:一次生成一条流
@@ -467,9 +480,10 @@ class QAService:
         try:
             state.emit("meta", conversation_id=str(cid))
             if ctx.agent:
-                self._run_agent(handle, ctx)
+                self._run_agent(handle, ctx, obs)
             else:
                 self._pipeline.run(state)
+                obs.finish()  # 直检路径无 outcome 变量,收尾不带 output
         except Exception:  # noqa: BLE001 — 泵兜底:绝不让流无声卡死
             logger.exception("ask generation crashed conv=%s", cid)
             try:
@@ -480,7 +494,9 @@ class QAService:
             self._event_log.mark_finished(sid)
             self._supervisor.finish(cid)
 
-    def _run_agent(self, handle: GenerationHandle, ctx: _AskContext) -> None:
+    def _run_agent(
+        self, handle: GenerationHandle, ctx: _AskContext, obs
+    ) -> None:
         """Agent 模式(OPT-10):AgentRunner 发工具/正文事件,这里负责落库与 done 收尾。
 
         done 语义与直检路径一致:部分/空答案不落完整消息,partial 标记如实。
@@ -518,6 +534,7 @@ class QAService:
             memories=memories,
             summary=summary,
         )
+        obs.finish(answer=outcome.answer, error=outcome.error)
         if outcome.error is not None:
             self._event_log.append(sid, "error", {"message": outcome.error})
             return
