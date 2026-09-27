@@ -86,6 +86,13 @@ const router = createRouter({
           meta: { title: 'Token 用量', desc: '对话与向量化的 token 消耗统计 · 按成员汇总需 Admin 及以上' },
         },
         {
+          // OPT-49 v2:调用追踪。成员看自己的,Admin+ 看全空间(后端强制),页内不设 adminOnly
+          path: 'traces',
+          name: 'traces',
+          component: () => import('@/views/traces/TraceView.vue'),
+          meta: { title: '调用追踪', desc: '问答链路 trace 列表与详情 · 成员看自己的,Admin 及以上可看全空间' },
+        },
+        {
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/audit/AuditView.vue'),

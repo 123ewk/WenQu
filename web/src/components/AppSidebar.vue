@@ -12,6 +12,7 @@ import {
   Fold,
   Key,
   Lock,
+  Odometer,
   OfficeBuilding,
   Plus,
   Setting,
@@ -141,6 +142,9 @@ async function onLogout() {
       </router-link>
       <router-link to="/settings/usage" class="nav-item" active-class="nav-active">
         <el-icon><DataLine /></el-icon><span class="sb-text">Token 用量</span>
+      </router-link>
+      <router-link to="/traces" class="nav-item" active-class="nav-active" data-testid="nav-traces">
+        <el-icon><Odometer /></el-icon><span class="sb-text">调用追踪</span>
       </router-link>
       <router-link v-if="auth.isAdmin" to="/audit" class="nav-item" active-class="nav-active">
         <el-icon><Document /></el-icon><span class="sb-text">审计日志</span>

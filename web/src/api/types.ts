@@ -772,8 +772,8 @@ export interface SpaceToggleRequest {
 }
 
 /**
- * OPT-49 Langfuse 可观测配置(GET/PUT /admin/langfuse-config,superuser 专属)。
- * 全局单行;Secret Key 写入即加密,接口只回 key_hint 掩码。
+ * OPT-49 v2 空间级 Langfuse 配置(GET/PUT /spaces/{space_id}/langfuse-config,空间 Admin+ 专属)。
+ * 每空间一套;Secret Key 写入即加密,接口只回 key_hint 掩码。
  */
 export interface LangfuseConfigOut {
   enabled: boolean
@@ -791,4 +791,33 @@ export interface LangfuseConfigPut {
   /** null = 不改动;"" = 清除;非空 = 替换(与模型供应商 api_key 同语义) */
   secret_key: string | null
   enabled: boolean
+}
+
+/** GET /spaces/{space_id}/langfuse-traces 列表项(Langfuse trace 字段透传,按需取用) */
+export interface LangfuseTraceItem {
+  id: string
+  timestamp: string | null
+  /** 埋点统一为 "qa" */
+  name: string | null
+  /** 埋点为 { question: string } */
+  input: unknown
+  /** 埋点为答案全文(字符串),出错时可能为 null */
+  output: unknown
+  /** 秒(Langfuse 侧计算) */
+  latency: number | null
+  /** 埋点为 { user_id, space_id, kb_ids, model_id, agent, error? } */
+  metadata: Record<string, unknown> | null
+}
+
+export interface LangfuseTraceListOut {
+  /** 本空间是否已接入(enabled 且密钥已配);false 时 items 恒空 */
+  configured: boolean
+  items: LangfuseTraceItem[]
+  meta: Record<string, unknown> | null
+}
+
+/** GET /spaces/{space_id}/langfuse-traces/{trace_id} 详情(Langfuse 单条对象透传) */
+export interface LangfuseTraceDetailOut {
+  id: string
+  data: Record<string, unknown>
 }
