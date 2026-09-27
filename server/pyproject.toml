@@ -22,7 +22,9 @@ dependencies = [
     "wenqu-parser",
     "pillow>=12.3.0",
     "cryptography>=43",
-    "langfuse>=4.15.6",
+    # 钉 2.x:自托管 Langfuse 服务端是 v2(资源考量),v3 线 SDK(3.x/4.x)走 v3 专用
+    # 上传协议,v2 服务端不认,trace 静默丢失;2.x 与 v2 服务端原生配对(2026-09-27 实证)
+    "langfuse>=2.60.0,<3",
 ]
 
 [dependency-groups]
