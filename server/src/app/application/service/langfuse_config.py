@@ -221,12 +221,15 @@ class LangfuseConfigService:
         if row is not None and row.updated_by is not None:
             updater = self._users.get(row.updated_by)
             updated_by_hint = updater.username if updater is not None else None
-        console_url = row.console_url if row is not None else ""
+        # 行不存在(从未配置过)时回事实例级默认拓扑:表单预填 + 跳转链接开箱即用
+        defaults = get_settings()
+        host_out = row.host if row is not None else defaults.langfuse_default_host
+        console_url = row.console_url if row is not None else defaults.langfuse_console_url
         settings = langfuse_settings(self._db, space_id)
         pid = resolve_project_id(settings) if settings is not None and console_url else None
         return LangfuseConfigStatus(
             enabled=row.enabled if row is not None else False,
-            host=row.host if row is not None else "",
+            host=host_out,
             public_key=row.public_key if row is not None else "",
             key_hint=row.key_hint if row is not None else "",
             updated_at=row.updated_at if row is not None else None,

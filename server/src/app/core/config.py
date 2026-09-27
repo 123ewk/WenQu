@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     langfuse_config_cache_ttl_seconds: int = Field(
         60, validation_alias="APP_LANGFUSE_CONFIG_CACHE_TTL_SECONDS"
     )
+    # OPT-49:实例级 Langfuse 默认拓扑(可选,运维在 .env 写一次,各空间配置卡预填)。
+    # default_host = WenQu 后端可达的地址(容器内网部署是 http://langfuse-...:3000 这类);
+    # console_url = 管理员浏览器可达的地址(自托管隧道是 http://127.0.0.1:3100 这类),
+    # 也是配置卡"去申请密钥/看 trace"跳转链接的基座;空间行存在时以行值为准。
+    langfuse_default_host: str = Field("", validation_alias="APP_LANGFUSE_DEFAULT_HOST")
+    langfuse_console_url: str = Field("", validation_alias="APP_LANGFUSE_CONSOLE_URL")
 
 
     # ---- 网络身份(OPT-12/翻转项 #8):可信代理 CIDR 逗号分隔,如 "127.0.0.1,10.0.0.0/8" ----

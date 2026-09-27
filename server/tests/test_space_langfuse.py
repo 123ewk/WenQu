@@ -190,6 +190,31 @@ def test_config_console_url_and_direct_links(client, monkeypatch: pytest.MonkeyP
     assert not [u for u in calls if u.endswith("/projects")]
 
 
+def test_config_prefilled_from_instance_defaults(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """行不存在时,GET 用实例级默认拓扑(APP_LANGFUSE_DEFAULT_HOST/CONSOLE_URL)预填表单。
+
+    这是"管理员不用猜地址"的机制:运维在 .env 写一次,各空间配置卡开箱即填,
+    跳转链接(去申请密钥/看 trace)也随之直接出现;空间保存行值后以行值为准。
+    """
+    from types import SimpleNamespace
+
+    owner, auth, sid = _space(client, "lfdef")
+    monkeypatch.setattr(
+        lf_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            langfuse_default_host="http://langfuse-langfuse-1:3000",
+            langfuse_console_url="http://127.0.0.1:3100",
+            langfuse_config_cache_ttl_seconds=60,
+        ),
+    )
+    body = client.get(CFG.format(sid=sid), headers=auth).json()
+    assert body["enabled"] is False
+    assert body["host"] == "http://langfuse-langfuse-1:3000"
+    assert body["console_url"] == "http://127.0.0.1:3100"
+    assert body["project_id"] is None  # 尚无密钥:不解析项目,链接回落控制台根
+
+
 # ---------------------------- trace 查看(代理) ----------------------------
 
 
