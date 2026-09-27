@@ -82,28 +82,11 @@ jobs:
       WENQU_MIN_FREE_GB: "4" # 门 0 水位下限(实际阈值 = max(此值, 上次备份大小×2));盘满会让备份写成残缺件
       WENQU_WEB_URL: http://127.0.0.1 # runner 与栈同机,门 3 走本机回环查 nginx 入口(变量名须与 deploy.sh 的 WENQU_ 前缀一致,否则覆盖不生效)
     steps:
-      # 生产机直连 github.com 的握手快但数据传输被限速且间歇断流,单次 checkout
-      # (内含 git 自身 3 次重试,约 6.5 分钟)经常全灭。按用户要求只保留 1 次重试:
-      # 两次尝试总跨度约 14 分钟,仍能跨过部分坏窗口;再失败按日志指引人工处理。
-      - name: Checkout(尝试 1/2)
-        id: co1
+      # 生产机直连 github.com 间歇断流,checkout 可能失败 —— 按用户要求不做工作流级重试,
+      # 失败即终止(单次 checkout 内含 git 自身 3 次重试,约 6.5 分钟)。失败后在 Actions
+      # 页 Re-run failed jobs 即可(好坏窗口分钟级轮换)。
+      - name: Checkout
         uses: actions/checkout@v4
-        continue-on-error: true
-      - name: 失败,歇 60s 再试一次
-        if: steps.co1.outcome == 'failure'
-        run: sleep 60
-      - name: Checkout(尝试 2/2)
-        id: co2
-        if: steps.co1.outcome == 'failure'
-        uses: actions/checkout@v4
-        continue-on-error: true
-      - name: 两次尝试全部失败 → 终止
-        if: steps.co2.outcome == 'failure'
-        run: |
-          echo "连续 2 次 checkout 失败:生产机直连 github.com 的数据传输被限速且间歇断流。"
-          echo "  1. 稍后在 Actions 页 Re-run failed jobs 即可(好坏窗口分钟级轮换);"
-          echo "  2. 治本:为生产机 git 配置代理,或建 Gitee 镜像改从国内拉取。"
-          exit 1
 
       - name: 登录 ACR(归档位;失败不阻断部署)
         continue-on-error: true
