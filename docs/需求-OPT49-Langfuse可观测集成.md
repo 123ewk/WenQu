@@ -135,7 +135,8 @@ Langfuse 容器部署在 N2 联调前完成。
 | v2 后端 | 迁移/模型/服务/路由/埋点改造 + 测试 6 条 | `54b65f0` |
 | S3 前端 | 调用追踪页 + 类型/API 层 + 删实例级卡 | `b334598` |
 | S4 收尾 | 本节 + 台账 + 发版 v0.2.4 | `e3b135f`/`b0359e4` |
-| v0.2.5 补丁 | 上线当天用户反馈:跳转链接落到 SaaS/容器内网名(浏览器不可达)、缺"去哪看 trace"入口 → 补 `console_url`(0025,浏览器可达的控制台地址)+ pk/sk 调 /api/public/projects 解析 project_id,前端出「创建/查看 API Keys」「打开 Langfuse 看 trace」直达链接(未填控制台地址只出文字指引) | `7f55ca3`/`4dcbb40` |
+| v0.2.5 补丁 | 上线当天用户反馈:跳转链接落到 SaaS/容器内网名(浏览器不可达)、缺"去哪看 trace"入口 → 补 `console_url`(0025,浏览器可达的控制台地址)+ pk/sk 调 /api/public/projects 解析 project_id,前端出「创建/查看 API Keys」「打开 Langfuse 看 trace」直达链接(未填控制台地址只出文字指引);另加实例级默认拓扑 `APP_LANGFUSE_DEFAULT_HOST`/`APP_LANGFUSE_CONSOLE_URL`,未配置空间的表单开箱即填 | `7f55ca3`/`4dcbb40`/`205dda5` |
+| v0.2.6 修复 | 用户配置后 Langfuse 控制台无 trace:根因 = langfuse-python 4.x(v3 线协议)配自托管 v2 服务端不兼容,失败静默;SDK 钉回 2.60.10,烟雾 trace 实证到达 | `43c8827` |
 
 **遗留（二期候选）**：§3 的富 span 设计（七阶段/Agent 工具轮/入库任务 trace）从简为
 "一问一答一个 trace"（input=问题、output=答案、metadata=用户/空间/库/模型/agent 标记），
