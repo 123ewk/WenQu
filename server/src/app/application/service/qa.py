@@ -423,8 +423,8 @@ class QAService:
         # OPT-49:旁路观测句柄(nil-safe;未接入 Langfuse 时为零操作实现)
         obs = start_qa_trace(
             self._db,
+            space_id,
             user_id=user_id,
-            space_id=space_id,
             question=question,
             kb_ids=kb_ids,
             model_id=model_id,

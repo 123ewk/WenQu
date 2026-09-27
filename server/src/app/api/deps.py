@@ -31,7 +31,7 @@ from app.application.repository.knowledge import (
     KbStatsRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
-from app.application.repository.langfuse_config import LangfuseConfigRepositoryImpl
+from app.application.repository.langfuse_config import SpaceLangfuseConfigRepositoryImpl
 from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.permission_group_toggle import (
@@ -507,8 +507,30 @@ def get_langfuse_config_service(
     audit: AuditRepository = Depends(get_audit_repository),
     users: UserRepository = Depends(get_user_repository),
 ) -> LangfuseConfigService:
-    """Langfuse 可观测配置服务(OPT-49):superuser 守卫在路由层;加密在服务内。"""
-    return LangfuseConfigService(db, LangfuseConfigRepositoryImpl(db), users, audit)
+    """空间级 Langfuse 配置与 trace 查看服务(OPT-49 v2);空间 Admin+ 守卫在路由层。"""
+    return LangfuseConfigService(db, SpaceLangfuseConfigRepositoryImpl(db), users, audit)
+
+
+def get_space_langfuse_manager(
+    space_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """空间级 Langfuse 配置的管理者守卫(OPT-49 v2):该空间 Admin+(role≥30)或 superuser。"""
+    if user.is_superuser:
+        return user
+    membership = db.scalar(
+        select(Membership).where(
+            Membership.space_id == space_id, Membership.user_id == user.id
+        )
+    )
+    if membership is None or membership.role < Role.ADMIN.value:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "仅空间管理员(Admin)及以上可管理本空间的 Langfuse 配置",
+            http_status=403,
+        )
+    return user
 
 
 def get_model_catalog(

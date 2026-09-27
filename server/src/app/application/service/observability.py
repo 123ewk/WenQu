@@ -24,10 +24,10 @@ _client = None  # Langfuse | None
 _client_fingerprint: tuple[str, str, str] | None = None
 
 
-def _langfuse_client(db: Session | None):
-    """按配置指纹缓存的单例客户端;未配置/构造失败返回 None(懒加载 langfuse 包)。"""
+def _langfuse_client(db: Session | None, space_id: uuid.UUID):
+    """按配置指纹缓存的单例客户端;该空间未接入/构造失败返回 None(懒加载 langfuse 包)。"""
     global _client, _client_fingerprint
-    settings = langfuse_settings(db)
+    settings = langfuse_settings(db, space_id)
     if settings is None:
         return None
     fingerprint = (settings.host, settings.public_key, settings.secret_key)
@@ -81,16 +81,16 @@ class _LangfuseQaTrace:
 
 def start_qa_trace(
     db: Session | None,
+    space_id: uuid.UUID,
     *,
     user_id: uuid.UUID,
-    space_id: uuid.UUID,
     question: str,
     kb_ids: list[uuid.UUID] | None,
     model_id: str | None,
     agent: bool,
 ):
     """问答入口调用:已接入返回 Langfuse 句柄,未接入返回零操作句柄。"""
-    client = _langfuse_client(db)
+    client = _langfuse_client(db, space_id)
     if client is None:
         return _NullQaTrace()
     try:

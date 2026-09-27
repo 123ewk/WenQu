@@ -18,7 +18,6 @@ from app.domain.models import (
     Conversation,
     Document,
     KnowledgeBase,
-    LangfuseConfig,
     Membership,
     Memory,
     MemoryProposal,
@@ -27,6 +26,7 @@ from app.domain.models import (
     PermissionGroupMember,
     RefreshToken,
     Space,
+    SpaceLangfuseConfig,
     SpacePermissionGroupToggle,
     Task,
     User,
@@ -259,23 +259,24 @@ class SpacePermissionGroupToggleRepository(Protocol):
     def actor_has_active_group(self, space_id: uuid.UUID, user_id: uuid.UUID) -> bool: ...
 
 
-class LangfuseConfigRepository(Protocol):
-    """Langfuse 可观测配置持久化(OPT-49):全局单行(CHECK id=1),表为空 = 未接入。
+class SpaceLangfuseConfigRepository(Protocol):
+    """空间级 Langfuse 配置持久化(OPT-49 v2):每空间一行,表无行 = 该空间未接入。
 
-    本协议只管行本身;加密/掩码/TTL 缓存/审计在服务层。
+    本协议只管行本身;加密/掩码/按空间 TTL 缓存/审计在服务层。
     """
 
-    def get_row(self) -> LangfuseConfig | None: ...
+    def get_row(self, space_id: uuid.UUID) -> SpaceLangfuseConfig | None: ...
     def upsert(
         self,
         *,
+        space_id: uuid.UUID,
         host: str,
         public_key: str,
         secret_key_encrypted: str,
         key_hint: str,
         enabled: bool,
         updated_by: uuid.UUID,
-    ) -> LangfuseConfig: ...
+    ) -> SpaceLangfuseConfig: ...
 
 
 class ChatGateway(Protocol):

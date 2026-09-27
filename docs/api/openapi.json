@@ -4032,14 +4032,31 @@
         }
       }
     },
-    "/api/v1/admin/langfuse-config": {
+    "/api/v1/spaces/{space_id}/langfuse-config": {
       "get": {
         "tags": [
-          "admin-observability"
+          "langfuse"
         ],
-        "summary": "Get Langfuse Config",
-        "description": "读当前接入配置(未配置时各字段为空/false)。",
-        "operationId": "get_langfuse_config_api_v1_admin_langfuse_config_get",
+        "summary": "Get Space Langfuse Config",
+        "description": "读本空间接入配置(未配置时各字段为空/false)。",
+        "operationId": "get_space_langfuse_config_api_v1_spaces__space_id__langfuse_config_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -4050,30 +4067,52 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
+        }
+      },
+      "put": {
+        "tags": [
+          "langfuse"
+        ],
+        "summary": "Put Space Langfuse Config",
+        "description": "保存本空间接入配置(写入即加密,审计留痕,本进程即时生效)。",
+        "operationId": "put_space_langfuse_config_api_v1_spaces__space_id__langfuse_config_put",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
-      },
-      "put": {
-        "tags": [
-          "admin-observability"
         ],
-        "summary": "Put Langfuse Config",
-        "description": "保存接入配置(全局单行;写入即加密,审计留痕,本进程即时生效)。",
-        "operationId": "put_langfuse_config_api_v1_admin_langfuse_config_put",
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/LangfuseConfigPut"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -4096,12 +4135,145 @@
               }
             }
           }
-        },
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/langfuse-traces": {
+      "get": {
+        "tags": [
+          "langfuse"
+        ],
+        "summary": "List Space Langfuse Traces",
+        "description": "trace 列表:成员强制只看自己;Admin+/superuser 可看全空间或指定成员。",
+        "operationId": "list_space_langfuse_traces_api_v1_spaces__space_id__langfuse_traces_get",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "按成员过滤(仅 Admin+ 生效)",
+              "title": "User Id"
+            },
+            "description": "按成员过滤(仅 Admin+ 生效)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseTraceListOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spaces/{space_id}/langfuse-traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "langfuse"
+        ],
+        "summary": "Get Space Langfuse Trace",
+        "description": "trace 详情:成员只能看自己的(他人的归一为 404 防枚举)。",
+        "operationId": "get_space_langfuse_trace_api_v1_spaces__space_id__langfuse_traces__trace_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "space_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Space Id"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseTraceDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/spaces/{space_id}/permission-group-toggle": {
@@ -6789,6 +6961,137 @@
           "enabled"
         ],
         "title": "LangfuseConfigPut"
+      },
+      "LangfuseTraceDetailOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "data"
+        ],
+        "title": "LangfuseTraceDetailOut",
+        "description": "trace 详情(Langfuse 单条对象透传)。"
+      },
+      "LangfuseTraceItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "input": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input"
+          },
+          "output": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
+          "latency": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "LangfuseTraceItem",
+        "description": "Langfuse trace 列表项(透传其 API 字段,前端按需取用)。"
+      },
+      "LangfuseTraceListOut": {
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LangfuseTraceItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "meta": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured",
+          "items"
+        ],
+        "title": "LangfuseTraceListOut"
       },
       "LoginRequest": {
         "properties": {

@@ -1,36 +1,39 @@
-"""Langfuse 可观测配置服务(OPT-49):按"模型配置"标准管理接入密钥。
+"""空间级 Langfuse 配置与 trace 查看服务(OPT-49 v2)。
 
-职责边界:
-- **本服务**:配置的读写(私钥 AES-GCM 加密落库/响应只回 key_hint)、启停校验
-  (enabled=true 前置 secret_key 已配置)、审计留痕(langfuse_config.updated)、
-  运行时读取的进程内 TTL 缓存(写时失效,复用 OPT-48 模式);
-- **守卫与 UI**:superuser 专属(get_current_superuser,与模型配置一致),在路由层;
-- **nil-safe**:表为空 / enabled=false / 私钥未配置时,`langfuse_settings` 返回 None,
-  埋点路径短路——问答/入库行为与未接入时逐字节一致;
-- **失败隔离**:私钥解密失败按"配置损坏"处理返回 None(运行时不可用),绝不抛进主链路;
-  加密只发生在写入路径,主密钥缺失的 503 在保存配置时即暴露,不潜伏到运行时。
+口径(2026-09-26 用户重述需求):
+- **每空间一套配置**(地址/公钥/私钥/启停),该空间 Admin+(role≥30)或 superuser 可改
+  (守卫在路由层 get_space_langfuse_manager);
+- trace 按提问所在空间上送到该空间配置的 Langfuse(各空间可指向同一服务的不同项目);
+- **产品内可看**:本空间成员可查**自己**的 trace,Admin+ 可查**全空间**;未配置空间
+  返回 configured=false(nil-safe 零开销);非本空间成员一律 404(防枚举);
+- 失败隔离:Langfuse 不可达/配置损坏 → 424 上游错误,绝不进问答主链路。
+
+读取缓存:按 space_id 分键的进程内 TTL 缓存(写侧按空间失效)。
 """
 
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+import httpx
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.application.repository.langfuse_config import LangfuseConfigRepositoryImpl
+from app.application.repository.langfuse_config import SpaceLangfuseConfigRepositoryImpl
 from app.core.config import get_settings
 from app.core.crypto import get_credential_cipher
 from app.core.errors import AppError, ErrorCode
-from app.domain.enums import AuditAction
-from app.domain.interfaces import AuditRepository, LangfuseConfigRepository, UserRepository
-from app.domain.models import AuditLog, LangfuseConfig, User
+from app.domain.enums import AuditAction, Role
+from app.domain.interfaces import AuditRepository, SpaceLangfuseConfigRepository, UserRepository
+from app.domain.models import AuditLog, Membership, SpaceLangfuseConfig, User
 
 
 @dataclass(frozen=True)
 class LangfuseSettings:
-    """运行时接入参数(私钥已解密;只供 N2 的 Langfuse 客户端使用,不出接口)。"""
+    """运行时接入参数(私钥已解密;只供观测客户端与代理查询使用,不出接口)。"""
 
     host: str
     public_key: str
@@ -39,7 +42,7 @@ class LangfuseSettings:
 
 @dataclass(frozen=True)
 class LangfuseConfigStatus:
-    """GET/PUT 的响应载荷(路由层再映射成契约 Out 模型;私钥永不出现)。"""
+    """GET/PUT 配置的响应载荷(路由层再映射契约;私钥永不出现)。"""
 
     enabled: bool
     host: str
@@ -49,70 +52,67 @@ class LangfuseConfigStatus:
     updated_by_hint: str | None
 
 
-class _ConfigTtlCache:
-    """进程内 TTL 缓存(键只有一个——全局单行配置;None 也缓存,表示"未接入")。"""
+class _Missing:
+    """缓存未命中哨兵(与缓存值 None=未接入区分)。"""
+
+
+class _SpaceTtlCache:
+    """按 space_id 分键的进程内 TTL 缓存(None 也缓存,表示"该空间确认未接入")。"""
 
     def __init__(self, ttl_seconds: int) -> None:
         self._ttl_seconds = ttl_seconds
-        self._value: LangfuseSettings | None = None
-        self._filled: bool = False
-        self._at: float = 0.0
+        self._entries: dict[uuid.UUID, tuple[LangfuseSettings | None, float]] = {}
 
-    def get(self) -> LangfuseSettings | None | _Missing:  # noqa: UP007
-        """TTL 内返回缓存值(可能为 None=确认未接入);过期/未查过返回 _Missing(必须打库)。"""
-        if not self._filled:
-            return _MISSING
-        if time.monotonic() - self._at >= self._ttl_seconds:
-            return _MISSING
-        return self._value
+    def get(self, space_id: uuid.UUID) -> LangfuseSettings | None | _Missing:
+        entry = self._entries.get(space_id)
+        if entry is None:
+            return _Missing()
+        value, at = entry
+        if time.monotonic() - at >= self._ttl_seconds:
+            return _Missing()
+        return value
 
-    def put(self, value: LangfuseSettings | None) -> None:
-        self._value = value
-        self._filled = True
-        self._at = time.monotonic()
+    def put(self, space_id: uuid.UUID, value: LangfuseSettings | None) -> None:
+        self._entries[space_id] = (value, time.monotonic())
 
-    def clear(self) -> None:
-        self._filled = False
-
-
-class _Missing:
-    """缓存"确认过未接入/已关闭"的哨兵:与"还没查过"区分,避免未配置时反复打库。"""
+    def clear(self, space_id: uuid.UUID | None = None) -> None:
+        if space_id is None:
+            self._entries.clear()
+        else:
+            self._entries.pop(space_id, None)
 
 
-_MISSING = _Missing()
-_cache = _ConfigTtlCache(get_settings().langfuse_config_cache_ttl_seconds)
+_cache = _SpaceTtlCache(get_settings().langfuse_config_cache_ttl_seconds)
 
 
-def clear_langfuse_config_cache() -> None:
-    """显式失效入口:写侧保存后与测试夹具共用。"""
-    _cache.clear()
+def clear_langfuse_config_cache(space_id: uuid.UUID | None = None) -> None:
+    """显式失效入口:写侧按空间失效,测试夹具全清。"""
+    _cache.clear(space_id)
 
 
-def langfuse_settings(db: Session | None) -> LangfuseSettings | None:
-    """运行时读取(N2 的 Langfuse 客户端用):未接入/已停用返回 None;私钥在此解密。
-
-    `db=None`(如部分测试构造)时:缓存命中仍返回缓存,未命中按未接入处理。
-    """
-    cached = _cache.get()
-    if not isinstance(cached, _Missing):
-        return cached
-    if db is None:
-        return None
-    row = LangfuseConfigRepositoryImpl(db).get_row()
-    settings = _resolve(row)
-    _cache.put(settings)
-    return settings
-
-
-def _resolve(row: LangfuseConfig | None) -> LangfuseSettings | None:
+def _resolve(row: SpaceLangfuseConfig | None) -> LangfuseSettings | None:
     if row is None or not row.enabled or not row.secret_key_encrypted:
         return None
     try:
         secret = get_credential_cipher().decrypt(row.secret_key_encrypted)
     except AppError:
-        # 密文损坏/主密钥轮换:按"未接入"处理(nil-safe),不把观测配置问题泄进主链路
-        return None
+        return None  # 密文损坏/主密钥轮换:按未接入处理,不泄进主链路
     return LangfuseSettings(host=row.host.rstrip("/"), public_key=row.public_key, secret_key=secret)
+
+
+def langfuse_settings(db: Session | None, space_id: uuid.UUID) -> LangfuseSettings | None:
+    """运行时读取(问答观测句柄用):该空间未接入/已停用返回 None。
+
+    `db=None`(部分测试构造)时:缓存命中仍返回缓存,未命中按未接入处理。
+    """
+    cached = _cache.get(space_id)
+    if not isinstance(cached, _Missing):
+        return cached
+    if db is None:
+        return None
+    settings = _resolve(SpaceLangfuseConfigRepositoryImpl(db).get_row(space_id))
+    _cache.put(space_id, settings)
+    return settings
 
 
 def _hint(key: str) -> str:
@@ -120,23 +120,67 @@ def _hint(key: str) -> str:
 
 
 class LangfuseConfigService:
-    """配置读取与保存;superuser 守卫在路由层(get_current_superuser)。"""
+    """配置读取/保存(空间 Admin+ 守卫在路由层)+ trace 查看代理(成员看自己/Admin+ 看全空间)。"""
 
     def __init__(
         self,
         db: Session,
-        repo: LangfuseConfigRepository,
+        repo: SpaceLangfuseConfigRepository,
         users: UserRepository,
         audit: AuditRepository,
     ) -> None:
-        # db 仅喂 langfuse_settings 的缓存读值路径;行操作走注入的 repo
         self._db = db
         self._repo = repo
         self._users = users
         self._audit = audit
 
-    def status(self, actor: User) -> LangfuseConfigStatus:
-        row = self._repo.get_row()
+    # ---------------------------- 内部 ----------------------------
+
+    def _require_member(self, space_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """非本空间成员一律 404(防枚举)。"""
+        if self._db.scalar(
+            select(func.count())
+            .select_from(Membership)
+            .where(Membership.space_id == space_id, Membership.user_id == user_id)
+        ):
+            return
+        raise AppError(ErrorCode.SPACE_NOT_FOUND, "空间不存在", http_status=404)
+
+    def _role_in_space(self, space_id: uuid.UUID, user_id: uuid.UUID) -> int | None:
+        return self._db.scalar(
+            select(Membership.role).where(
+                Membership.space_id == space_id, Membership.user_id == user_id
+            )
+        )
+
+    def _is_admin(self, actor: User, space_id: uuid.UUID) -> bool:
+        if actor.is_superuser:
+            return True
+        role = self._role_in_space(space_id, actor.id)
+        return role is not None and role >= Role.ADMIN.value
+
+    def _lf_get(self, settings: LangfuseSettings, path: str, params: dict) -> dict:
+        try:
+            resp = httpx.get(
+                f"{settings.host}/api/public{path}",
+                params=params,
+                auth=(settings.public_key, settings.secret_key),
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise AppError(
+                ErrorCode.MODEL_UPSTREAM_ERROR,
+                "Langfuse 查询失败,请稍后重试",
+                http_status=424,
+                details={"reason": str(exc)[:120]},
+            ) from exc
+        return resp.json()
+
+    # ---------------------------- 配置 ----------------------------
+
+    def status(self, actor: User, space_id: uuid.UUID) -> LangfuseConfigStatus:
+        row = self._repo.get_row(space_id)
         updated_by_hint: str | None = None
         if row is not None and row.updated_by is not None:
             updater = self._users.get(row.updated_by)
@@ -153,6 +197,7 @@ class LangfuseConfigService:
     def update(
         self,
         actor: User,
+        space_id: uuid.UUID,
         *,
         host: str,
         public_key: str,
@@ -160,27 +205,26 @@ class LangfuseConfigService:
         enabled: bool,
         ip: str = "",
     ) -> LangfuseConfigStatus:
-        """保存配置:secret_key 三态(None=不改动/""=清除/非空=替换);启用前置私钥已配置。"""
+        """保存本空间配置:secret_key 三态(None=不改/""=清除/非空=替换);启用前置私钥已配置。"""
         host = (host or "").strip().rstrip("/")
         public_key = (public_key or "").strip()
         if not host:
             raise AppError(ErrorCode.VALIDATION, "Langfuse 地址(host)不能为空", http_status=400)
         if not public_key:
             raise AppError(ErrorCode.VALIDATION, "Public Key 不能为空", http_status=400)
-        row = self._repo.get_row()
-        if secret_key is None:  # 不改动
+        row = self._repo.get_row(space_id)
+        if secret_key is None:
             enc = row.secret_key_encrypted if row is not None else ""
             hint = row.key_hint if row is not None else ""
-        elif secret_key == "":  # 显式清除
+        elif secret_key == "":
             enc, hint = "", ""
         else:
             enc = get_credential_cipher().encrypt(secret_key)
             hint = _hint(secret_key)
         if enabled and not enc:
-            raise AppError(
-                ErrorCode.VALIDATION, "启用前需先配置 Secret Key", http_status=400
-            )
+            raise AppError(ErrorCode.VALIDATION, "启用前需先配置 Secret Key", http_status=400)
         self._repo.upsert(
+            space_id=space_id,
             host=host,
             public_key=public_key,
             secret_key_encrypted=enc,
@@ -188,16 +232,50 @@ class LangfuseConfigService:
             enabled=enabled,
             updated_by=actor.id,
         )
-        clear_langfuse_config_cache()
+        clear_langfuse_config_cache(space_id)
         self._audit.add(
             AuditLog(
                 actor_id=actor.id,
-                space_id=None,  # 全局配置,不属于任何空间
+                space_id=space_id,
                 action=str(AuditAction.LANGFUSE_CONFIG_UPDATED),
-                target="langfuse_config",
-                # 密钥本体(public/secret)一律不落审计,只有掩码与开关状态
+                target="space_langfuse_config",
                 detail={"host": host, "enabled": enabled, "key_hint": hint},
                 ip=ip,
             )
         )
-        return self.status(actor)
+        return self.status(actor, space_id)
+
+    # ---------------------------- trace 查看(产品内代理) ----------------------------
+
+    def list_traces(
+        self,
+        actor: User,
+        space_id: uuid.UUID,
+        *,
+        user_id_filter: uuid.UUID | None,
+        limit: int = 20,
+    ) -> dict:
+        """成员强制只看自己(userId=自己);Admin+/superuser 可传 user_id 看指定人,不传看全部。"""
+        settings = langfuse_settings(self._db, space_id)
+        if settings is None:
+            return {"configured": False, "items": []}
+        self._require_member(space_id, actor.id)
+        is_admin = self._is_admin(actor, space_id)
+        target_user = user_id_filter if is_admin else actor.id  # 成员强制只看自己
+        params: dict = {"limit": max(1, min(limit, 50))}
+        if target_user is not None:
+            params["userId"] = str(target_user)
+        data = self._lf_get(settings, "/traces", params)
+        return {"configured": True, "items": data.get("data", []), "meta": data.get("meta", {})}
+
+    def get_trace(self, actor: User, space_id: uuid.UUID, trace_id: str) -> dict:
+        settings = langfuse_settings(self._db, space_id)
+        if settings is None:
+            raise AppError(ErrorCode.VALIDATION, "本空间尚未接入 Langfuse", http_status=409)
+        self._require_member(space_id, actor.id)
+        data = self._lf_get(settings, f"/traces/{trace_id}", {})
+        if not self._is_admin(actor, space_id):
+            owner = (data.get("metadata") or {}).get("user_id")
+            if owner is not None and str(owner) != str(actor.id):
+                raise AppError(ErrorCode.SPACE_NOT_FOUND, "空间不存在", http_status=404)
+        return data
