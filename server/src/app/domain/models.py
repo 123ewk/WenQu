@@ -15,6 +15,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -483,6 +484,32 @@ class SpacePermissionGroupToggle(Base):
         Uuid, ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
     )
     enabled: Mapped[bool] = mapped_column(Boolean)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class LangfuseConfig(Base):
+    """Langfuse 可观测配置(OPT-49):全局单行,按"模型配置"标准管理。
+
+    - 私钥 AES-GCM 加密落库(CredentialCipher),接口只回 key_hint 掩码;
+    - **表为空 = 未接入**:运行时 Langfuse 客户端为 None,nil-safe 零开销;
+    - 变更写 audit_logs(langfuse_config.updated),密钥本体不落审计;
+    - enabled=true 前置:secret_key 必须已配置(服务层校验)。
+    """
+
+    __tablename__ = "langfuse_config"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_langfuse_config_singleton"),)
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    host: Mapped[str] = mapped_column(String(255))
+    public_key: Mapped[str] = mapped_column(String(255))
+    secret_key_encrypted: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    key_hint: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

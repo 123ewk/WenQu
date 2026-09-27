@@ -4032,6 +4032,78 @@
         }
       }
     },
+    "/api/v1/admin/langfuse-config": {
+      "get": {
+        "tags": [
+          "admin-observability"
+        ],
+        "summary": "Get Langfuse Config",
+        "description": "读当前接入配置(未配置时各字段为空/false)。",
+        "operationId": "get_langfuse_config_api_v1_admin_langfuse_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseConfigOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "admin-observability"
+        ],
+        "summary": "Put Langfuse Config",
+        "description": "保存接入配置(全局单行;写入即加密,审计留痕,本进程即时生效)。",
+        "operationId": "put_langfuse_config_api_v1_admin_langfuse_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LangfuseConfigPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LangfuseConfigOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/spaces/{space_id}/permission-group-toggle": {
       "get": {
         "tags": [
@@ -5469,6 +5541,7 @@
           "permission_group.member_unassigned",
           "permission_group.current_set",
           "permission_group_toggle.set",
+          "langfuse_config.updated",
           "model_provider.created",
           "model_provider.updated",
           "model_provider.deleted",
@@ -6626,6 +6699,96 @@
           "embedding_dim"
         ],
         "title": "KnowledgeBaseOut"
+      },
+      "LangfuseConfigOut": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "host": {
+            "type": "string",
+            "title": "Host"
+          },
+          "public_key": {
+            "type": "string",
+            "title": "Public Key"
+          },
+          "key_hint": {
+            "type": "string",
+            "title": "Key Hint"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By Hint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "host",
+          "public_key",
+          "key_hint"
+        ],
+        "title": "LangfuseConfigOut"
+      },
+      "LangfuseConfigPut": {
+        "properties": {
+          "host": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Host"
+          },
+          "public_key": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Public Key"
+          },
+          "secret_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret Key"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "host",
+          "public_key",
+          "enabled"
+        ],
+        "title": "LangfuseConfigPut"
       },
       "LoginRequest": {
         "properties": {

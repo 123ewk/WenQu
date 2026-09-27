@@ -31,6 +31,7 @@ from app.application.repository.knowledge import (
     KbStatsRepositoryImpl,
     KnowledgeBaseRepositoryImpl,
 )
+from app.application.repository.langfuse_config import LangfuseConfigRepositoryImpl
 from app.application.repository.memories import MemoryRepositoryImpl
 from app.application.repository.memory_proposals import MemoryProposalRepositoryImpl
 from app.application.repository.permission_group_toggle import (
@@ -49,6 +50,7 @@ from app.application.service.effective_permission import (
     permission_of_member,
 )
 from app.application.service.knowledge import KnowledgeService
+from app.application.service.langfuse_config import LangfuseConfigService
 from app.application.service.memory import MemoryService
 from app.application.service.model_admin import ModelAdminService
 from app.application.service.permission_group_toggle import (
@@ -498,6 +500,15 @@ def get_permission_group_toggle_service(
     return PermissionGroupToggleService(
         db, SpacePermissionGroupToggleRepositoryImpl(db), users, audit
     )
+
+
+def get_langfuse_config_service(
+    db: Session = Depends(get_db),
+    audit: AuditRepository = Depends(get_audit_repository),
+    users: UserRepository = Depends(get_user_repository),
+) -> LangfuseConfigService:
+    """Langfuse 可观测配置服务(OPT-49):superuser 守卫在路由层;加密在服务内。"""
+    return LangfuseConfigService(db, LangfuseConfigRepositoryImpl(db), users, audit)
 
 
 def get_model_catalog(

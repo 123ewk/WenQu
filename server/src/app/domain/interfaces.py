@@ -18,6 +18,7 @@ from app.domain.models import (
     Conversation,
     Document,
     KnowledgeBase,
+    LangfuseConfig,
     Membership,
     Memory,
     MemoryProposal,
@@ -256,6 +257,25 @@ class SpacePermissionGroupToggleRepository(Protocol):
     ) -> SpacePermissionGroupToggle: ...
     def impact(self, space_id: uuid.UUID) -> tuple[int, int]: ...
     def actor_has_active_group(self, space_id: uuid.UUID, user_id: uuid.UUID) -> bool: ...
+
+
+class LangfuseConfigRepository(Protocol):
+    """Langfuse 可观测配置持久化(OPT-49):全局单行(CHECK id=1),表为空 = 未接入。
+
+    本协议只管行本身;加密/掩码/TTL 缓存/审计在服务层。
+    """
+
+    def get_row(self) -> LangfuseConfig | None: ...
+    def upsert(
+        self,
+        *,
+        host: str,
+        public_key: str,
+        secret_key_encrypted: str,
+        key_hint: str,
+        enabled: bool,
+        updated_by: uuid.UUID,
+    ) -> LangfuseConfig: ...
 
 
 class ChatGateway(Protocol):

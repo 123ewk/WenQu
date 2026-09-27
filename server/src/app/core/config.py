@@ -122,9 +122,11 @@ class Settings(BaseSettings):
     permission_group_toggle_cache_ttl_seconds: int = Field(
         60, validation_alias="APP_PERMISSION_GROUP_TOGGLE_CACHE_TTL_SECONDS"
     )
+    # OPT-49:Langfuse 配置(DB 单行)的进程内读取缓存 TTL(秒);写侧保存后立即失效。
+    langfuse_config_cache_ttl_seconds: int = Field(
+        60, validation_alias="APP_LANGFUSE_CONFIG_CACHE_TTL_SECONDS"
+    )
 
-    # ---- 可观测(留空 = 关闭,nil-safe 零开销) ----
-    otlp_endpoint: str = Field("", validation_alias="APP_OTLP_ENDPOINT")
 
     # ---- 网络身份(OPT-12/翻转项 #8):可信代理 CIDR 逗号分隔,如 "127.0.0.1,10.0.0.0/8" ----
     # 留空 = 不信任任何代理,XFF 完全不参与取值(fail-closed);非法网段在启动/测试期即报错

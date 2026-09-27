@@ -28,6 +28,8 @@ REQUIRED_PATHS = {
     "/api/v1/models",
     # OPT-48 v2:空间级权限挡位功能开关(该空间 Admin+ 可读可拨)
     "/api/v1/spaces/{space_id}/permission-group-toggle",
+    # OPT-49:Langfuse 可观测配置(superuser 专属,按模型配置标准管理)
+    "/api/v1/admin/langfuse-config",
     "/api/v1/spaces/{space_id}/ingestion-progress",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/reparse",
     "/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{document_id}/chunks/{chunk_id}",
