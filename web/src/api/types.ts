@@ -778,15 +778,20 @@ export interface SpaceToggleRequest {
 export interface LangfuseConfigOut {
   enabled: boolean
   host: string
+  /** 浏览器访问 Langfuse 的地址(可选);跳转链接的基座,空 = 不出链接只出文字指引 */
+  console_url: string
   public_key: string
   /** Secret Key 掩码(如 "sk-l****ef");未配置为空串 */
   key_hint: string
+  /** 后端用 pk/sk 向 Langfuse 解析出的项目 id;拼直达链接用,未填控制台地址/解析失败为 null */
+  project_id: string | null
   updated_at: string | null
   updated_by_hint: string | null
 }
 
 export interface LangfuseConfigPut {
   host: string
+  console_url: string
   public_key: string
   /** null = 不改动;"" = 清除;非空 = 替换(与模型供应商 api_key 同语义) */
   secret_key: string | null

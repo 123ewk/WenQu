@@ -95,10 +95,24 @@ function pretty(v: unknown): string {
 
 const lfConfig = ref<LangfuseConfigOut | null>(null)
 const lfHost = ref('')
+const lfConsoleUrl = ref('')
 const lfPublicKey = ref('')
 const lfSecretInput = ref('')
 const lfClearSecret = ref(false)
 const lfSaving = ref(false)
+
+/** 直达链接基座:只用控制台地址(浏览器可达);host 是给后端用的(可能是容器内网名),不用于跳转 */
+const lfConsole = computed(() => (lfConfig.value?.console_url || '').replace(/\/+$/, ''))
+const lfKeysHref = computed(() =>
+  lfConsole.value && lfConfig.value?.project_id
+    ? `${lfConsole.value}/project/${lfConfig.value.project_id}/settings/api-keys`
+    : lfConsole.value,
+)
+const lfTracesHref = computed(() =>
+  lfConsole.value && lfConfig.value?.project_id
+    ? `${lfConsole.value}/project/${lfConfig.value.project_id}/traces`
+    : lfConsole.value,
+)
 
 async function loadConfig() {
   const spaceId = auth.currentSpaceId
@@ -109,6 +123,7 @@ async function loadConfig() {
   try {
     lfConfig.value = await apiGetSpaceLangfuseConfig(spaceId)
     lfHost.value = lfConfig.value.host
+    lfConsoleUrl.value = lfConfig.value.console_url
     lfPublicKey.value = lfConfig.value.public_key
     lfSecretInput.value = ''
     lfClearSecret.value = false
@@ -127,6 +142,7 @@ async function onSaveLangfuse() {
     lfSaving.value = true
     lfConfig.value = await apiPutSpaceLangfuseConfig(spaceId, {
       host: lfHost.value,
+      console_url: lfConsoleUrl.value,
       public_key: lfPublicKey.value,
       secret_key: secret,
       enabled: lfConfig.value.enabled,
@@ -165,6 +181,7 @@ async function onToggleLangfuse(): Promise<boolean> {
     lfSaving.value = true
     lfConfig.value = await apiPutSpaceLangfuseConfig(spaceId, {
       host: lfHost.value,
+      console_url: lfConsoleUrl.value,
       public_key: lfPublicKey.value,
       secret_key: null, // 开关切换不动密钥
       enabled: opening,
@@ -249,8 +266,11 @@ watch(
         <div class="tf-sub">本空间问答 trace 的上送目标(建议每空间一个 Langfuse 项目);未开启时问答零开销</div>
 
         <div class="tf-ops">
-          <el-input v-model="lfHost" class="tf-input" placeholder="Langfuse 地址,如 https://langfuse.internal.example">
+          <el-input v-model="lfHost" class="tf-input" placeholder="WenQu 后端可达的地址;自托管容器内网部署填 http://langfuse-langfuse-1:3000 这类">
             <template #prepend>地址</template>
+          </el-input>
+          <el-input v-model="lfConsoleUrl" class="tf-input" placeholder="可选;你浏览器打开 Langfuse 的地址,如 http://127.0.0.1:3100(隧道)。填了才有下方直达链接">
+            <template #prepend>控制台</template>
           </el-input>
           <el-input v-model="lfPublicKey" class="tf-input" placeholder="Public Key(pk-lf-...)">
             <template #prepend>公钥</template>
@@ -289,9 +309,13 @@ watch(
 
         <div class="tf-save">
           <el-button type="primary" :loading="lfSaving" @click="onSaveLangfuse">保存配置</el-button>
-          <a class="tf-link" :href="lfHost || 'https://cloud.langfuse.com'" target="_blank" rel="noopener">
-            打开 Langfuse 控制台,在项目 Settings → API Keys 创建密钥
-          </a>
+          <template v-if="lfKeysHref">
+            <a class="tf-link" :href="lfKeysHref" target="_blank" rel="noopener">创建/查看 API Keys</a>
+            <a class="tf-link" :href="lfTracesHref" target="_blank" rel="noopener">打开 Langfuse 看 trace</a>
+          </template>
+          <span v-else class="tf-hint">
+            密钥在你的 Langfuse 项目 Settings → API Keys 生成;填「控制台地址」后这里出现直达链接
+          </span>
         </div>
       </div>
     </div>
