@@ -692,9 +692,13 @@ def test_qa_sse_flow_with_citations(client) -> None:
         assert citation["chunk_id"] and citation["excerpt"]
         assert events[-1]["cited_indexes"] == [1]
 
-        # 提示词确实带上编号资料
-        system_prompt = stub_chat.prompts[0][0]["content"]
-        assert "[1] 来源:检索手册.md" in system_prompt
+        # 提示词分层:system 只含静态底座,编号资料置尾进最后一条 user 消息
+        prompt_msgs = stub_chat.prompts[0]
+        system_prompt = prompt_msgs[0]["content"]
+        assert "IMPORTANT" in system_prompt and "检索手册.md" not in system_prompt
+        assert prompt_msgs[-1]["role"] == "user"
+        tail = prompt_msgs[-1]["content"]
+        assert '<source index="1" filename="检索手册.md">' in tail
 
         # 落库消息带引用(刷新页面后仍可回链)
         resp = qa_client.get(

@@ -328,7 +328,8 @@ def test_summary_injected_as_extra_system_block() -> None:
 
     chat2 = ScriptedAgentChat(tool_rounds=[([], [])], answer_pieces=["答"])
     _run(chat2, _search([]))
-    assert not any("前情摘要" in m["content"] for m in chat2.received[0]["messages"])
+    # L1 红线本身会提到"前情摘要"字样,这里钉的是摘要块标记(前缀常量)不存在
+    assert not any("=== 前情摘要" in m["content"] for m in chat2.received[0]["messages"])
 
 
 # ---------------------------- OPT-45 P2:记忆提议事件与护栏 ----------------------------

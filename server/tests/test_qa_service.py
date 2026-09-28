@@ -173,12 +173,16 @@ def test_ask_stream_event_order_and_citation_mapping() -> None:
     assert citations[0]["breadcrumb"] == ["第一章"] and citations[0]["page"] == 3
     assert events[4]["cited_indexes"] == [1, 2]
 
-    # 提示词:系统消息带编号资料,末尾是用户提问
+    # 提示词分层:system 只放静态底座(不含资料);检索资料是不可信数据,
+    # 置尾进最后一条 user 消息(问题在前、资料块在后,来源声明 + XML 标签)
     sent = chat.messages[0]
     assert sent[0]["role"] == "system"
-    assert "[1] 来源:手册.md" in sent[0]["content"]
-    assert sent[0]["content"].index("=== 资料开始 ===") < sent[0]["content"].index("第一段资料")
-    assert sent[-1] == {"role": "user", "content": "问题是什么"}
+    assert "手册.md" not in sent[0]["content"]
+    assert sent[-1]["role"] == "user"
+    tail = sent[-1]["content"]
+    assert tail.startswith("问题是什么")
+    assert '<source index="1" filename="手册.md">' in tail
+    assert tail.index("<retrieved_context>") < tail.index("第一段资料") < tail.index("第二段资料")
 
 
 def test_ask_stream_persists_messages_with_citations() -> None:
