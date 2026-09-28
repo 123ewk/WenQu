@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问渠 WenQu · 网站封面</title>
+<!--
+  问渠 WenQu — 网站封面（三方向设计稿，右下角切换）
+  意境：半亩方塘一鉴开，天光云影共徘徊。问渠那得清如许？为有源头活水来。—— 朱熹《观书有感》
+  方向一「一鉴开」：深墨水面即镜面，光标是"问"，涟漪是"答"。
+  方向二「源头活水」：文档化作光粒，沿渠汇入清池，池面绽开涟漪、点亮回答。
+  方向三「天光云影」：宣纸淡墨，光带在池面徘徊，竖排诗与朱印。
+  自包含单文件，无任何外部依赖，双击本地打开即可。
+-->
+<style>
+  :root{
+    --fg:#e9f4ef;
+    --fg-soft:rgba(233,244,239,.55);
+    --line:rgba(233,244,239,.16);
+    --chip:rgba(233,244,239,.07);
+    --jade:#7fd7c4;
+    --jade-deep:#5fbfae;
+    --ink-title:#eef7f4;
+    --kai:"KaiTi","Kaiti SC","STKaiti","Noto Serif SC",serif;
+    --serif-en:Georgia,"Times New Roman",serif;
+  }
+  body[data-variant="v3"]{
+    --fg:#26261f;
+    --fg-soft:rgba(38,38,31,.62);
+    --line:rgba(38,38,31,.2);
+    --chip:rgba(38,38,31,.05);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{font-family:var(--kai);background:#04141d;overflow:hidden;
+       -webkit-font-smoothing:antialiased}
+
+  /* ================= 顶部导航 ================= */
+  .nav{position:fixed;top:0;left:0;right:0;z-index:50;
+       display:flex;justify-content:space-between;align-items:center;
+       padding:22px 38px;color:var(--fg)}
+  .brand{font-size:21px;letter-spacing:6px;display:flex;align-items:baseline;gap:10px}
+  .brand em{font-family:var(--serif-en);font-style:normal;font-size:11px;
+            letter-spacing:4px;color:var(--fg-soft)}
+  .nav .links{display:flex;align-items:center;gap:26px;font-size:14px;letter-spacing:3px}
+  .nav .links a{color:var(--fg-soft);text-decoration:none;transition:color .25s}
+  .nav .links a:hover{color:var(--fg)}
+  .nav .links a.pill{border:1px solid var(--line);border-radius:999px;
+                     padding:7px 20px;color:var(--fg);background:var(--chip)}
+  .nav .links a.pill:hover{border-color:var(--jade);color:var(--jade)}
+
+  /* ================= 舞台与切换 ================= */
+  .hero{position:absolute;inset:0;display:none;overflow:hidden}
+  .hero.active{display:block}
+  .hero::after{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;
+       background:radial-gradient(120% 90% at 50% 42%,transparent 52%,rgba(0,0,0,.38))}
+  .hero.v3::after{background:radial-gradient(120% 90% at 50% 42%,transparent 60%,rgba(43,44,38,.14))}
+
+  .switcher{position:fixed;right:26px;bottom:24px;z-index:60;display:flex;gap:8px}
+  .switcher button{font-family:var(--kai);font-size:12px;letter-spacing:2px;
+       color:var(--fg-soft);background:var(--chip);border:1px solid var(--line);
+       border-radius:999px;padding:8px 15px;cursor:pointer;
+       backdrop-filter:blur(8px);transition:all .25s}
+  .switcher button:hover{color:var(--fg);border-color:var(--jade)}
+  .switcher button.active{background:var(--jade);border-color:var(--jade);color:#06231d}
+
+  /* ================= 共用文案层 ================= */
+  .center{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);
+          z-index:3;text-align:center;pointer-events:none;width:min(92vw,860px)}
+  .eyebrow{font-size:13px;letter-spacing:7px;color:var(--fg-soft);margin-bottom:22px}
+  h1{font-size:clamp(76px,13vw,164px);line-height:1.04;font-weight:700;
+     letter-spacing:.1em;text-indent:.1em;color:var(--ink-title);
+     text-shadow:0 0 46px rgba(127,215,196,.28)}
+  .latin{font-family:var(--serif-en);font-size:14px;letter-spacing:11px;
+         text-indent:11px;color:var(--fg-soft);margin-top:14px}
+  .tagline{font-family:var(--serif-en);font-style:italic;font-size:clamp(15px,1.8vw,19px);
+           color:var(--fg-soft);margin-top:22px;letter-spacing:.04em}
+  .cta{margin-top:34px;display:flex;gap:16px;justify-content:center;pointer-events:auto}
+  .cta a{text-decoration:none;font-size:15px;letter-spacing:4px;border-radius:999px;
+         padding:13px 36px;transition:all .25s}
+  .cta .primary{background:linear-gradient(135deg,var(--jade),var(--jade-deep));
+         color:#06231d;box-shadow:0 6px 30px rgba(95,191,174,.35)}
+  .cta .primary:hover{transform:translateY(-2px);
+         box-shadow:0 10px 36px rgba(95,191,174,.5)}
+  .cta .ghost{border:1px solid var(--line);color:var(--fg)}
+  .cta .ghost:hover{border-color:var(--jade);color:var(--jade)}
+  .v3 h1{color:#23241f;text-shadow:none}
+  .v3 .cta .primary{color:#f7f3ea;background:linear-gradient(135deg,#9e2f22,#7c241a);
+         box-shadow:0 6px 26px rgba(158,47,34,.3)}
+  .v3 .cta .primary:hover{box-shadow:0 10px 32px rgba(158,47,34,.42)}
+
+  .hint{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);z-index:3;
+        font-size:13px;letter-spacing:5px;color:var(--fg-soft);white-space:nowrap;
+        display:flex;align-items:center;gap:10px}
+  .hint::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--jade);
+        box-shadow:0 0 10px var(--jade);animation:breath 2.4s ease-in-out infinite}
+  .v3 .hint::before{background:#9e2f22;box-shadow:0 0 8px rgba(158,47,34,.6)}
+  @keyframes breath{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+
+  /* ================= 竖排诗 + 印章 ================= */
+  .poem{position:absolute;right:4.5%;top:50%;transform:translateY(-50%);z-index:3;
+        display:flex;flex-direction:row-reverse;gap:16px;align-items:flex-start;
+        pointer-events:none}
+  .poem .col{writing-mode:vertical-rl;font-size:15px;letter-spacing:12px;
+             color:rgba(233,244,239,.72)}
+  .v3 .poem .col{color:rgba(43,48,50,.78)}
+  .poem .col.hl{color:var(--ink-title);font-size:16.5px}
+  .v3 .poem .col.hl{color:#1e2629}
+  .seal{writing-mode:vertical-rl;background:#a83324;color:#f6efdf;border-radius:5px;
+        font-size:15px;letter-spacing:5px;padding:9px 5px;margin-top:26px;
+        box-shadow:inset 0 0 0 1.5px rgba(246,239,223,.55),inset 0 0 8px rgba(0,0,0,.28);
+        transform:rotate(-2.5deg)}
+
+  @media (max-width:960px){.poem{display:none}}
+  @media (max-width:640px){
+    .nav{padding:16px 20px}.nav .links{gap:14px}
+    .switcher{right:50%;transform:translateX(50%)}
+    .hint{bottom:70px;letter-spacing:3px}
+  }
+
+  /* ================= 方向一：一鉴开（互动涟漪） ================= */
+  .v1{background:#04141d}
+  .v1 canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0}
+  .v1 .sheen{position:absolute;left:0;right:0;top:64%;height:1px;z-index:1;
+        background:linear-gradient(90deg,transparent,rgba(127,215,196,.5),transparent)}
+
+  /* 方向一入场编排：文字依次浮现 */
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}
+                  to{opacity:1;transform:translateY(0)}}
+  .v1 .eyebrow{animation:rise .8s .15s cubic-bezier(.22,.7,.3,1) both}
+  .v1 h1{animation:rise 1s .3s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .latin{animation:rise .9s .55s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .tagline{animation:rise .9s .7s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .cta{animation:rise .9s .85s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .poem .col{animation:rise 1s 1.05s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .seal{animation:rise 1s 1.3s cubic-bezier(.22,.7,.3,1) both}
+  .v1 .hint{animation:rise .9s 1.55s cubic-bezier(.22,.7,.3,1) both}
+
+  /* ================= 方向二：源头活水（粒子溪流） ================= */
+  .v2{background:radial-gradient(110% 130% at 22% 30%,#0a2836 0%,#061826 48%,#030d15 100%)}
+  .v2 .pond-glow{position:absolute;left:59%;top:36%;width:46%;height:52%;z-index:0;
+        background:radial-gradient(closest-side,rgba(127,215,196,.16),transparent 72%)}
+  .v2 canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1}
+  .docs{position:absolute;left:4.5%;top:31%;z-index:2;display:flex;
+        flex-direction:column;gap:15px;pointer-events:none}
+  .doc{width:94px;height:116px;border-radius:6px;position:relative;
+       background:linear-gradient(160deg,#13272f,#0c1a22);
+       border:1px solid rgba(160,220,205,.22);
+       box-shadow:0 8px 22px rgba(0,0,0,.35);transition:all .5s}
+  .doc:nth-child(odd){transform:rotate(-1.6deg)}
+  .doc:nth-child(even){transform:rotate(1.3deg)}
+  .doc b{display:block;width:44%;height:6px;border-radius:3px;margin:15px 13px 11px;
+         background:rgba(160,220,205,.5)}
+  .doc i{display:block;height:3px;border-radius:2px;margin:9px 13px;
+         background:rgba(200,232,222,.24)}
+  .doc i:nth-of-type(2){width:72%}.doc i:nth-of-type(3){width:56%}
+  .doc.emitting{border-color:rgba(155,232,216,.85);transform:translateY(-5px);
+       box-shadow:0 10px 30px rgba(95,191,174,.35),0 0 18px rgba(127,215,196,.35)}
+  .cap{position:absolute;z-index:3;font-size:12px;letter-spacing:7px;
+       color:var(--fg-soft);pointer-events:none}
+  .cap-src{left:5%;top:80%}
+  .cap-dst{right:12%;top:68%}
+  .answer{position:absolute;right:19%;top:38%;z-index:3;font-size:21px;
+          letter-spacing:9px;color:#dff1ea;opacity:.88;pointer-events:none;
+          text-shadow:0 0 26px rgba(127,215,196,.4);transition:opacity .3s}
+  .answer.pulse{animation:apulse 1.1s ease-out}
+  @keyframes apulse{0%{opacity:.88;text-shadow:0 0 12px rgba(127,215,196,.3)}
+    35%{opacity:1;text-shadow:0 0 46px rgba(155,232,216,.95)}
+    100%{opacity:.88;text-shadow:0 0 26px rgba(127,215,196,.4)}}
+
+  /* ================= 方向三：天光云影（水墨留白） ================= */
+  .v3{background:#f5f0e4}
+  .v3 .center{top:44%}
+  .grain{position:absolute;inset:0;z-index:1;opacity:.45;pointer-events:none;
+       background-image:radial-gradient(rgba(60,55,40,.05) 1px,transparent 1px);
+       background-size:5px 5px}
+  .mount{position:absolute;left:0;right:0;top:32%;height:30%;z-index:1;pointer-events:none}
+  .mount svg{width:100%;height:100%;display:block}
+  .haze{position:absolute;left:0;right:0;top:52%;height:16%;z-index:2;pointer-events:none;
+       background:linear-gradient(rgba(245,240,228,0),rgba(245,240,228,.72) 50%,
+         rgba(235,240,236,.6) 68%,rgba(203,217,214,0))}
+  .pond{position:absolute;left:0;right:0;bottom:0;height:38%;z-index:2;overflow:hidden;
+       background:linear-gradient(#cbd9d6,#9cb7ba 40%,#7a9a9f 75%,#6a8b90)}
+  .pond .bands{position:absolute;inset:0;pointer-events:none;
+       background:linear-gradient(93deg,transparent 4%,rgba(255,255,255,.22) 22%,
+         transparent 42%,rgba(52,76,84,.10) 58%,transparent 76%,
+         rgba(255,255,255,.16) 92%,transparent 104%);
+       background-size:260% 100%;background-position:0 0;
+       animation:drift 36s ease-in-out infinite alternate}
+  @keyframes drift{from{background-position:0 0}to{background-position:100% 0}}
+  .pond .light{position:absolute;left:0;right:0;top:0;height:55%;pointer-events:none;
+       background:radial-gradient(70% 100% at 50% 0%,rgba(255,252,240,.4),transparent 70%)}
+  .ring{position:absolute;z-index:3;border:2px solid rgba(255,255,255,.8);
+       border-radius:50%;pointer-events:none;
+       animation:ringgrow 5.2s ease-out infinite}
+  .ring.r2{animation-delay:2.6s;border-color:rgba(58,80,88,.35)}
+  @keyframes ringgrow{0%{transform:scale(.12);opacity:0}
+     12%{opacity:.85}100%{transform:scale(1.5);opacity:0}}
+
+  @media (prefers-reduced-motion:reduce){
+    .hint::before,.pond .bands,.ring,.doc,.answer.pulse{animation:none !important;transition:none}
+    .v1 .eyebrow,.v1 h1,.v1 .latin,.v1 .tagline,.v1 .cta,
+    .v1 .poem .col,.v1 .seal,.v1 .hint{animation:none}
+  }
+</style>
+</head>
+<body data-variant="v1">
+
+  <nav class="nav">
+    <div class="brand">问渠 <em>WENQU</em></div>
+    <div class="links"><a href="#">文档</a><a href="#">空间</a><a class="pill" href="#">进入提问</a></div>
+  </nav>
+
+  <!-- ========== 方向一：一鉴开 · 互动涟漪 ========== -->
+  <section class="hero v1 active" id="sec-v1">
+    <canvas id="waterCv" aria-hidden="true"></canvas>
+    <div class="sheen"></div>
+    <div class="poem">
+      <div class="col">半亩方塘一鉴开</div>
+      <div class="col">天光云影共徘徊</div>
+      <div class="col hl">问渠那得清如许</div>
+      <div class="col hl">为有源头活水来</div>
+      <div class="seal">问渠</div>
+    </div>
+    <div class="center">
+      <div class="eyebrow">多租户文档知识库 · RAG 平台</div>
+      <h1>问渠</h1>
+      <div class="latin">W E N Q U</div>
+      <p class="tagline">Ask the stream, and it shall answer.</p>
+      <div class="cta"><a class="primary" href="#">开始提问</a><a class="ghost" href="#">了解问渠</a></div>
+    </div>
+    <div class="hint">移动光标，向水面提问 · 点击激起涟漪</div>
+  </section>
+
+  <!-- ========== 方向二：源头活水 · 粒子溪流 ========== -->
+  <section class="hero v2" id="sec-v2">
+    <div class="pond-glow"></div>
+    <canvas id="streamCv" aria-hidden="true"></canvas>
+    <div class="docs" id="docs">
+      <div class="doc"><b></b><i></i><i></i><i></i></div>
+      <div class="doc"><b></b><i></i><i></i><i></i></div>
+      <div class="doc"><b></b><i></i><i></i><i></i></div>
+      <div class="doc"><b></b><i></i><i></i><i></i></div>
+    </div>
+    <div class="cap cap-src">源头 · 活水</div>
+    <div class="cap cap-dst">渠 · 清如许</div>
+    <div class="answer" id="answer">为有源头活水来</div>
+    <div class="poem">
+      <div class="col">半亩方塘一鉴开</div>
+      <div class="col">天光云影共徘徊</div>
+      <div class="col hl">问渠那得清如许</div>
+      <div class="col hl">为有源头活水来</div>
+      <div class="seal">问渠</div>
+    </div>
+    <div class="center">
+      <div class="eyebrow">多租户文档知识库 · RAG 平台</div>
+      <h1>问渠</h1>
+      <div class="latin">W E N Q U</div>
+      <p class="tagline">Ask the stream, and it shall answer.</p>
+      <div class="cta"><a class="primary" href="#">开始提问</a><a class="ghost" href="#">了解问渠</a></div>
+    </div>
+    <div class="hint">每一份文档，都是活水的源头</div>
+  </section>
+
+  <!-- ========== 方向三：天光云影 · 水墨留白 ========== -->
+  <section class="hero v3" id="sec-v3">
+    <div class="mount">
+      <svg viewBox="0 0 1440 300" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <filter id="mfar"><feGaussianBlur stdDeviation="3"/></filter>
+          <filter id="mnear"><feGaussianBlur stdDeviation="1.2"/></filter>
+        </defs>
+        <path filter="url(#mfar)" fill="#8fa3a4" opacity=".38" d="M0,300 L0,196
+          L70,150 L140,196 L210,118 L280,188 L350,150 L430,196 L500,126 L580,190
+          L650,156 L730,198 L810,136 L890,192 L960,160 L1040,198 L1110,140
+          L1190,190 L1260,164 L1340,196 L1400,170 L1440,190 L1440,300 Z"/>
+        <path filter="url(#mnear)" fill="#5f7a7e" opacity=".42" d="M0,300 L0,238
+          L90,196 L180,244 L260,176 L350,240 L440,204 L540,250 L630,184 L720,246
+          L820,208 L910,252 L1010,188 L1100,248 L1200,212 L1300,252 L1380,224
+          L1440,244 L1440,300 Z"/>
+      </svg>
+    </div>
+    <div class="pond">
+      <div class="bands"></div>
+      <div class="light"></div>
+      <div class="ring" style="left:26%;top:26%;width:260px;height:150px"></div>
+      <div class="ring r2" style="left:56%;top:48%;width:200px;height:115px"></div>
+    </div>
+    <div class="haze"></div>
+    <div class="grain"></div>
+    <div class="poem">
+      <div class="col">半亩方塘一鉴开</div>
+      <div class="col">天光云影共徘徊</div>
+      <div class="col hl">问渠那得清如许</div>
+      <div class="col hl">为有源头活水来</div>
+      <div class="seal">问渠</div>
+    </div>
+    <div class="center">
+      <div class="eyebrow">多租户文档知识库 · RAG 平台</div>
+      <h1>问渠</h1>
+      <div class="latin">W E N Q U</div>
+      <p class="tagline">Ask the stream, and it shall answer.</p>
+      <div class="cta"><a class="primary" href="#">开始提问</a><a class="ghost" href="#">了解问渠</a></div>
+    </div>
+    <div class="hint">半亩方塘一鉴开 · 天光云影共徘徊</div>
+  </section>
+
+  <div class="switcher" role="tablist">
+    <button data-v="v1" class="active">壹 · 一鉴开</button>
+    <button data-v="v2">贰 · 源头活水</button>
+    <button data-v="v3">叁 · 天光云影</button>
+  </div>
+
+<script>
+(function(){
+  'use strict';
+  var REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var active = 'v1';
+  var body = document.body;
+
+  /* ---------------- 方向一：水面涟漪模拟（Hugo Elias 高度场） ---------------- */
+  var SW = 480, SH = 270, SCALE = 9, SPEC = 24, DAMP = 0.985;
+  var hCur = new Float32Array(SW * SH), hPrev = new Float32Array(SW * SH);
+  var waterCv = document.getElementById('waterCv');
+  var wctx = waterCv.getContext('2d');
+  var bgCanvas, bgData, outCanvas, outCtx, outImg;
+
+  function buildBg(){
+    bgCanvas = document.createElement('canvas');
+    bgCanvas.width = SW; bgCanvas.height = SH;
+    var c = bgCanvas.getContext('2d');
+    var g = c.createLinearGradient(0, 0, 0, SH);
+    g.addColorStop(0, '#0c2f38'); g.addColorStop(.55, '#082430');
+    g.addColorStop(1, '#03101a');
+    c.fillStyle = g; c.fillRect(0, 0, SW, SH);
+    /* 天光：几条淡青光带 */
+    for(var i = 0; i < 5; i++){
+      var y = SH * (0.16 + 0.15 * i);
+      var lg = c.createLinearGradient(0, y - 16, 0, y + 16);
+      var a = 0.05 - i * 0.007;
+      lg.addColorStop(0, 'rgba(150,220,205,0)');
+      lg.addColorStop(.5, 'rgba(150,220,205,' + a + ')');
+      lg.addColorStop(1, 'rgba(150,220,205,0)');
+      c.fillStyle = lg; c.fillRect(0, y - 16, SW, 32);
+    }
+    /* 水底若隐若现的"问渠"二字，随涟漪折射晃动 */
+    c.font = '150px KaiTi, "Kaiti SC", "STKaiti", serif';
+    c.fillStyle = 'rgba(205,240,228,0.055)';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('问渠', SW / 2, SH * 0.52);
+    bgData = c.getImageData(0, 0, SW, SH);
+  }
+
+  function buildOut(){
+    outCanvas = document.createElement('canvas');
+    outCanvas.width = SW; outCanvas.height = SH;
+    outCtx = outCanvas.getContext('2d');
+    outImg = outCtx.createImageData(SW, SH);
+  }
+
+  function sizeWater(){
+    waterCv.width = waterCv.clientWidth;
+    waterCv.height = waterCv.clientHeight;
+  }
+
+  function drop(nx, ny, r, s){
+    var cx = (nx * SW) | 0, cy = (ny * SH) | 0;
+    for(var y = -r; y <= r; y++){
+      for(var x = -r; x <= r; x++){
+        var xx = cx + x, yy = cy + y;
+        if(xx < 1 || yy < 1 || xx >= SW - 1 || yy >= SH - 1) continue;
+        var d2 = x * x + y * y;
+        if(d2 <= r * r) hPrev[yy * SW + xx] += s * (1 - Math.sqrt(d2) / (r + 1));
+      }
+    }
+  }
+
+  function stepWater(){
+    for(var y = 1; y < SH - 1; y++){
+      var row = y * SW;
+      for(var x = 1; x < SW - 1; x++){
+        var i = row + x;
+        var v = (hPrev[i - 1] + hPrev[i + 1] + hPrev[i - SW] + hPrev[i + SW]) / 2 - hCur[i];
+        hCur[i] = v * DAMP;
+      }
+    }
+    var t = hCur; hCur = hPrev; hPrev = t;
+  }
+
+  function renderWater(){
+    var d = outImg.data, b = bgData.data, p = hPrev;
+    for(var y = 1; y < SH - 1; y++){
+      var row = y * SW;
+      for(var x = 1; x < SW - 1; x++){
+        var i = row + x;
+        var dx = p[i - 1] - p[i + 1], dy = p[i - SW] - p[i + SW];
+        var sx = x + ((dx * SCALE) | 0), sy = y + ((dy * SCALE) | 0);
+        if(sx < 0) sx = 0; else if(sx >= SW) sx = SW - 1;
+        if(sy < 0) sy = 0; else if(sy >= SH) sy = SH - 1;
+        var si = (sy * SW + sx) * 4, di = i * 4;
+        var sp = dy * SPEC;
+        d[di]     = b[si] + sp;
+        d[di + 1] = b[si + 1] + sp;
+        d[di + 2] = b[si + 2] + sp;
+        d[di + 3] = 255;
+      }
+    }
+    outCtx.putImageData(outImg, 0, 0);
+    wctx.imageSmoothingEnabled = true;
+    wctx.drawImage(outCanvas, 0, 0, waterCv.width, waterCv.height);
+  }
+
+  var lastMove = {x: -1, y: -1};
+  var secV1 = document.getElementById('sec-v1');
+  secV1.addEventListener('mousemove', function(e){
+    if(active !== 'v1') return;
+    var r = waterCv.getBoundingClientRect();
+    var nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+    if(Math.abs(nx - lastMove.x) + Math.abs(ny - lastMove.y) < 0.014) return;
+    lastMove = {x: nx, y: ny};
+    drop(nx, ny, 3, 2.2);
+  });
+  secV1.addEventListener('click', function(e){
+    if(active !== 'v1') return;
+    var r = waterCv.getBoundingClientRect();
+    var nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+    /* 点击 = 向水面提问：三重涟漪依次荡开 */
+    drop(nx, ny, 6, 7);
+    setTimeout(function(){ drop(nx, ny, 4, 4.5); }, 160);
+    setTimeout(function(){ drop(nx, ny, 2.5, 3); }, 320);
+  });
+  setInterval(function(){
+    if(active !== 'v1' || REDUCED) return;
+    drop(0.12 + Math.random() * 0.76, 0.18 + Math.random() * 0.55,
+         4 + (Math.random() * 3 | 0), 2 + Math.random() * 2.5);
+  }, 1300);
+
+  /* ---------------- 方向二：文档 → 粒子溪流 → 清池 ---------------- */
+  var streamCv = document.getElementById('streamCv');
+  var sctx = streamCv.getContext('2d');
+  var particles = [], rings = [];
+
+  function makeSprite(inner, outer){
+    var s = document.createElement('canvas'); s.width = s.height = 32;
+    var g = s.getContext('2d').createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, inner); g.addColorStop(.4, outer); g.addColorStop(1, 'rgba(0,0,0,0)');
+    var c = s.getContext('2d'); c.fillStyle = g; c.fillRect(0, 0, 32, 32);
+    return s;
+  }
+  var spJade = makeSprite('rgba(220,255,244,.95)', 'rgba(127,215,196,.5)');
+  var spWarm = makeSprite('rgba(255,244,220,.9)', 'rgba(255,222,160,.45)');
+
+  function pathPoints(w, h){
+    return {
+      p0: {x: 0.055 * w, y: 0.52 * h},
+      c1: {x: 0.34 * w, y: 0.80 * h},
+      c2: {x: 0.60 * w, y: 0.82 * h},
+      p3: {x: 0.82 * w, y: 0.60 * h}
+    };
+  }
+  function bez(t, P){
+    var u = 1 - t;
+    return {
+      x: u*u*u*P.p0.x + 3*u*u*t*P.c1.x + 3*u*t*t*P.c2.x + t*t*t*P.p3.x,
+      y: u*u*u*P.p0.y + 3*u*u*t*P.c1.y + 3*u*t*t*P.c2.y + t*t*t*P.p3.y
+    };
+  }
+  function spawn(n){
+    for(var k = 0; k < n; k++){
+      particles.push({
+        t: -Math.random() * 0.06,
+        v: 0.0032 + Math.random() * 0.003,
+        jx: (Math.random() - 0.5) * 16, jy: (Math.random() - 0.5) * 16,
+        sp: Math.random() < 0.22 ? spWarm : spJade,
+        sz: 5 + Math.random() * 7
+      });
+    }
+  }
+  var answerEl = document.getElementById('answer');
+  var lastPulse = 0;
+  function tickStream(){
+    var w = streamCv.width, h = streamCv.height;
+    sctx.clearRect(0, 0, w, h);
+    if(!REDUCED && particles.length < 210 && Math.random() < 0.75) spawn(1);
+    var P = pathPoints(w, h);
+    for(var i = particles.length - 1; i >= 0; i--){
+      var pt = particles[i];
+      pt.t += pt.v;
+      if(pt.t >= 1){
+        rings.push({x: P.p3.x, y: P.p3.y, r: 2, a: 0.5});
+        var now = performance.now();
+        if(now - lastPulse > 700){          /* 节流：到达频繁，答案不要一直闪 */
+          lastPulse = now;
+          answerEl.classList.remove('pulse');
+          void answerEl.offsetWidth;               /* 重置动画 */
+          answerEl.classList.add('pulse');
+        }
+        particles.splice(i, 1); continue;
+      }
+      if(pt.t < 0) continue;
+      var pos = bez(pt.t, P);
+      var fade = Math.sin(Math.PI * Math.min(1, Math.max(0, pt.t)));
+      sctx.globalAlpha = 0.28 + 0.6 * fade;
+      var sz = pt.sz * (0.7 + 0.5 * fade) * (1 - pt.t * 0.35);
+      sctx.drawImage(pt.sp, pos.x + pt.jx * (1 - pt.t * 0.6) - sz / 2,
+                     pos.y + pt.jy * (1 - pt.t * 0.6) - sz / 2, sz, sz);
+    }
+    sctx.globalAlpha = 1;
+    for(var j = rings.length - 1; j >= 0; j--){
+      var rg = rings[j];
+      rg.r += 0.9; rg.a *= 0.955;
+      if(rg.a < 0.02){ rings.splice(j, 1); continue; }
+      sctx.strokeStyle = 'rgba(185,238,222,' + rg.a + ')';
+      sctx.lineWidth = 1.2;
+      sctx.beginPath();
+      sctx.ellipse(rg.x, rg.y, rg.r * 1.5, rg.r * 0.62, 0, 0, Math.PI * 2);
+      sctx.stroke();
+    }
+  }
+  function sizeStream(){
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    streamCv.width = streamCv.clientWidth * dpr;
+    streamCv.height = streamCv.clientHeight * dpr;
+  }
+
+  var docs = document.querySelectorAll('#docs .doc');
+  var docIdx = -1;
+  setInterval(function(){
+    if(active !== 'v2' || REDUCED) return;
+    docIdx = (docIdx + 1) % docs.length;
+    var el = docs[docIdx];
+    el.classList.add('emitting');
+    spawn(13);
+    setTimeout(function(){ el.classList.remove('emitting'); }, 950);
+  }, 1650);
+
+  /* ---------------- 方向切换 ---------------- */
+  var buttons = document.querySelectorAll('.switcher button');
+  var sections = {v1: secV1,
+                  v2: document.getElementById('sec-v2'),
+                  v3: document.getElementById('sec-v3')};
+  buttons.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var v = btn.getAttribute('data-v');
+      if(v === active) return;
+      active = v;
+      body.dataset.variant = v;
+      buttons.forEach(function(b){ b.classList.toggle('active', b === btn); });
+      Object.keys(sections).forEach(function(k){
+        sections[k].classList.toggle('active', k === v);
+      });
+      if(v === 'v2'){ sizeStream(); particles = []; rings = []; if(!REDUCED) spawn(40); }
+      if(v === 'v1'){ lastMove = {x: -1, y: -1}; }
+    });
+  });
+
+  /* ---------------- 启动 ---------------- */
+  var resizeTimer;
+  window.addEventListener('resize', function(){
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function(){
+      sizeWater(); sizeStream();
+    }, 160);
+  });
+
+  buildBg(); buildOut(); sizeWater(); sizeStream();
+  if(!REDUCED){
+    /* 开场三滴，让第一眼就"活"（柔和一点，不抢标题） */
+    setTimeout(function(){ drop(0.38, 0.42, 5, 4); }, 250);
+    setTimeout(function(){ drop(0.62, 0.55, 4.5, 3.5); }, 700);
+    setTimeout(function(){ drop(0.5, 0.32, 4, 3); }, 1150);
+    spawn(40);
+  }
+
+  (function loop(){
+    if(active === 'v1'){ stepWater(); renderWater(); }
+    if(active === 'v2'){ tickStream(); }
+    requestAnimationFrame(loop);
+  })();
+
+  /* 静态兜底：动画关闭时至少渲染一次水面 */
+  if(REDUCED){ stepWater(); renderWater(); }
+})();
+</script>
+</body>
+</html>
