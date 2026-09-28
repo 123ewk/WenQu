@@ -343,8 +343,8 @@ async function onChangePassword() {
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 20px;
   font-weight: 500;
   display: grid;

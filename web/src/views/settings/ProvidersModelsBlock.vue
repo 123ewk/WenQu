@@ -799,7 +799,7 @@ async function onTestModel(m: SpaceModelOut) {
   width: 100%;
   margin-top: 4px;
   font-size: 12px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   text-decoration: none;
 }
 .pm-doc-link:hover {
@@ -836,20 +836,20 @@ async function onTestModel(m: SpaceModelOut) {
   cursor: pointer;
 }
 .pm-preset:hover {
-  border-color: #4f6ef2;
-  color: #4f6ef2;
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
 }
 .pm-preset-on {
-  border-color: #4f6ef2;
-  background: #eef1fe;
-  color: #4f6ef2;
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 .pm-preset-alias {
   font-size: 11px;
   color: #9ca3af;
 }
 .pm-preset-on .pm-preset-alias {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .pm-err {
   font-size: 13px;

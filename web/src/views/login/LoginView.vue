@@ -6,17 +6,23 @@ import { apiDemoStatus } from '@/api/demo'
 import { errMessage, fieldErrors, ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 import { useTourStore } from '@/stores/tour'
+import WaterSurface from '@/components/WaterSurface.vue'
 
 /**
- * 登录/注册页(原型 01):420px 居中卡片,极淡主色几何背景。
- * 后端错误映射:INVALID_CREDENTIALS → 登录提示;USERNAME_TAKEN → 注册账号字段错误;
+ * 登录/注册页 · 「一鉴开」版:深墨水面即镜面(WaterSurface 高度场涟漪模拟),
+ * 整页是品牌封面;点「开始提问」或右上「进入提问」弹出登录窗。
+ * 登录/注册/演示入口(OPT-46)逻辑与旧版一致;后端错误映射:
+ * INVALID_CREDENTIALS → 登录提示;USERNAME_TAKEN → 注册账号字段错误;
  * 422 VALIDATION_ERROR → 字段级提示。
  */
+const REPO_URL = 'https://github.com/123ewk/WenQu'
+
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const tour = useTourStore()
 
+const dialogOpen = ref(false)
 const tab = ref<'login' | 'reg'>('login')
 const loginRef = ref<FormInstance>()
 const regRef = ref<FormInstance>()
@@ -62,6 +68,12 @@ const regRules: FormRules = {
       trigger: 'blur',
     },
   ],
+}
+
+function openLogin(tabName: 'login' | 'reg' = 'login') {
+  tab.value = tabName
+  loginServerError.value = ''
+  dialogOpen.value = true
 }
 
 function goWorkspace() {
@@ -143,23 +155,55 @@ function fillDemoAccount() {
 
 <template>
   <div class="login-page">
-    <!-- 背景:极淡主色几何色块 -->
-    <div class="geo">
-      <div class="geo-a"></div>
-      <div class="geo-b"></div>
-      <div class="geo-c"></div>
-      <div class="geo-d"></div>
+    <WaterSurface />
+    <div class="vignette" aria-hidden="true" />
+
+    <nav class="nav">
+      <div class="brand">问渠 <em>WENQU</em></div>
+      <div class="links">
+        <a class="pill" @click="openLogin('login')">进入提问</a>
+      </div>
+    </nav>
+
+    <div class="poem" aria-hidden="true">
+      <div class="col">半亩方塘一鉴开</div>
+      <div class="col">天光云影共徘徊</div>
+      <div class="col hl">问渠那得清如许</div>
+      <div class="col hl">为有源头活水来</div>
+      <div class="seal">问渠</div>
     </div>
 
-    <div class="login-center">
-      <div class="login-card">
-        <div class="brand">
-          <div class="brand-row">
-            <div class="logo-mark">问</div>
-            <span class="brand-name">问渠</span>
-            <span class="brand-sub">WenQu</span>
+    <div class="center">
+      <div class="eyebrow">多租户文档知识库 · RAG 平台</div>
+      <h1>问渠</h1>
+      <div class="latin">W E N Q U</div>
+      <p class="tagline">Ask the stream, and it shall answer.</p>
+      <div class="cta">
+        <a class="primary" data-testid="login-open" @click="openLogin('login')">开始提问</a>
+        <a class="ghost" :href="REPO_URL" target="_blank" rel="noopener">了解问渠</a>
+      </div>
+    </div>
+
+    <div class="hint">移动光标，向水面提问 · 点击激起涟漪</div>
+
+    <el-dialog
+      v-model="dialogOpen"
+      width="420px"
+      align-center
+      class="cover-login-dialog"
+      :show-header="false"
+      :close-on-click-modal="false"
+    >
+      <div class="dlg-body">
+        <button class="dlg-close" aria-label="关闭" @click="dialogOpen = false">×</button>
+
+        <div class="dlg-brand">
+          <div class="dlg-brand-row">
+            <span class="logo-mark">问</span>
+            <span class="dlg-name">问渠</span>
+            <span class="dlg-sub">WenQu</span>
           </div>
-          <p class="brand-slogan">让团队知识随时可问</p>
+          <p class="dlg-slogan">让团队知识随时可问</p>
         </div>
 
         <el-tabs v-model="tab" stretch class="login-tabs">
@@ -187,6 +231,7 @@ function fillDemoAccount() {
               show-password
               placeholder="请输入密码"
               data-testid="login-password"
+              @keyup.enter="onLogin"
               @input="loginServerError = ''"
             />
           </el-form-item>
@@ -248,10 +293,10 @@ function fillDemoAccount() {
             </p>
           </template>
         </div>
-      </div>
 
-      <p class="terms">登录即代表同意<a>《服务条款》</a>与<a>《隐私政策》</a></p>
-    </div>
+        <p class="terms">登录即代表同意<a>《服务条款》</a>与<a>《隐私政策》</a></p>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -260,160 +305,450 @@ function fillDemoAccount() {
   position: relative;
   height: 100vh;
   overflow: hidden;
-  background: #f7f8fa;
-  display: grid;
-  place-items: center;
+  background: #04141d;
+  font-family: 'KaiTi', 'Kaiti SC', 'STKaiti', 'Noto Serif SC', serif;
+  --fg: #e9f4ef;
+  --fg-soft: rgba(233, 244, 239, 0.55);
+  --line: rgba(233, 244, 239, 0.16);
+  --jade: #7fd7c4;
+  --jade-deep: #5fbfae;
 }
-.geo {
+.login-page::after {
+  content: '';
   position: absolute;
   inset: 0;
+  z-index: 2;
   pointer-events: none;
-  overflow: hidden;
-}
-.geo-a {
-  position: absolute;
-  top: -112px;
-  left: -96px;
-  width: 440px;
-  height: 440px;
-  background: rgba(79, 110, 242, 0.05);
-  border-radius: 64px;
-  transform: rotate(12deg);
-}
-.geo-b {
-  position: absolute;
-  bottom: -128px;
-  right: -80px;
-  width: 520px;
-  height: 520px;
-  background: rgba(79, 110, 242, 0.04);
-  border-radius: 72px;
-  transform: rotate(-6deg);
-}
-.geo-c {
-  position: absolute;
-  top: 96px;
-  right: 160px;
-  width: 256px;
-  height: 256px;
-  border: 1px solid rgba(79, 110, 242, 0.1);
-  border-radius: 50%;
-}
-.geo-d {
-  position: absolute;
-  bottom: 64px;
-  left: 192px;
-  width: 16px;
-  height: 16px;
-  background: rgba(79, 110, 242, 0.1);
+  background: radial-gradient(120% 90% at 50% 42%, transparent 52%, rgba(0, 0, 0, 0.38));
 }
 
-.login-center {
-  position: relative;
+/* ===== 入场编排:文字依次浮现 ===== */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.login-card {
-  width: 420px;
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 32px 32px 28px;
+.eyebrow {
+  animation: rise 0.8s 0.15s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+h1 {
+  animation: rise 1s 0.3s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.latin {
+  animation: rise 0.9s 0.55s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.tagline {
+  animation: rise 0.9s 0.7s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.cta {
+  animation: rise 0.9s 0.85s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.poem .col {
+  animation: rise 1s 1.05s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.poem .seal {
+  animation: rise 1s 1.3s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+.hint {
+  animation: rise 0.9s 1.55s cubic-bezier(0.22, 0.7, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .eyebrow,
+  h1,
+  .latin,
+  .tagline,
+  .cta,
+  .poem .col,
+  .poem .seal,
+  .hint {
+    animation: none;
+  }
+}
+
+/* ===== 顶部导航 ===== */
+.nav {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 22px 38px;
+  pointer-events: none;
 }
 .brand {
+  font-size: 21px;
+  letter-spacing: 6px;
+  color: var(--fg);
+}
+.brand em {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 4px;
+  color: var(--fg-soft);
+}
+.links {
+  display: flex;
+  align-items: center;
+}
+.links .pill {
+  pointer-events: auto;
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: var(--fg);
+  background: rgba(233, 244, 239, 0.07);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 20px;
+  cursor: pointer;
+  transition: all 0.25s;
+}
+.links .pill:hover {
+  border-color: var(--jade);
+  color: var(--jade);
+}
+
+/* ===== 竖排诗 + 印章 ===== */
+.poem {
+  position: absolute;
+  right: 4.5%;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: row-reverse;
+  gap: 16px;
+  align-items: flex-start;
+  pointer-events: none;
+}
+.poem .col {
+  writing-mode: vertical-rl;
+  font-size: 15px;
+  letter-spacing: 12px;
+  color: rgba(233, 244, 239, 0.72);
+}
+.poem .col.hl {
+  color: #eef7f4;
+  font-size: 16.5px;
+}
+.seal {
+  writing-mode: vertical-rl;
+  background: #a83324;
+  color: #f6efdf;
+  border-radius: 5px;
+  font-size: 15px;
+  letter-spacing: 5px;
+  padding: 9px 5px;
+  margin-top: 26px;
+  box-shadow: inset 0 0 0 1.5px rgba(246, 239, 223, 0.55), inset 0 0 8px rgba(0, 0, 0, 0.28);
+  transform: rotate(-2.5deg);
+}
+
+/* ===== 中央标题区 ===== */
+.center {
+  position: absolute;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  text-align: center;
+  pointer-events: none;
+  width: min(92vw, 860px);
+}
+.eyebrow {
+  font-size: 13px;
+  letter-spacing: 7px;
+  color: var(--fg-soft);
+  margin-bottom: 22px;
+}
+h1 {
+  margin: 0;
+  font-size: clamp(76px, 13vw, 164px);
+  line-height: 1.04;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-indent: 0.1em;
+  color: #eef7f4;
+  text-shadow: 0 0 46px rgba(127, 215, 196, 0.28);
+}
+.latin {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 14px;
+  letter-spacing: 11px;
+  text-indent: 11px;
+  color: var(--fg-soft);
+  margin-top: 14px;
+}
+.tagline {
+  margin: 22px 0 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-style: italic;
+  font-size: clamp(15px, 1.8vw, 19px);
+  color: var(--fg-soft);
+  letter-spacing: 0.04em;
+}
+.cta {
+  margin-top: 34px;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+.cta a {
+  pointer-events: auto;
+  text-decoration: none;
+  font-size: 15px;
+  letter-spacing: 4px;
+  border-radius: 999px;
+  padding: 13px 36px;
+  cursor: pointer;
+  transition: all 0.25s;
+}
+.cta .primary {
+  background: linear-gradient(135deg, var(--jade), var(--jade-deep));
+  color: #06231d;
+  box-shadow: 0 6px 30px rgba(95, 191, 174, 0.35);
+}
+.cta .primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 36px rgba(95, 191, 174, 0.5);
+}
+.cta .ghost {
+  border: 1px solid var(--line);
+  color: var(--fg);
+}
+.cta .ghost:hover {
+  border-color: var(--jade);
+  color: var(--jade);
+}
+
+.hint {
+  position: absolute;
+  left: 50%;
+  bottom: 52px;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-size: 13px;
+  letter-spacing: 5px;
+  color: var(--fg-soft);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.hint::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--jade);
+  box-shadow: 0 0 10px var(--jade);
+  animation: breath 2.4s ease-in-out infinite;
+}
+@keyframes breath {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@media (max-width: 960px) {
+  .poem {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .nav {
+    padding: 16px 20px;
+  }
+  .hint {
+    bottom: 70px;
+    letter-spacing: 3px;
+  }
+}
+</style>
+
+<!-- 登录窗:dark glass。el-dialog 挂在 body 下,scoped 管不到,用全局样式 + 专属类名隔离 -->
+<style>
+.cover-login-dialog.el-dialog,
+.cover-login-dialog {
+  --el-bg-color: #0a232d;
+  --el-text-color-primary: #e9f4ef;
+  --el-text-color-regular: rgba(233, 244, 239, 0.8);
+  --el-text-color-secondary: rgba(233, 244, 239, 0.55);
+  --el-border-color: rgba(233, 244, 239, 0.2);
+  --el-border-color-light: rgba(233, 244, 239, 0.14);
+  --el-fill-color-blur: rgba(233, 244, 239, 0.08);
+  --el-fill-color-light: rgba(233, 244, 239, 0.06);
+  --el-input-bg-color: rgba(233, 244, 239, 0.05);
+  --el-input-text-color: #e9f4ef;
+  --el-input-border-color: rgba(233, 244, 239, 0.22);
+  --el-color-primary: #5fbfae;
+  --el-color-primary-light-3: #82cfbf;
+  --el-color-primary-light-5: #a5dfd3;
+  --el-color-primary-light-7: #c9ece4;
+  --el-color-primary-light-8: #dcf3ee;
+  --el-color-primary-light-9: #eef8f5;
+  --el-color-primary-dark-2: #4aa898;
+
+  background: rgba(8, 30, 38, 0.92);
+  border: 1px solid rgba(127, 215, 196, 0.22);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif;
+}
+.cover-login-dialog .el-dialog__header {
+  /* 该版本 EP 在 show-header=false 下仍渲染默认关闭钮,与自定义 × 重复,直接藏掉 */
+  display: none;
+}
+.cover-login-dialog .dlg-body {
+  padding: 4px 6px 2px;
+  position: relative;
+}
+.cover-login-dialog .dlg-close {
+  position: absolute;
+  top: -4px;
+  right: -2px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  line-height: 1;
+  color: rgba(233, 244, 239, 0.45);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.cover-login-dialog .dlg-close:hover {
+  color: #e9f4ef;
+}
+.cover-login-dialog .dlg-brand {
   display: flex;
   flex-direction: column;
   align-items: center;
+  font-family: 'KaiTi', 'Kaiti SC', 'STKaiti', serif;
 }
-.brand-row {
+.cover-login-dialog .dlg-brand-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.logo-mark {
+.cover-login-dialog .logo-mark {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #4f6ef2;
+  background: linear-gradient(135deg, #7fd7c4, #5fbfae);
   display: grid;
   place-items: center;
-  color: #fff;
+  color: #06231d;
   font-size: 15px;
   font-weight: 600;
 }
-.brand-name {
-  font-size: 18px;
-  font-weight: 600;
-  color: #111827;
+.cover-login-dialog .dlg-name {
+  font-size: 20px;
+  letter-spacing: 5px;
+  color: #eef7f4;
 }
-.brand-sub {
+.cover-login-dialog .dlg-sub {
   font-size: 12px;
-  color: #9ca3af;
-  margin-left: -4px;
-  margin-top: 4px;
+  color: rgba(233, 244, 239, 0.55);
 }
-.brand-slogan {
-  margin: 10px 0 0;
+.cover-login-dialog .dlg-slogan {
+  margin: 8px 0 0;
   font-size: 13px;
-  color: #6b7280;
+  color: rgba(233, 244, 239, 0.6);
 }
-
-.login-tabs {
+.cover-login-dialog .login-tabs {
   margin-top: 12px;
 }
-.login-tabs :deep(.el-tabs__header) {
-  margin: 0;
+.cover-login-dialog .login-tabs .el-tabs__item {
+  color: rgba(233, 244, 239, 0.55);
+  font-family: 'KaiTi', 'Kaiti SC', 'STKaiti', serif;
+  letter-spacing: 3px;
 }
-.login-tabs :deep(.el-tabs__nav-wrap::after) {
+.cover-login-dialog .login-tabs .el-tabs__item.is-active {
+  color: #7fd7c4;
+}
+.cover-login-dialog .login-tabs .el-tabs__active-bar {
+  background-color: #7fd7c4;
+}
+.cover-login-dialog .login-tabs .el-tabs__nav-wrap::after {
   height: 1px;
+  background-color: rgba(233, 244, 239, 0.12);
 }
-
-.login-form {
+.cover-login-dialog .login-form {
   margin-top: 20px;
 }
-.login-form :deep(.el-form-item) {
+.cover-login-dialog .login-form .el-form-item {
   margin-bottom: 16px;
 }
-.login-form :deep(.el-form-item__label) {
+.cover-login-dialog .login-form .el-form-item__label {
   padding-bottom: 4px;
+  color: rgba(233, 244, 239, 0.75);
 }
-.w-full {
+.cover-login-dialog .el-input__wrapper {
+  background: rgba(233, 244, 239, 0.05);
+}
+.cover-login-dialog .el-button--primary {
+  color: #06231d;
+}
+.cover-login-dialog .el-button:not(.el-button--primary) {
+  --el-button-bg-color: transparent;
+  --el-button-text-color: #e9f4ef;
+  --el-button-border-color: rgba(233, 244, 239, 0.25);
+  --el-button-hover-bg-color: rgba(233, 244, 239, 0.08);
+  --el-button-hover-text-color: #7fd7c4;
+  --el-button-hover-border-color: rgba(127, 215, 196, 0.5);
+}
+.cover-login-dialog .w-full {
   width: 100%;
   margin-top: 4px;
 }
-
-.demo-tip {
+.cover-login-dialog .demo-tip {
   margin-top: 20px;
   padding: 14px 16px;
-  border: 1px dashed rgba(79, 110, 242, 0.35);
+  border: 1px dashed rgba(127, 215, 196, 0.4);
   border-radius: 10px;
-  background: rgba(79, 110, 242, 0.04);
+  background: rgba(127, 215, 196, 0.05);
 }
-.demo-title {
+.cover-login-dialog .demo-title {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #4f6ef2;
+  color: #7fd7c4;
 }
-.demo-desc {
+.cover-login-dialog .demo-desc {
   margin: 6px 0 0;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: rgba(233, 244, 239, 0.6);
 }
-.demo-fill-btn {
+.cover-login-dialog .demo-fill-btn {
   margin-top: 12px;
 }
-
-.terms {
-  margin-top: 20px;
+.cover-login-dialog .terms {
+  margin: 18px 0 0;
   text-align: center;
   font-size: 12px;
-  color: #9ca3af;
+  color: rgba(233, 244, 239, 0.45);
 }
-.terms a {
+.cover-login-dialog .terms a {
   color: inherit;
   cursor: pointer;
 }
-.terms a:hover {
-  color: #4f6ef2;
+.cover-login-dialog .terms a:hover {
+  color: #7fd7c4;
 }
 </style>

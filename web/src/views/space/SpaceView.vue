@@ -659,10 +659,10 @@ async function onDeleteSpace() {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
   display: grid;
   place-items: center;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .head-name {
   font-size: 18px;
@@ -719,8 +719,8 @@ async function onDeleteSpace() {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 12px;
   font-weight: 500;
   display: grid;

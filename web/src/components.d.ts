@@ -51,6 +51,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     TourOverlay: typeof import('./components/tour/TourOverlay.vue')['default']
     UploadProgress: typeof import('./components/UploadProgress.vue')['default']
+    WaterSurface: typeof import('./components/WaterSurface.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

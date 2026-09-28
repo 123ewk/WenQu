@@ -142,7 +142,7 @@ function openKb(kb: KnowledgeBaseOut) {
         <rect x="18" y="14" width="60" height="46" rx="6" />
         <path d="M18 26h60" />
         <path d="M30 22h12" />
-        <path d="M48 52v-12m0 0l-6 6m6-6l6 6" stroke="#4F6EF2" />
+        <path d="M48 52v-12m0 0l-6 6m6-6l6 6" stroke="var(--el-color-primary)" />
       </svg>
       <div class="state-title">创建第一个知识库</div>
       <div class="state-desc">上传团队文档,让知识随时可问、可溯源</div>
@@ -249,10 +249,10 @@ function openKb(kb: KnowledgeBaseOut) {
   width: 40px;
   height: 40px;
   border-radius: 8px;
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
   display: grid;
   place-items: center;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .kb-name {
   margin-top: 12px;
@@ -262,7 +262,7 @@ function openKb(kb: KnowledgeBaseOut) {
   transition: color 0.15s;
 }
 .kb-card:hover .kb-name {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .kb-desc {
   margin-top: 4px;
@@ -292,7 +292,7 @@ function openKb(kb: KnowledgeBaseOut) {
   background: #9ca3af;
 }
 .kb-status.is-processing .kb-status-dot {
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   animation: kb-pulse 1.2s ease-in-out infinite;
 }
 .kb-status.is-ready .kb-status-dot {

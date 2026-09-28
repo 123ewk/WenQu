@@ -1,17 +1,18 @@
 /**
- * 问渠 WenQu 全局样式 — 设计令牌(与 docs/design 原型一致)映射到 Element Plus CSS 变量
- * 主色 #4F6EF2 · 分区背景 #F7F8FA · 边框 #E5E7EB · 正文 14px · 圆角 8px(卡片 12px) · 表格行高 44px
+ * 问渠 WenQu 全局样式 — 设计令牌映射到 Element Plus CSS 变量
+ * 主色 #3D9E8C 玉青(与「一鉴开」登录页同源;登录页水面亮玉青 #7FD7C4→#5FBFAE,应用内用其加深色保证白字可读)
+ * 分区背景 #F7F8FA · 边框 #E5E7EB · 正文 14px · 圆角 8px(卡片 12px) · 表格行高 44px
  */
 
 :root {
   /* Element Plus 主题色(含派生色阶,按主色与白色/黑色混合预计算) */
-  --el-color-primary: #4f6ef2;
-  --el-color-primary-dark-2: #3e5be0;
-  --el-color-primary-light-3: #849af6;
-  --el-color-primary-light-5: #a7b7f9;
-  --el-color-primary-light-7: #cad4fb;
-  --el-color-primary-light-8: #dce2fc;
-  --el-color-primary-light-9: #eef1fe;
+  --el-color-primary: #3d9e8c;
+  --el-color-primary-dark-2: #317e70;
+  --el-color-primary-light-3: #77bbae;
+  --el-color-primary-light-5: #9ecfc6;
+  --el-color-primary-light-7: #c5e2dd;
+  --el-color-primary-light-8: #d8ece8;
+  --el-color-primary-light-9: #ecf5f4;
 
   --el-color-success: #10b981;
   --el-color-success-dark-2: #0e9f6e;
@@ -224,7 +225,7 @@ body {
   background: #f7f8fa;
 }
 .pop-item.pop-primary {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .pop-item.pop-danger {
   color: #ef4444;
@@ -268,7 +269,7 @@ body {
   color: #374151;
 }
 .role-dd .dd-name.on {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   font-weight: 500;
 }
 .role-dd .dd-name.danger {
@@ -394,7 +395,7 @@ body {
   margin-left: 4px;
   border: none;
   border-radius: 50%;
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   color: #fff;
   font-size: 10px;
   line-height: 1;
@@ -402,7 +403,7 @@ body {
   cursor: pointer;
 }
 .cite:hover {
-  background: #3e5be0;
+  background: var(--el-color-primary-dark-2);
 }
 
 /* 流式光标 */
@@ -411,7 +412,7 @@ body {
   width: 2px;
   height: 16px;
   margin-left: 2px;
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   vertical-align: -2px;
   animation: blink 1s steps(2) infinite;
 }

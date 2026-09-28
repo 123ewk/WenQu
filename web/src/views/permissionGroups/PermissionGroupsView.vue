@@ -780,9 +780,9 @@ async function onUnassign(group: PermissionGroupOut, m: GroupMemberOut) {
   padding: 0 6px;
   margin-right: 4px;
   border-radius: 6px;
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
   font-size: 11px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   white-space: nowrap;
 }
 .pg-gray {

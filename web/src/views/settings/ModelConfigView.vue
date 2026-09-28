@@ -295,7 +295,7 @@ async function onRerankSwitch(v: boolean) {
 .mc-link {
   display: inline-flex;
   align-items: center;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   text-decoration: none;
 }
 .mc-link:hover {

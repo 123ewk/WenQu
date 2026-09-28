@@ -811,12 +811,12 @@ const ctxPct = computed(() => {
   if (ctxUsed.value === null || !ctxWindow.value) return null
   return Math.min(100, Math.round((ctxUsed.value / ctxWindow.value) * 100))
 })
-/** §3.2 阈值配色:<70% 蓝、70–90% 黄、>90% 红 */
+/** §3.2 阈值配色:<70% 玉青、70–90% 黄、>90% 红 */
 const ctxColor = computed(() => {
   const p = ctxPct.value ?? 0
   if (p > 90) return '#ef4444'
   if (p >= 70) return '#f59e0b'
-  return '#4f6ef2'
+  return '#3d9e8c'
 })
 
 /* ───── OPT-45 悬浮窗读数(E7)+ 手动压缩(E6)───── */
@@ -1511,7 +1511,7 @@ onUnmounted(abortStream)
   background: #f7f8fa;
 }
 .sess-item.on {
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
 }
 .sess-title {
   font-size: 13px;
@@ -1631,8 +1631,8 @@ onUnmounted(abortStream)
   transition: all 0.15s;
 }
 .chip:hover {
-  border-color: #4f6ef2;
-  color: #4f6ef2;
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
 }
 
 .chat-thread {
@@ -1704,7 +1704,7 @@ onUnmounted(abortStream)
 }
 .mem-card {
   border: 1px solid #dfe3ff;
-  border-left: 3px solid #4f6ef2;
+  border-left: 3px solid var(--el-color-primary);
   border-radius: 8px;
   background: #f7f8ff;
   padding: 10px 14px;
@@ -1716,7 +1716,7 @@ onUnmounted(abortStream)
   gap: 8px;
 }
 .mem-ic {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   flex-shrink: 0;
 }
 .mem-card-title {
@@ -1727,8 +1727,8 @@ onUnmounted(abortStream)
 .mem-kind {
   padding: 1px 6px;
   border-radius: 6px;
-  background: rgba(79, 110, 242, 0.12);
-  color: #4f6ef2;
+  background: rgba(61, 158, 140, 0.12);
+  color: var(--el-color-primary);
   font-size: 11px;
 }
 .mem-topic {
@@ -1842,7 +1842,7 @@ onUnmounted(abortStream)
 .tool-open {
   margin-left: auto;
   font-size: 12px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   flex-shrink: 0;
 }
 .tool-caret {
@@ -1882,7 +1882,7 @@ onUnmounted(abortStream)
   background: none;
   padding: 0;
   font-size: 12px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   cursor: pointer;
 }
 .tool-detail {
@@ -2018,9 +2018,9 @@ onUnmounted(abortStream)
   height: 18px;
   padding: 0 6px;
   border-radius: 6px;
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
   font-size: 11px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .model-opt-sub {
   font-size: 11px;
@@ -2069,7 +2069,7 @@ onUnmounted(abortStream)
 .scope-group-name {
   font-size: 12px;
   font-weight: 500;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   flex-shrink: 0;
 }
 .scope-group-scope {
@@ -2119,8 +2119,8 @@ onUnmounted(abortStream)
   color: #9ca3af;
 }
 .chat-textarea:focus {
-  border-color: #4f6ef2;
-  box-shadow: 0 0 0 2px rgba(79, 110, 242, 0.15);
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px rgba(61, 158, 140, 0.15);
 }
 .send-btn {
   width: 36px;
@@ -2128,7 +2128,7 @@ onUnmounted(abortStream)
   flex-shrink: 0;
   border: none;
   border-radius: 8px;
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   color: #fff;
   display: grid;
   place-items: center;
@@ -2136,7 +2136,7 @@ onUnmounted(abortStream)
   transition: background 0.15s;
 }
 .send-btn:hover:not(:disabled) {
-  background: #3e5be0;
+  background: var(--el-color-primary-dark-2);
 }
 .send-btn:disabled {
   opacity: 0.5;
@@ -2207,8 +2207,8 @@ onUnmounted(abortStream)
   height: 20px;
   padding: 0 6px;
   border-radius: 6px;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 11px;
 }
 .icon-btn {
@@ -2243,7 +2243,7 @@ onUnmounted(abortStream)
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   color: #fff;
   font-size: 10px;
   display: grid;
@@ -2251,7 +2251,7 @@ onUnmounted(abortStream)
   flex-shrink: 0;
 }
 .cite-file-ic {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   flex-shrink: 0;
 }
 .cite-file {

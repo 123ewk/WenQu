@@ -595,7 +595,7 @@ function openChunks(doc: DocumentOut) {
                       :percentage="item.vector_rank ? Math.max(4, 100 - (item.vector_rank - 1) * 12) : 0"
                       :stroke-width="6"
                       :show-text="false"
-                      :color="item.vector_rank ? '#4F6EF2' : '#E5E7EB'"
+                      :color="item.vector_rank ? 'var(--el-color-primary)' : '#E5E7EB'"
                     />
                     <span class="rank-text mono">{{ item.vector_rank ? `#${item.vector_rank}` : '未命中' }}</span>
                   </div>
@@ -788,8 +788,8 @@ function openChunks(doc: DocumentOut) {
   background: #10b981;
 }
 .stg-cur {
-  background: #4f6ef2;
-  box-shadow: 0 0 0 2px rgba(79, 110, 242, 0.15);
+  background: var(--el-color-primary);
+  box-shadow: 0 0 0 2px rgba(61, 158, 140, 0.15);
 }
 .stg-line {
   width: 12px;
@@ -963,7 +963,7 @@ function openChunks(doc: DocumentOut) {
   background: none;
   padding: 0;
   font-size: 12px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   cursor: pointer;
 }
 .result-score {
@@ -973,7 +973,7 @@ function openChunks(doc: DocumentOut) {
 .score-value {
   font-size: 20px;
   font-weight: 600;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   line-height: 1;
 }
 .score-source {
@@ -1074,7 +1074,7 @@ function openChunks(doc: DocumentOut) {
 .drag-frame {
   position: absolute;
   inset: 16px;
-  border: 2px dashed #4f6ef2;
+  border: 2px dashed var(--el-color-primary);
   border-radius: 16px;
   display: grid;
   place-items: center;
@@ -1082,16 +1082,16 @@ function openChunks(doc: DocumentOut) {
   gap: 4px;
 }
 .drag-ic {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .drag-title {
   margin-top: 12px;
   font-size: 16px;
   font-weight: 600;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
 }
 .drag-desc {
   font-size: 13px;
-  color: rgba(79, 110, 242, 0.8);
+  color: rgba(61, 158, 140, 0.8);
 }
 </style>

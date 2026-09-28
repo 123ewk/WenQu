@@ -215,10 +215,10 @@ async function onLogout() {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: #4f6ef2;
+  background: linear-gradient(135deg, #7fd7c4, #5fbfae);
   display: grid;
   place-items: center;
-  color: #fff;
+  color: #06231d;
   font-size: 13px;
   font-weight: 600;
   flex-shrink: 0;
@@ -228,8 +228,10 @@ async function onLogout() {
   min-width: 0;
 }
 .logo-name .name {
+  font-family: 'KaiTi', 'Kaiti SC', 'STKaiti', serif;
   font-size: 15px;
   font-weight: 600;
+  letter-spacing: 2px;
   color: #111827;
 }
 .logo-name .sub {
@@ -327,8 +329,8 @@ async function onLogout() {
   background: #f7f8fa;
 }
 .nav-item.nav-active {
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-weight: 500;
 }
 
@@ -355,8 +357,8 @@ async function onLogout() {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 12px;
   font-weight: 500;
   display: grid;
@@ -394,12 +396,12 @@ async function onLogout() {
   white-space: nowrap;
 }
 .ic-check {
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   flex-shrink: 0;
 }
 .pop-item.pop-on {
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 .pop-item:disabled {
   color: #9ca3af;

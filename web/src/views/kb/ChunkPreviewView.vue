@@ -355,8 +355,8 @@ function onReparse() {
   background: #f7f8fa;
 }
 .chunk-item.on {
-  background: #eef1fe;
-  border-left-color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  border-left-color: var(--el-color-primary);
 }
 .chunk-item-top {
   display: flex;

@@ -175,7 +175,7 @@ function goFailed(item: { kb_id: string }) {
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: #4f6ef2;
+  background: var(--el-color-primary);
   color: #fff;
   font-size: 10px;
   line-height: 16px;
@@ -291,7 +291,7 @@ function goFailed(item: { kb_id: string }) {
 }
 .up-status {
   font-size: 12px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   white-space: nowrap;
 }
 .up-status.is-failed {

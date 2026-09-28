@@ -383,8 +383,8 @@ function onRetry() {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #eef1fe;
-  color: #4f6ef2;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 10px;
   display: grid;
   place-items: center;

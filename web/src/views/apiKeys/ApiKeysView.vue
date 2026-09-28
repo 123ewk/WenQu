@@ -356,7 +356,7 @@ async function onRevoke(key: ApiKeyOut) {
       <div v-else-if="!loading && items.length === 0" class="state-wrap">
         <svg width="96" height="72" viewBox="0 0 96 72" fill="none" stroke="#9CA3AF" stroke-width="1.5">
           <circle cx="38" cy="30" r="14" />
-          <path d="M48 40l22 22m0 0h-8m8 0v-8" stroke="#4F6EF2" />
+          <path d="M48 40l22 22m0 0h-8m8 0v-8" stroke="var(--el-color-primary)" />
           <circle cx="34" cy="26" r="2" fill="#9CA3AF" stroke="none" />
         </svg>
         <div class="state-title">还没有 API Key</div>
@@ -639,9 +639,9 @@ async function onRevoke(key: ApiKeyOut) {
   padding: 0 6px;
   margin-right: 4px;
   border-radius: 6px;
-  background: #eef1fe;
+  background: var(--el-color-primary-light-9);
   font-size: 11px;
-  color: #4f6ef2;
+  color: var(--el-color-primary);
   white-space: nowrap;
 }
 .ak-cap-gray {
