@@ -4,7 +4,7 @@
 
     APP_DEMO_PASSWORD=xxx uv run python scripts/demo_run.py
     # 换到生产:同一份脚本,只改地址
-    APP_DEMO_PASSWORD=xxx WENQU_BASE_URL=http://106.53.41.116 uv run python scripts/demo_run.py -n 5
+    APP_DEMO_PASSWORD=xxx WENQU_BASE_URL=http://<SERVER_IP> uv run python scripts/demo_run.py -n 5
 
 路径就是讲解时的那条线:
   登录 → 新建空间 → 新建权限档位 → 签发 API Key → 切回演示空间看知识库 → 按预写问题自动提问

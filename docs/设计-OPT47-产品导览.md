@@ -68,7 +68,7 @@ OPT-46 的自动演示脚本（`demo_run.py`）是**准备环境**用的：建�
 # 本地（后端 :8000 + 前端 :5173 + 演示数据已 make demo-seed）
 cd server && APP_DEMO_PASSWORD=*** uv run --with "playwright==1.60.0" python scripts/demo_run.py --tour
 # 生产：同一份脚本换地址
-WENQU_BASE_URL=http://106.53.41.116 APP_DEMO_PASSWORD=*** ... scripts/demo_run.py --tour
+WENQU_BASE_URL=http://<SERVER_IP> APP_DEMO_PASSWORD=*** ... scripts/demo_run.py --tour
 ```
 
 人自己用：登录页填演示账号 → 登录 → 弹知情窗 → 点「开始导览」。不需要任何脚本。

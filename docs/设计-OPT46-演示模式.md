@@ -22,7 +22,7 @@
 | D4 | 数据怎么来 | **混合：预录为主 + 一个真跑入口**。22 篇提前种好（向量化要几分钟，不能让观众等）；`--live` 时现场再上传 1 篇（`demo/现场入库演示稿.md`）并等它真的走完解析→分块→向量化→检索→回答 |
 | D5 | 账号与开关 | **`APP_DEMO_MODE` 开关 + 种子账号**（不引入独立"游客"体系，复用现有注册/登录/RBAC） |
 | D6 | 交付面 | **后端 + 前端 + 脚本都做** |
-| D7 | 演示场地 | **生产服务器**（106.53.41.116），要让面试官在自己电脑上打开就能看 |
+| D7 | 演示场地 | **生产服务器**（`<SERVER_IP>`），要让面试官在自己电脑上打开就能看 |
 
 ## 3. 与现状的区别、效果、代价（大白话）
 
@@ -112,14 +112,14 @@
 2. 走一次正常 CD 发布（手动 `workflow_dispatch` + 版本号复述），让新镜像带上 OPT-46。
 3. 从讲解机播种（脚本是 HTTP 的，指过去即可）：
    ```bash
-   WENQU_BASE_URL=http://106.53.41.116 APP_DEMO_PASSWORD=... \
+   WENQU_BASE_URL=http://<SERVER_IP> APP_DEMO_PASSWORD=... \
      cd server && uv run python scripts/seed_demo.py
    ```
    这一步会真的走 22 篇文档的向量化，要等几分钟；跑完 `/demo/status` 的 `ready` 才为 `true`。
 4. 浏览器打开站点应能看到登录页的演示入口；要自动跑：
    ```bash
    make demo-browser
-   WENQU_BASE_URL=http://106.53.41.116 make demo-run ARGS="--headed -n 6"
+   WENQU_BASE_URL=http://<SERVER_IP> make demo-run ARGS="--headed -n 6"
    ```
 
 ### 6.2 本地
