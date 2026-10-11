@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+*.local
+
+# 环境与密钥(示例文件必须入库,.env 真实文件绝不入库)
+.env
+.env.*
+!deploy/.env.example
+!server/.env.example
+# web 前端环境变量无密钥,需随仓库分发(见 web/对接说明.md)
+!web/.env.development
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 构建产物
+dist/
+build/
+
+# 备份产物(pg_dump/对象镜像,绝不出库)
+backups/
+
+# 个人学习/复盘笔记:只留本地工作区,不入库(docs/ 其余文档照常跟踪)
+/docs/CI-CD学习笔记.md
+# 自动演示(OPT-46)跑出来的截图,只在讲解机上留着
+demo-out/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
